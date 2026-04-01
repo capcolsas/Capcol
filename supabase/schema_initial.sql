@@ -1,11 +1,17 @@
-create type public.app_role as enum (
-  'superadmin',
-  'admin',
-  'editor',
-  'consultor',
-  'supervisor',
-  'empleado'
-);
+do $$
+begin
+  create type public.app_role as enum (
+    'superadmin',
+    'admin',
+    'editor',
+    'consultor',
+    'supervisor',
+    'empleado'
+  );
+exception
+  when duplicate_object then null;
+end
+$$;
 
 create table if not exists public.profiles (
   id uuid primary key references auth.users(id) on delete cascade,

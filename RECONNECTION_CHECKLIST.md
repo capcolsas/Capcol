@@ -13,11 +13,12 @@ git push -u origin main
 ## 2. Supabase
 - Crear un proyecto nuevo en Supabase.
 - Ejecutar los esquemas SQL en el orden documentado en `SUPABASE_SETUP.md`.
+  Desde una base nueva, incluye `schema_foundation_phase0.sql` y todas las fases hasta `schema_operations_phase12.sql`.
 - Actualizar `src/assets/js/config.js` con:
 
 ```js
-export const SUPABASE_URL = 'https://TU-PROYECTO.supabase.co';
-export const SUPABASE_ANON_KEY = 'TU-ANON-KEY';
+export const SUPABASE_URL = 'https://daxltsptgkfvbupncbkt.supabase.co';
+export const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRheGx0c3B0Z2tmdmJ1cG5jYmt0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQzOTI5MDMsImV4cCI6MjA4OTk2ODkwM30.loe5u6Wrnv-pRSY4pOV6gdi-WvXsd6e9vui2SXkGvtY';
 ```
 
 - Actualizar `whatsapp-backend/.env` y variables de Vercel:

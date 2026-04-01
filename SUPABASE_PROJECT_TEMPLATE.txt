@@ -1,5 +1,5 @@
-ProjectURL = https://TU-PROYECTO.supabase.co
+ProjectURL = https://daxltsptgkfvbupncbkt.supabase.co
 Publishable Key = TU-PUBLISHABLE-KEY
-Direct connection string = postgresql://postgres:[YOUR-PASSWORD]@db.TU-PROYECTO.supabase.co:5432/postgres
-Anon Key = TU-ANON-KEY
+Direct connection string = postgresql://postgres:[YOUR-PASSWORD]@db.daxltsptgkfvbupncbkt.supabase.co:5432/postgres
+Anon Key = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRheGx0c3B0Z2tmdmJ1cG5jYmt0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQzOTI5MDMsImV4cCI6MjA4OTk2ODkwM30.loe5u6Wrnv-pRSY4pOV6gdi-WvXsd6e9vui2SXkGvtY
 service role = TU-SERVICE-ROLE-KEY
