@@ -1,0 +1,5 @@
+ProjectURL = https://TU-PROYECTO.supabase.co
+Publishable Key = TU-PUBLISHABLE-KEY
+Direct connection string = postgresql://postgres:[YOUR-PASSWORD]@db.TU-PROYECTO.supabase.co:5432/postgres
+Anon Key = TU-ANON-KEY
+service role = TU-SERVICE-ROLE-KEY

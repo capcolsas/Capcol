@@ -1,0 +1,11 @@
+.DS_Store
+node_modules
+dist
+.firebase
+firebase-debug.log
+whatsapp-backend/.env
+whatsapp-backend/node_modules
+backups/
+.vercel/
+functions/.env*
+!functions/.env.example

@@ -1,0 +1,1 @@
+import { el } from '../utils/dom.js';export const Notes=(mount)=>{ mount.replaceChildren(el('section',{className:'main-card'},[ el('h2',{},['Notas (demo)']), el('p',{className:'text-muted'},['...']) ])); };
