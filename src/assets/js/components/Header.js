@@ -22,8 +22,8 @@ export const Header=(deps={})=>{
   });
 
   const nav=el('nav',{className:'header-nav container'},[
-    el('a',{href:'#',className:'header-nav__brand',title:'Servilimpieza','aria-label':'Servilimpieza'},[
-      el('img',{className:'header-nav__brand-logo',src:'src/assets/img/servilimpieza-logo.svg',alt:'Logo Servilimpieza',loading:'lazy'})
+    el('a',{href:'#',className:'header-nav__brand',title:'Capcol','aria-label':'Capcol'},[
+      el('img',{className:'header-nav__brand-logo',src:'src/assets/img/capcol-header.png',alt:'Logo Capcol',loading:'lazy'})
     ]),
     navLink('Inicio','/',()=> navigate('/')),
     navLink('Contacto','/contact',()=> navigate('/contact')),

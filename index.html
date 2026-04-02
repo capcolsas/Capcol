@@ -83,6 +83,12 @@
 
     .nav { display: flex; flex-wrap: wrap; gap: 8px; }
 
+    .topbar-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
     .nav a {
       text-decoration: none;
       color: var(--ink);
@@ -95,6 +101,33 @@
     }
 
     .nav a:hover { border-color: var(--line); background: #ffffff; color: var(--brand); }
+
+    .login-icon-link {
+      width: 42px;
+      height: 42px;
+      border-radius: 999px;
+      border: 1px solid rgba(31, 111, 178, 0.24);
+      background: #ffffff;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--brand-dark);
+      text-decoration: none;
+      box-shadow: 0 10px 24px rgba(15, 27, 45, 0.08);
+      transition: .2s ease;
+    }
+
+    .login-icon-link:hover {
+      transform: translateY(-1px);
+      border-color: #8ebee4;
+      color: var(--brand);
+      box-shadow: 0 12px 28px rgba(15, 27, 45, 0.12);
+    }
+
+    .login-icon-link svg {
+      width: 18px;
+      height: 18px;
+    }
 
     .hero {
       padding: 32px 0 20px;
@@ -447,14 +480,23 @@
   <header class="topbar">
     <div class="container topbar-inner">
       <div class="brand-mini">CAPCOL | Soluciones Integrales</div>
-      <nav class="nav">
-        <a href="#nosotros">Nosotros</a>
-        <a href="#actividades">Actividades</a>
-        <a href="#plataformas">Plataformas</a>
-        <a href="#aliados">Aliados</a>
-        <a href="#contacto">Contacto</a>
-        <a href="#propuesta">Propuesta</a>
-      </nav>
+      <div class="topbar-actions">
+        <nav class="nav">
+          <a href="#nosotros">Nosotros</a>
+          <a href="#actividades">Actividades</a>
+          <a href="#plataformas">Plataformas</a>
+          <a href="#aliados">Aliados</a>
+          <a href="#contacto">Contacto</a>
+          <a href="#propuesta">Propuesta</a>
+        </nav>
+        <a class="login-icon-link" href="app.html#/login" aria-label="Ingresar a RockyDEMO" title="Ingresar a RockyDEMO">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"></path>
+            <path d="M10 17l5-5-5-5"></path>
+            <path d="M15 12H3"></path>
+          </svg>
+        </a>
+      </div>
     </div>
   </header>
 
@@ -552,9 +594,9 @@
       <div class="grid-3">
         <article class="panel">
           <span class="badge">Plataforma</span>
-          <h3>RockyDEMO</h3>
-          <p class="platform-meta">CAPCOL S.A.S.</p>
-          <a class="platform-link" href="app.html">Ingresar a RockyDEMO</a>
+          <h3>RockyEDU</h3>
+          <p class="platform-meta">Secretaría de Educación de Medellín</p>
+          <a class="platform-link" href="https://rockyeducacion.vercel.app/app.html#/login" target="_blank" rel="noopener noreferrer">Ingresar a RockyEDU</a>
         </article>
 
         <article class="panel">

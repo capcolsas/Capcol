@@ -17,12 +17,12 @@ export const Contact = (mount) => {
         ]
       ),
       contactCard(
-        'Servilimpieza S.A.',
+        'TU EMPRESA',
         [
-          ['Pagina web', 'oficial.servilimpieza.com.co', 'https://oficial.servilimpieza.com.co'],
-          ['Direccion', 'Calle 86 D # 30 - 21, Bogota D.C'],
-          ['Telefono', '601 628 6140'],
-          ['Correo', 'servicioalcliente@servilimpieza.com.co', 'mailto:servicioalcliente@servilimpieza.com.co']
+          ['Pagina web', 'www.tudominio.com', 'https://www.tudominio.com'],
+          ['Direccion', 'Direccion de tu empresa'],
+          ['Telefono', 'Telefono de tu empresa'],
+          ['Correo', 'tucorreo@tudominio.com', 'mailto:tucorreo@tudominio.com']
         ]
       )
     ])

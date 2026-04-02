@@ -5,24 +5,24 @@ export const DataTreatment = (mount) => {
     el('section', { className: 'main-card' }, [
       el('h2', {}, ['Tratamiento Datos']),
       el('p', { className: 'mt-1' }, [
-        'De conformidad con la Ley 1581 de 2012, el Decreto 1377 de 2013, el Decreto 1074 de 2015 y las demas normas aplicables en Colombia, el responsable del tratamiento de datos personales es SERVILIMPIEZA S.A.'
+        'De conformidad con la Ley 1581 de 2012, el Decreto 1377 de 2013, el Decreto 1074 de 2015 y las demas normas aplicables en Colombia, el responsable del tratamiento de datos personales es TU EMPRESA.'
       ]),
 
       el('h3', { className: 'mt-2' }, ['1. Responsable y Encargado']),
-      el('p', { className: 'mt-1' }, ['Responsable del tratamiento: SERVILIMPIEZA S.A.']),
+      el('p', { className: 'mt-1' }, ['Responsable del tratamiento: TU EMPRESA.']),
       el('p', { className: 'mt-1' }, ['Encargado del tratamiento en esta plataforma: CAPCOL S.A.S.']),
       el('p', { className: 'mt-1' }, [
         'Politica oficial de tratamiento de datos del responsable: ',
         el('a', {
-          href: 'https://oficial.servilimpieza.com.co/wp-content/uploads/2024/03/3.-Politica-Tratamiento-de-Datos-Personales.pdf',
+          href: '#',
           target: '_blank',
           rel: 'noopener noreferrer'
-        }, ['Ver documento PDF'])
+        }, ['Link tratamiento de datos de tu empresa'])
       ]),
 
       el('h3', { className: 'mt-2' }, ['2. Ambito de Aplicacion']),
       el('p', { className: 'mt-1' }, [
-        'Esta plataforma es operada por CAPCOL S.A.S. en calidad de encargado. El tratamiento de datos se realiza por cuenta de SERVILIMPIEZA S.A., conforme a las instrucciones del responsable y a su politica oficial.'
+        'Esta plataforma es operada por CAPCOL S.A.S. en calidad de encargado. El tratamiento de datos se realiza por cuenta de TU EMPRESA, conforme a las instrucciones del responsable y a su politica oficial.'
       ]),
 
       el('h3', { className: 'mt-2' }, ['3. Finalidades del Tratamiento']),
@@ -43,14 +43,14 @@ export const DataTreatment = (mount) => {
       el('p', { className: 'mt-1' }, ['4.6. Acceder en forma gratuita a sus datos personales objeto de tratamiento.']),
 
       el('h3', { className: 'mt-2' }, ['5. Procedimiento para Consultas y Reclamos']),
-      el('p', { className: 'mt-1' }, ['Las consultas y reclamos sobre proteccion de datos deben dirigirse principalmente al responsable (SERVILIMPIEZA S.A.) mediante los canales definidos en su politica oficial.']),
+      el('p', { className: 'mt-1' }, ['Las consultas y reclamos sobre proteccion de datos deben dirigirse principalmente al responsable (TU EMPRESA) mediante los canales definidos en su politica oficial.']),
       el('p', { className: 'mt-1' }, ['CAPCOL S.A.S., como encargado, apoyara la gestion de solicitudes en los casos que correspondan operativamente y bajo instruccion del responsable.']),
 
       el('h3', { className: 'mt-2' }, ['6. Seguridad de la Informacion']),
       el('p', { className: 'mt-1' }, ['CAPCOL S.A.S. adopta medidas tecnicas, humanas y administrativas razonables para proteger los datos personales frente a acceso no autorizado, perdida, adulteracion, uso indebido o fraude.']),
 
       el('h3', { className: 'mt-2' }, ['7. Vigencia']),
-      el('p', { className: 'mt-1' }, ['La vigencia, actualizacion y control principal de la politica de tratamiento corresponde al responsable (SERVILIMPIEZA S.A.), de acuerdo con su documento oficial.']),
+      el('p', { className: 'mt-1' }, ['La vigencia, actualizacion y control principal de la politica de tratamiento corresponde al responsable (TU EMPRESA), de acuerdo con su documento oficial.']),
       el('p', { className: 'mt-1' }, ['CAPCOL S.A.S. mantendra esta referencia actualizada en la plataforma cuando reciba nuevas directrices del responsable.']),
       el('p', { className: 'mt-1 text-muted' }, ['Autoridad de control: Superintendencia de Industria y Comercio (SIC).'])
     ])
