@@ -487,9 +487,10 @@
           <a href="#plataformas">Plataformas</a>
           <a href="#aliados">Aliados</a>
           <a href="#contacto">Contacto</a>
+          <a href="#datos">Tratamiento de datos</a>
           <a href="#propuesta">Propuesta</a>
         </nav>
-        <a class="login-icon-link" href="app.html#/login" aria-label="Ingresar a RockyDEMO" title="Ingresar a RockyDEMO">
+        <a class="login-icon-link" href="app.html#/login" target="_blank" rel="noopener noreferrer" aria-label="Ingresar a RockyDEMO" title="Ingresar a RockyDEMO">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"></path>
             <path d="M10 17l5-5-5-5"></path>
@@ -595,7 +596,7 @@
         <article class="panel">
           <span class="badge">Plataforma</span>
           <h3>RockyEDU</h3>
-          <p class="platform-meta">Secretaría de Educación de Medellín</p>
+          <p class="platform-meta">Sec. Educación Medellín</p>
           <a class="platform-link" href="https://rockyeducacion.vercel.app/app.html#/login" target="_blank" rel="noopener noreferrer">Ingresar a RockyEDU</a>
         </article>
 
@@ -603,21 +604,21 @@
           <span class="badge">Plataforma</span>
           <h3>RockyRAM</h3>
           <p class="platform-meta">Rama Judicial Antioquia</p>
-          <a class="platform-link" href="/rockyram">Ingresar a RockyRAM</a>
+          <a class="platform-link" href="https://rockyram.vercel.app/" target="_blank" rel="noopener noreferrer">Ingresar a RockyRAM</a>
         </article>
 
         <article class="panel">
           <span class="badge">Plataforma</span>
           <h3>RockyMED</h3>
           <p class="platform-meta">Alcaldía de Medellín</p>
-          <a class="platform-link" href="/rockymed">Ingresar a RockyMED</a>
+          <a class="platform-link" href="https://rockymed.vercel.app/" target="_blank" rel="noopener noreferrer">Ingresar a RockyMED</a>
         </article>
 
         <article class="panel">
           <span class="badge">Plataforma</span>
           <h3>RockySEN</h3>
-          <p class="platform-meta">Servicio Nacional de Aprendizaje Antioquia</p>
-          <a class="platform-link" href="/rockysen">Ingresar a RockySEN</a>
+          <p class="platform-meta">SENA Antioquia</p>
+          <a class="platform-link" href="https://rockysen.vercel.app/" target="_blank" rel="noopener noreferrer">Ingresar a RockySEN</a>
         </article>
       </div>
     </section>
@@ -695,6 +696,7 @@
           <ul>
             <li><strong>Email comercial:</strong> <a href="mailto:capcol@capcol.com.co">capcol@capcol.com.co</a></li>
             <li><strong>Email soporte:</strong> <a href="mailto:soporte@capcol.com.co">soporte@capcol.com.co</a></li>
+            <li><strong>Teléfono de Soporte:</strong> 3502624743</li>
             <li><strong>Horario:</strong> Lunes a viernes, 8:00 a.m. a 5:00 p.m.</li>
           </ul>
         </article>
@@ -809,6 +811,7 @@
     const form = document.getElementById('proposalForm');
     const statusEl = document.getElementById('formStatus');
     const submitBtn = document.getElementById('submitBtn');
+    const proposalDefaultSubject = 'Solicitud de propuesta comercial';
 
     form?.addEventListener('submit', async (event) => {
       event.preventDefault();
@@ -837,8 +840,8 @@
         }
 
         form.reset();
-        form.subject.value = 'Solicitud de propuesta comercial';
-        statusEl.textContent = 'Solicitud enviada correctamente. Te contactaremos pronto.';
+        form.subject.value = proposalDefaultSubject;
+        statusEl.textContent = data.message || 'Solicitud enviada correctamente. Te contactaremos pronto.';
         statusEl.className = 'form-note ok';
       } catch (error) {
         statusEl.textContent = (error && error.message) ? error.message : 'Error inesperado al enviar la solicitud.';

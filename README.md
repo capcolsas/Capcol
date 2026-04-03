@@ -54,6 +54,18 @@ Plataforma de gestion operativa y administrativa para el seguimiento de servicio
 2. Entrar a la app desde `app.html#/login`.
 3. Iniciar sesion y validar modulos segun rol/permisos.
 
+## Formulario de propuesta
+- El landing usa `POST /api/contact`.
+- El envio se hace por SMTP SSL desde Vercel.
+- Variables requeridas en Vercel:
+  - `SMTP_HOST`
+  - `SMTP_PORT`
+  - `SMTP_USER`
+  - `SMTP_PASS`
+  - `SMTP_SECURE` (`true` para SSL)
+  - `CONTACT_FROM_EMAIL` (opcional, por defecto `SMTP_USER`)
+  - `CONTACT_TO_EMAIL` (opcional, por defecto `capcol@capcol.com.co`)
+
 ## Documentacion operativa
 - Supabase: `SUPABASE_SETUP.md`
 - WhatsApp backend: `WHATSAPP_BACKEND_MIGRATION.md`
