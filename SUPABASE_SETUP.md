@@ -22,6 +22,7 @@ Ejecutar en este orden:
 - `supabase/schema_operations_phase10.sql:1`
 - `supabase/schema_operations_phase11.sql:1`
 - `supabase/schema_operations_phase12.sql:1`
+- `supabase/schema_operations_phase13.sql:1`
 
 ## Que habilita cada bloque
 - `phase0` instala `pgcrypto` para `gen_random_uuid()`.
@@ -37,6 +38,7 @@ Ejecutar en este orden:
 - `phase10` crea `employee_daily_status`.
 - `phase11` crea RPCs para consolidar `employee_daily_status`.
 - `phase12` crea RPCs para recalcular `sede_status` y `daily_metrics`.
+- `phase13` agrega a `supabase_realtime` las tablas que la app escucha en vivo.
 
 ## Variables activas del frontend
 Configurar en `src/assets/js/config.js:1`:
@@ -93,4 +95,5 @@ Configurar en Vercel para el proyecto backend:
 - Crear el primer usuario en Auth.
 - Tomar el UUID real del usuario creado y usarlo en `supabase/create_first_superadmin.template.sql`.
 - Ejecutar ese script para convertirlo en `superadmin`.
+- Si el proyecto ya existia y el live no responde, ejecutar al menos `supabase/schema_operations_phase13.sql:1`.
 - Validar login web y luego probar el webhook de WhatsApp.
