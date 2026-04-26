@@ -688,6 +688,8 @@ async function registerNovelty(phone, employee, novelty, selectedSede = null, in
       estado: 'reportado_whatsapp'
     }, { onConflict: 'id' });
     if (absenteeismError) throw absenteeismError;
+  } else {
+    await clearDailyOperationalAbsenceArtifacts(attendanceId);
   }
 
   if (novelty.tracksIncapacity && incapacity?.startDate && incapacity?.endDate) {
@@ -705,7 +707,7 @@ async function registerNovelty(phone, employee, novelty, selectedSede = null, in
     if (incapacityError) throw incapacityError;
   }
 
-  await recomputeDailyMetrics(date);
+  await refreshOperationalState(date);
   await storeSession(phone, {
     employee_id: freshEmployee.id,
     documento: freshEmployee.documento,
@@ -720,6 +722,23 @@ async function registerNovelty(phone, employee, novelty, selectedSede = null, in
   }
 
   await sendText(phone, `Registro confirmado. Fecha: ${formatDateForHumans(date)}, Hora: ${time}, Novedad: ${novelty.label}, Muchas Gracias.`);
+}
+
+async function clearDailyOperationalAbsenceArtifacts(recordId) {
+  const dailyId = String(recordId || '').trim();
+  if (!dailyId) return;
+
+  const { error: absenteeismError } = await supabaseAdmin
+    .from('absenteeism')
+    .delete()
+    .eq('id', dailyId);
+  if (absenteeismError) throw absenteeismError;
+
+  const { error: replacementError } = await supabaseAdmin
+    .from('import_replacements')
+    .delete()
+    .eq('id', dailyId);
+  if (replacementError) throw replacementError;
 }
 
 function isMissingRpcError(error) {
