@@ -8,6 +8,7 @@ import { supabaseAdmin } from './supabase.js';
 const app = express();
 
 app.use(express.json({
+  limit: '12mb',
   verify: (req, _res, buffer) => {
     req.rawBody = buffer;
   }
@@ -30,13 +31,14 @@ const SESSION = {
 };
 
 const NOVELTIES = {
-  WORKING: { code: '1', label: 'Trabajando', absenteeism: false, requiresDates: false },
-  ACCIDENT: { code: '2', label: 'Accidente Laboral', absenteeism: true, requiresDates: true },
-  SICKNESS: { code: '3', label: 'Enfermedad General', absenteeism: true, requiresDates: true },
-  CALAMITY: { code: '4', label: 'Calamidad', absenteeism: true, requiresDates: true },
-  UNPAID_LEAVE: { code: '5', label: 'Licencia No Remunerada', absenteeism: true, requiresDates: false },
-  COMPENSATORY: { code: '7', label: 'Compensatorio', absenteeism: false, requiresDates: false },
-  VACATIONS: { code: '9', label: 'Vacaciones', absenteeism: true, requiresDates: true }
+  WORKING: { code: '1', label: 'Trabajando', absenteeism: false, requiresDates: false, tracksIncapacity: false, requiresSupport: false, dateContext: 'incapacidad' },
+  ACCIDENT: { code: '2', label: 'Accidente Laboral', absenteeism: true, requiresDates: true, tracksIncapacity: true, requiresSupport: true, dateContext: 'incapacidad' },
+  SICKNESS: { code: '3', label: 'Enfermedad General', absenteeism: true, requiresDates: true, tracksIncapacity: true, requiresSupport: true, dateContext: 'incapacidad' },
+  CALAMITY: { code: '4', label: 'Calamidad', absenteeism: true, requiresDates: true, tracksIncapacity: true, requiresSupport: true, dateContext: 'incapacidad' },
+  UNPAID_LEAVE: { code: '5', label: 'Licencia No Remunerada', absenteeism: true, requiresDates: true, tracksIncapacity: true, requiresSupport: false, dateContext: 'licencia' },
+  PAID_LEAVE: { code: '6', label: 'Licencia Remunerada', absenteeism: true, requiresDates: true, tracksIncapacity: true, requiresSupport: false, dateContext: 'licencia' },
+  COMPENSATORY: { code: '7', label: 'Compensatorio', absenteeism: false, requiresDates: false, tracksIncapacity: false, requiresSupport: false, dateContext: 'incapacidad' },
+  VACATIONS: { code: '9', label: 'Vacaciones', absenteeism: true, requiresDates: true, tracksIncapacity: true, requiresSupport: false, dateContext: 'vacaciones' }
 };
 
 const MENU_IDS = {
@@ -52,10 +54,12 @@ const MENU_IDS = {
   NOVELTY_ACCIDENT: 'novelty_2',
   NOVELTY_CALAMITY: 'novelty_4',
   NOVELTY_UNPAID: 'novelty_5',
+  NOVELTY_PAID: 'novelty_6',
   NOVELTY_VACATIONS: 'novelty_9'
 };
 
 const NO_REGISTERED_MESSAGE = 'No estás registrado en nuestra base de datos, por favor comunícate con tu supervisor.';
+const EMPLOYEE_PORTAL_URL = 'https://www.capcol.com.co/employee.html';
 
 app.get('/health', (_req, res) => {
   res.json({ ok: true });
@@ -412,13 +416,7 @@ async function handleActionSelection(phone, session, parsed) {
     });
     await sendList(phone, 'Selecciona la novedad que presentas:', 'Seleccionar novedad', [{
       title: 'Novedades',
-      rows: [
-        { id: MENU_IDS.NOVELTY_SICKNESS, title: 'Enfermedad General' },
-        { id: MENU_IDS.NOVELTY_ACCIDENT, title: 'Accidente Laboral' },
-        { id: MENU_IDS.NOVELTY_CALAMITY, title: 'Calamidad' },
-        { id: MENU_IDS.NOVELTY_UNPAID, title: 'Licencia No Remunerada' },
-        { id: MENU_IDS.NOVELTY_VACATIONS, title: 'Vacaciones' }
-      ]
+      rows: buildNoveltyRows(employee.isSupernumerario)
     }]);
     return;
   }
@@ -587,7 +585,8 @@ async function handleNoveltySelection(phone, session, parsed) {
     session_state: SESSION.AWAITING_DATE_START,
     session_data: { ...(session.session_data || {}), employee: sessionEmployee(employee), pendingNovelty: novelty }
   });
-  await sendText(phone, 'Selecciona las fechas de incapacidad:\n\nFecha de inicio de incapacidad, por favor escribe DD/MM/AAAA:');
+  const prompts = getNoveltyDatePrompts(novelty);
+  await sendText(phone, prompts.startIntro);
 }
 
 async function handleDateStart(phone, session, value) {
@@ -601,7 +600,7 @@ async function handleDateStart(phone, session, value) {
   }
 
   if (!parsedDate) {
-    await sendText(phone, 'Fecha de inicio de incapacidad, por favor escribe DD/MM/AAAA:');
+    await sendText(phone, getNoveltyDatePrompts(novelty).startOnly);
     return;
   }
 
@@ -611,7 +610,7 @@ async function handleDateStart(phone, session, value) {
     session_state: SESSION.AWAITING_DATE_END,
     session_data: { ...(session.session_data || {}), employee: sessionEmployee(employee), pendingNovelty: novelty, incapacityStart: parsedDate }
   });
-  await sendText(phone, 'Fecha de terminación de incapacidad, por favor escribe DD/MM/AAAA:');
+  await sendText(phone, getNoveltyDatePrompts(novelty).endOnly);
 }
 
 async function handleDateEnd(phone, session, value) {
@@ -626,7 +625,7 @@ async function handleDateEnd(phone, session, value) {
   }
 
   if (!endDate || endDate < startDate) {
-    await sendText(phone, 'Fecha de terminación de incapacidad, por favor escribe DD/MM/AAAA:');
+    await sendText(phone, getNoveltyDatePrompts(novelty).endOnly);
     return;
   }
 
@@ -643,6 +642,20 @@ async function registerNovelty(phone, employee, novelty, selectedSede = null, in
   const sedeNombre = selectedSede?.nombre || freshEmployee.sede_nombre || null;
   if (!sedeCodigo) {
     throw new Error(`attendance_missing_sede:${freshEmployee.id || 'no_id'}:${documento || 'no_doc'}`);
+  }
+
+  if (novelty.tracksIncapacity && incapacity?.startDate && incapacity?.endDate) {
+    const overlapping = await findOverlappingIncapacity(documento, incapacity.startDate, incapacity.endDate);
+    if (overlapping) {
+      await storeSession(phone, {
+        employee_id: freshEmployee.id,
+        documento: freshEmployee.documento,
+        session_state: SESSION.COMPLETED,
+        session_data: { employee: sessionEmployee(freshEmployee) }
+      });
+      await sendText(phone, buildOverlapMessage(novelty));
+      return;
+    }
   }
 
   const { error: attendanceError } = await supabaseAdmin.from('attendance').upsert({
@@ -672,7 +685,7 @@ async function registerNovelty(phone, employee, novelty, selectedSede = null, in
     if (absenteeismError) throw absenteeismError;
   }
 
-  if (incapacity?.startDate && incapacity?.endDate) {
+  if (novelty.tracksIncapacity && incapacity?.startDate && incapacity?.endDate) {
     const { error: incapacityError } = await supabaseAdmin.from('incapacitados').insert({
       employee_id: freshEmployee.id,
       documento,
@@ -681,6 +694,7 @@ async function registerNovelty(phone, employee, novelty, selectedSede = null, in
       fecha_fin: incapacity.endDate,
       estado: 'activo',
       source: novelty.label,
+      canal_registro: 'whatsapp',
       whatsapp_message_id: `${attendanceId}_${novelty.code}`
     });
     if (incapacityError) throw incapacityError;
@@ -693,6 +707,13 @@ async function registerNovelty(phone, employee, novelty, selectedSede = null, in
     session_state: SESSION.COMPLETED,
     session_data: { employee: sessionEmployee(freshEmployee) }
   });
+
+  const supportMessage = buildSupportMessage(novelty, incapacity);
+  if (supportMessage) {
+    await sendText(phone, supportMessage);
+    return;
+  }
+
   await sendText(phone, `Registro confirmado. Fecha: ${formatDateForHumans(date)}, Hora: ${time}, Novedad: ${novelty.label}, Muchas Gracias.`);
 }
 
@@ -2008,6 +2029,21 @@ async function findActiveIncapacity(documento, date) {
   return data || null;
 }
 
+async function findOverlappingIncapacity(documento, startDate, endDate) {
+  const { data, error } = await supabaseAdmin
+    .from('incapacitados')
+    .select('*')
+    .eq('documento', documento)
+    .eq('estado', 'activo')
+    .lte('fecha_inicio', endDate)
+    .gte('fecha_fin', startDate)
+    .order('fecha_inicio', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  return data || null;
+}
+
 async function reloadEmployeeForAttendance(employee) {
   const employeeId = String(employee?.id || '').trim();
   if (employeeId) {
@@ -2143,8 +2179,65 @@ function mapNovelty(parsed) {
   if (normalizedId === normalizeKey(MENU_IDS.NOVELTY_ACCIDENT) || normalizedValue === 'accidentelaboral') return NOVELTIES.ACCIDENT;
   if (normalizedId === normalizeKey(MENU_IDS.NOVELTY_CALAMITY) || normalizedValue === 'calamidad') return NOVELTIES.CALAMITY;
   if (normalizedId === normalizeKey(MENU_IDS.NOVELTY_UNPAID) || normalizedValue === 'licencianoremunerada') return NOVELTIES.UNPAID_LEAVE;
+  if (normalizedId === normalizeKey(MENU_IDS.NOVELTY_PAID) || normalizedValue === 'licenciaremunerada') return NOVELTIES.PAID_LEAVE;
   if (normalizedId === normalizeKey(MENU_IDS.NOVELTY_VACATIONS) || normalizedValue === 'vacaciones') return NOVELTIES.VACATIONS;
   return null;
+}
+
+function buildNoveltyRows(isSupernumerario) {
+  const rows = [
+    { id: MENU_IDS.NOVELTY_SICKNESS, title: 'Enfermedad General' },
+    { id: MENU_IDS.NOVELTY_ACCIDENT, title: 'Accidente Laboral' },
+    { id: MENU_IDS.NOVELTY_CALAMITY, title: 'Calamidad' },
+    { id: MENU_IDS.NOVELTY_UNPAID, title: 'Licencia No Remunerada' },
+    { id: MENU_IDS.NOVELTY_VACATIONS, title: 'Vacaciones' }
+  ];
+  if (!isSupernumerario) {
+    rows.push({ id: MENU_IDS.NOVELTY_PAID, title: 'Licencia Remunerada' });
+  }
+  return rows;
+}
+
+function getNoveltyDatePrompts(novelty) {
+  if (novelty?.dateContext === 'vacaciones') {
+    return {
+      startIntro: 'Selecciona las fechas de vacaciones:\n\nFecha de inicio de vacaciones, por favor escribe DD/MM/AAAA:',
+      startOnly: 'Fecha de inicio de vacaciones, por favor escribe DD/MM/AAAA:',
+      endOnly: 'Fecha de terminación de vacaciones, por favor escribe DD/MM/AAAA:'
+    };
+  }
+
+  if (novelty?.dateContext === 'licencia') {
+    return {
+      startIntro: 'Selecciona las fechas de licencia:\n\nFecha de inicio de licencia, por favor escribe DD/MM/AAAA:',
+      startOnly: 'Fecha de inicio de licencia, por favor escribe DD/MM/AAAA:',
+      endOnly: 'Fecha de terminación de licencia, por favor escribe DD/MM/AAAA:'
+    };
+  }
+
+  return {
+    startIntro: 'Selecciona las fechas de incapacidad:\n\nFecha de inicio de incapacidad, por favor escribe DD/MM/AAAA:',
+    startOnly: 'Fecha de inicio de incapacidad, por favor escribe DD/MM/AAAA:',
+    endOnly: 'Fecha de terminación de incapacidad, por favor escribe DD/MM/AAAA:'
+  };
+}
+
+function buildOverlapMessage(novelty) {
+  if (novelty?.requiresSupport) {
+    return 'Usted ya registró una incapacidad para estas fechas, por favor corrija el registro escribiendo "Hola" o comunícate con el Supervisor.';
+  }
+  return 'Usted ya registró una novedad para estas fechas, por favor corrija el registro escribiendo "Hola" o comunícate con el Supervisor.';
+}
+
+function buildSupportMessage(novelty, incapacity) {
+  if (!novelty?.requiresSupport || !incapacity?.startDate || !incapacity?.endDate) return null;
+
+  const days = countInclusiveDays(incapacity.startDate, incapacity.endDate);
+  const reminder = days > 3
+    ? '\n\nRECUERDA: Si es mayor a tres días debes cargar la historia clínica o Epicrisis.'
+    : '';
+
+  return `Por favor cargue el soporte ingresando al siguiente link:\n${EMPLOYEE_PORTAL_URL}${reminder}`;
 }
 
 function resolveSedeSelection(session, parsed, prefix) {
@@ -2277,6 +2370,14 @@ function formatDateForHumans(value) {
   const [year, month, day] = String(value || '').split('-');
   if (!year || !month || !day) return value;
   return `${day}/${month}/${year}`;
+}
+
+function countInclusiveDays(startDate, endDate) {
+  const start = new Date(`${startDate}T00:00:00Z`);
+  const end = new Date(`${endDate}T00:00:00Z`);
+  const diffMs = end.getTime() - start.getTime();
+  if (Number.isNaN(diffMs) || diffMs < 0) return 0;
+  return Math.floor(diffMs / 86400000) + 1;
 }
 
 function truncate(value, max) {

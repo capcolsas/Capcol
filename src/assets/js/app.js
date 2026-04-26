@@ -81,6 +81,12 @@ const guardWrite=(perm,fn)=> async (...args)=>{
         listDailyMetricsRange:fb.listDailyMetricsRange,
         streamDailyMetricsByDate:fb.streamDailyMetricsByDate,
         streamIncapacitadosByDate:fb.streamIncapacitadosByDate,
+        streamIncapacidades:fb.streamIncapacidades,
+        uploadIncapacidadSupport:fb.uploadIncapacidadSupport,
+        createIncapacidad:fb.createIncapacidad,
+        updateIncapacidad:fb.updateIncapacidad,
+        setIncapacidadStatus:fb.setIncapacidadStatus,
+        listIncapacidadesRange:fb.listIncapacidadesRange,
         streamImportHistory:fb.streamImportHistory, streamDailyClosures:fb.streamDailyClosures, streamWhatsAppIncoming:fb.streamWhatsAppIncoming,
         streamAttendanceByDate:fb.streamAttendanceByDate, streamAttendanceRecent:fb.streamAttendanceRecent, streamImportReplacementsByDate:fb.streamImportReplacementsByDate
       };
@@ -155,7 +161,7 @@ const guardWrite=(perm,fn)=> async (...args)=>{
   addRoute('/reports-company', ()=> requireAuth(()=> guard(PERMS.VIEW_REPORTS_COMPANY, ()=> Reports(root, deps, { variant: 'company' }))));
 
   // Supervisor/Empleado
-  addRoute('/upload', ()=> requireAuth(()=> guard(PERMS.UPLOAD_DATA, ()=> CargarDatos(root))));
+  addRoute('/upload', ()=> requireAuth(()=> guard(PERMS.UPLOAD_DATA, ()=> CargarDatos(root, deps))));
 
   startRouter();
 })();
