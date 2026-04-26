@@ -8,6 +8,7 @@ const SOURCE_OPTIONS = [
   'Accidente Laboral',
   'Calamidad',
   'Licencia No Remunerada',
+  'Licencia Remunerada',
   'Vacaciones',
   'Incapacidad'
 ];
@@ -171,6 +172,7 @@ export const CargarDatos = (mount, deps = {}) => {
 
   refreshIdentityHint();
   renderList();
+  Promise.resolve().then(() => runQuery());
 
   return () => {
     unEmployees?.();
@@ -445,10 +447,19 @@ export const CargarDatos = (mount, deps = {}) => {
 
     items[0].addEventListener('click', () => showInfoModal('Detalle de incapacidad', incapacityLines(row)));
 
+    const uploadBtn = el('button', { className: 'btn', type: 'button' }, [row?.soporteUrl ? 'Reemplazar soporte' : 'Cargar soporte']);
+    uploadBtn.addEventListener('click', () => uploadSupport(row));
+    items.push(uploadBtn);
+
     if (row?.soporteUrl) {
       const supportBtn = el('button', { className: 'btn', type: 'button' }, ['Soporte']);
       supportBtn.addEventListener('click', () => openSupport(row));
       items.push(supportBtn);
+      if (!portalMode) {
+        const pdfBtn = el('button', { className: 'btn', type: 'button' }, ['PDF']);
+        pdfBtn.addEventListener('click', () => downloadSupportPdf(row));
+        items.push(pdfBtn);
+      }
     }
 
     if (!portalMode) {
@@ -497,6 +508,52 @@ export const CargarDatos = (mount, deps = {}) => {
       if (hasQueried) await runQuery();
     } catch (error) {
       showInfoModal('No fue posible actualizar', [String(error?.message || error || 'Error desconocido.')]);
+    }
+  }
+
+  async function uploadSupport(row) {
+    try {
+      const file = await pickSupportFile();
+      if (!file) return;
+
+      if (portalMode) {
+        const supportDataUrl = await fileToDataUrl(file);
+        await deps.apiRequest(`/api/employee-incapacities/${encodeURIComponent(row.id)}/support`, {
+          method: 'POST',
+          body: JSON.stringify({
+            soporte: {
+              name: file.name,
+              dataUrl: supportDataUrl
+            }
+          })
+        });
+      } else {
+        const supportInfo = await deps.uploadIncapacidadSupport(file, {
+          documento: row?.documento,
+          employeeId: row?.employeeId
+        });
+        await deps.updateIncapacidad?.(row.id, {
+          soporteUrl: supportInfo.url,
+          soporteNombre: supportInfo.name,
+          soporteTipo: supportInfo.mimeType,
+          soporteStoragePath: supportInfo.path
+        });
+      }
+
+      if (hasQueried) await runQuery();
+      showInfoModal('Soporte actualizado', ['El soporte se cargo correctamente para la incapacidad seleccionada.']);
+    } catch (error) {
+      showInfoModal('No fue posible cargar el soporte', [String(error?.message || error || 'Error desconocido.')]);
+    }
+  }
+
+  async function downloadSupportPdf(row) {
+    try {
+      const pdfBlob = await supportBlobAsPdf(row);
+      const name = supportPdfName(row);
+      downloadBlob(pdfBlob, name);
+    } catch (error) {
+      showInfoModal('No fue posible descargar el soporte', [String(error?.message || error || 'Error desconocido.')]);
     }
   }
 };
@@ -592,6 +649,141 @@ function openSupport(row = {}) {
   const url = String(row?.soporteUrl || '').trim();
   if (!url) return;
   window.open(url, '_blank', 'noopener');
+}
+
+function pickSupportFile() {
+  return new Promise((resolve) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'application/pdf,image/png,image/jpeg,image/webp';
+    input.addEventListener('change', () => resolve(input.files?.[0] || null), { once: true });
+    input.click();
+  });
+}
+
+async function supportBlobAsPdf(row = {}) {
+  const blob = await fetchSupportBlob(row);
+  if (String(blob?.type || '').trim().toLowerCase() === 'application/pdf') return blob;
+  return imageBlobToPdfBlob(blob);
+}
+
+async function fetchSupportBlob(row = {}) {
+  const url = String(row?.soporteUrl || '').trim();
+  if (!url) throw new Error('La incapacidad no tiene soporte para descargar.');
+  const response = await fetch(url);
+  if (!response.ok) throw new Error('No fue posible descargar el soporte.');
+  return response.blob();
+}
+
+function supportPdfName(row = {}) {
+  const base = String(row?.soporteNombre || row?.documento || 'soporte')
+    .replace(/\.[a-zA-Z0-9]+$/i, '')
+    .replace(/[^a-zA-Z0-9._-]+/g, '_')
+    .trim();
+  return `${base || 'soporte'}.pdf`;
+}
+
+function downloadBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = name || 'archivo.pdf';
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function imageBlobToPdfBlob(blob) {
+  const image = await loadImageFromBlob(blob);
+  const width = Math.max(1, Number(image.naturalWidth || image.width || 1));
+  const height = Math.max(1, Number(image.naturalHeight || image.height || 1));
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('No fue posible preparar el soporte para PDF.');
+  context.fillStyle = '#ffffff';
+  context.fillRect(0, 0, width, height);
+  context.drawImage(image, 0, 0, width, height);
+  const jpegDataUrl = canvas.toDataURL('image/jpeg', 0.92);
+  const jpegBase64 = String(jpegDataUrl.split(',')[1] || '').trim();
+  if (!jpegBase64) throw new Error('No fue posible convertir la imagen a PDF.');
+  const jpegBytes = base64ToUint8Array(jpegBase64);
+  const pdfBytes = buildPdfFromJpeg(jpegBytes, width, height);
+  return new Blob([pdfBytes], { type: 'application/pdf' });
+}
+
+function loadImageFromBlob(blob) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(blob);
+    const image = new Image();
+    image.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(image);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('No fue posible leer el soporte como imagen.'));
+    };
+    image.src = url;
+  });
+}
+
+function base64ToUint8Array(base64) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
+
+function buildPdfFromJpeg(jpegBytes, width, height) {
+  const encoder = new TextEncoder();
+  const content = `q\n${width} 0 0 ${height} 0 0 cm\n/Im0 Do\nQ\n`;
+  const objects = [
+    encodePdfChunk(encoder, '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n'),
+    encodePdfChunk(encoder, '2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n'),
+    encodePdfChunk(encoder, `3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${width} ${height}] /Resources << /XObject << /Im0 4 0 R >> >> /Contents 5 0 R >>\nendobj\n`),
+    concatUint8Arrays([
+      encodePdfChunk(encoder, `4 0 obj\n<< /Type /XObject /Subtype /Image /Width ${width} /Height ${height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${jpegBytes.length} >>\nstream\n`),
+      jpegBytes,
+      encodePdfChunk(encoder, '\nendstream\nendobj\n')
+    ]),
+    encodePdfChunk(encoder, `5 0 obj\n<< /Length ${encoder.encode(content).length} >>\nstream\n${content}endstream\nendobj\n`)
+  ];
+
+  const header = encodePdfChunk(encoder, '%PDF-1.4\n%\xC2\xA5\xC2\xB1\xC3\xAB\n');
+  let offset = header.length;
+  const offsets = [0];
+  for (const object of objects) {
+    offsets.push(offset);
+    offset += object.length;
+  }
+
+  const xrefStart = offset;
+  const xrefLines = ['xref', `0 ${objects.length + 1}`, '0000000000 65535 f '];
+  for (let index = 1; index < offsets.length; index += 1) {
+    xrefLines.push(`${String(offsets[index]).padStart(10, '0')} 00000 n `);
+  }
+  const xref = encodePdfChunk(encoder, `${xrefLines.join('\n')}\n`);
+  const trailer = encodePdfChunk(encoder, `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF`);
+
+  return concatUint8Arrays([header, ...objects, xref, trailer]);
+}
+
+function encodePdfChunk(encoder, value) {
+  return encoder.encode(String(value || ''));
+}
+
+function concatUint8Arrays(chunks = []) {
+  const total = chunks.reduce((sum, chunk) => sum + (chunk?.length || 0), 0);
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return merged;
 }
 
 function incapacityLines(row = {}) {
