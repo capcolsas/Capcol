@@ -624,8 +624,13 @@ async function handleDateEnd(phone, session, value) {
     return;
   }
 
-  if (!endDate || endDate < startDate) {
+  if (!endDate) {
     await sendText(phone, getNoveltyDatePrompts(novelty).endOnly);
+    return;
+  }
+
+  if (endDate < startDate) {
+    await sendText(phone, `La fecha de terminación no puede ser menor a la fecha de inicio (${formatDateForHumans(startDate)}).\n\n${getNoveltyDatePrompts(novelty).endOnly}`);
     return;
   }
 
@@ -2339,12 +2344,18 @@ function normalizeKey(value) {
 }
 
 function parseInputDate(value) {
-  const match = String(value || '').trim().match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  const match = String(value || '').trim().match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
   if (!match) return null;
-  const [, day, month, year] = match;
+  const [, rawDay, rawMonth, year] = match;
+  const day = String(rawDay).padStart(2, '0');
+  const month = String(rawMonth).padStart(2, '0');
   const iso = `${year}-${month}-${day}`;
   const date = new Date(`${iso}T00:00:00Z`);
   if (Number.isNaN(date.getTime())) return null;
+  const utcYear = date.getUTCFullYear();
+  const utcMonth = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const utcDay = String(date.getUTCDate()).padStart(2, '0');
+  if (`${utcYear}-${utcMonth}-${utcDay}` !== iso) return null;
   return iso;
 }
 
