@@ -45,6 +45,7 @@ footerMount.replaceChildren(Footer());
 
 let unsubRoleMatrix=null; let unsubUserOverrides=null; let unsubAudit=null;
 let authSyncToken = 0;
+let routerStarted = false;
 const guardWrite=(perm,fn)=> async (...args)=>{
   if(typeof fn!=='function') return undefined;
   if(!can(perm)) throw new Error('No tienes permiso de edicion para esta seccion.');
@@ -113,9 +114,18 @@ const guardWrite=(perm,fn)=> async (...args)=>{
         if(location.hash==='' || location.hash==="#/login") navigate('/');
         else if(!sameUser) refreshRoute();
       });
+
+      if(!routerStarted){
+        startRouter();
+        routerStarted = true;
+      }
     })
     .catch((err) => {
       console.error('Supabase init failed:', err);
+      if(!routerStarted){
+        startRouter();
+        routerStarted = true;
+      }
     });
 
   addRoute('/login', ()=> Login(root, deps));
@@ -162,8 +172,6 @@ const guardWrite=(perm,fn)=> async (...args)=>{
 
   // Supervisor/Empleado
   addRoute('/upload', ()=> requireAuth(()=> guard(PERMS.UPLOAD_DATA, ()=> CargarDatos(root, deps))));
-
-  startRouter();
 })();
 function requireAuth(ok){ const { user }=getState(); if(!user){ navigate('/login'); return; } return ok?.(); }
 function guard(perm, ok){ if(!can(perm)) return block('No tienes permiso para acceder a esta sección.'); return ok?.(); }

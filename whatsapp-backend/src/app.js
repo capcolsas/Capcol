@@ -897,8 +897,9 @@ async function recomputeDailyMetrics(date) {
   const attRows = Array.isArray(attendance) ? attendance : [];
   const repRows = Array.isArray(replacements) ? replacements : [];
   const sedes = (sedesRows || []).filter((row) => String(row?.estado || 'activo').trim().toLowerCase() !== 'inactivo');
+  const scheduledSedes = sedes.filter((row) => isSedeScheduledForDate(row, day));
   const activeSedeCodes = new Set(
-    sedes
+    scheduledSedes
       .map((row) => String(row?.codigo || '').trim())
       .filter(Boolean)
   );
@@ -914,7 +915,7 @@ async function recomputeDailyMetrics(date) {
     if (!sedeCodigo || !activeSedeCodes.has(sedeCodigo)) return false;
     return !isEmployeeSupernumerarioByCargoMap(emp, cargoMap);
   }).length;
-  const planned = sedes.reduce((sum, sede) => {
+  const planned = scheduledSedes.reduce((sum, sede) => {
     const count = Number(sede?.numero_operarios ?? 0);
     return sum + (Number.isFinite(count) && count > 0 ? count : 0);
   }, 0);
