@@ -167,6 +167,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
   let employees = [];
   let sedes = [];
   let incapacitados = [];
+  let employeeDailyStatusRows = [];
 
   let unAttendance = null;
   let unReplacements = null;
@@ -243,7 +244,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
   }
 
   function canAssignReplacement(row) {
-    return classifyRow(row) === 'replace_yes';
+    return classifyRow(row) === 'replace_yes' && rowHasScheduledService(row);
   }
 
   function isSupernumerarioAttendance(row) {
@@ -495,15 +496,17 @@ export const WhatsAppLive = (mount, deps = {}) => {
   }
 
   async function refreshCurrentDaySnapshot({ silent = true } = {}) {
-    if (!deps.listAttendanceRange && !deps.listImportReplacementsRange) return;
+    if (!deps.listAttendanceRange && !deps.listImportReplacementsRange && !deps.listEmployeeDailyStatusRange) return;
     if (!silent) msg.textContent = 'Actualizando registro diario...';
     try {
-      const [att, repl] = await Promise.all([
+      const [att, repl, statusRows] = await Promise.all([
         deps.listAttendanceRange?.(today, today) || [],
-        deps.listImportReplacementsRange?.(today, today) || []
+        deps.listImportReplacementsRange?.(today, today) || [],
+        deps.listEmployeeDailyStatusRange?.(today, today) || []
       ]);
       attendance = att || [];
       replacements = repl || [];
+      employeeDailyStatusRows = statusRows || [];
       statsAttendance = attendance;
       statsReplacements = replacements;
       render();
@@ -603,14 +606,38 @@ export const WhatsAppLive = (mount, deps = {}) => {
     return String(fallback || '').trim() || sedeCodigo;
   }
 
-  function employeeInfoSnapshot(row) {
-    const empleadoId = String(row?.empleadoId || '').trim();
+  function findEmployeeForRow(row) {
+    const empleadoId = String(row?.empleadoId || row?.employeeId || '').trim();
     const documento = String(row?.documento || '').trim();
-    const emp = (employees || []).find((e) => {
+    return (employees || []).find((e) => {
       if (empleadoId && String(e?.id || '').trim() === empleadoId) return true;
       if (documento && String(e?.documento || '').trim() === documento) return true;
       return false;
     }) || null;
+  }
+
+  function employeeDailyStatusForRow(row) {
+    const fecha = String(row?.fecha || '').trim() || today;
+    const empleadoId = String(row?.empleadoId || row?.employeeId || '').trim();
+    const documento = String(row?.documento || '').trim();
+    return (employeeDailyStatusRows || []).find((status) => {
+      if (String(status?.fecha || '').trim() !== fecha) return false;
+      if (empleadoId && String(status?.employeeId || '').trim() === empleadoId) return true;
+      if (documento && String(status?.documento || '').trim() === documento) return true;
+      return false;
+    }) || null;
+  }
+
+  function rowHasScheduledService(row) {
+    const status = employeeDailyStatusForRow(row);
+    if (status) return status.servicioProgramado === true;
+    const employee = findEmployeeForRow(row);
+    return employee ? isEmployeeExpectedForDate(employee, String(row?.fecha || '').trim() || today, sedes) : false;
+  }
+
+  function employeeInfoSnapshot(row) {
+    const documento = String(row?.documento || '').trim();
+    const emp = findEmployeeForRow(row);
     const sedeCodigo = String(row?.sedeCodigo || emp?.sedeCodigo || '').trim();
     const sedeNombre = sedeNameByCode(sedeCodigo, row?.sedeNombre || emp?.sedeNombre || '');
     const sede = (sedes || []).find((s) => String(s?.codigo || '').trim() === sedeCodigo) || null;
@@ -678,6 +705,19 @@ export const WhatsAppLive = (mount, deps = {}) => {
       if (sedeCmp !== 0) return sedeCmp;
       return String(a.nombre || '').localeCompare(String(b.nombre || ''));
     });
+  }
+
+  async function refreshEmployeeDailyStatusSnapshot({ silent = true } = {}) {
+    if (!deps.listEmployeeDailyStatusRange) return [];
+    try {
+      const rows = await deps.listEmployeeDailyStatusRange(today, today);
+      employeeDailyStatusRows = rows || [];
+      render();
+      return employeeDailyStatusRows;
+    } catch (err) {
+      if (!silent) msg.textContent = `Error cargando estado operativo del dia: ${err?.message || err}`;
+      throw err;
+    }
   }
 
   function noveltyTypeLabel(row) {
@@ -749,6 +789,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
       clearPendingReplacementSelection(row);
       replacements = mergeReplacements(replacements, [assignment]);
       statsReplacements = mergeReplacements(statsReplacements, [assignment]);
+      await refreshEmployeeDailyStatusSnapshot({ silent: true });
       render();
       msg.textContent = selected ? 'Reemplazo guardado correctamente.' : 'Ausentismo guardado correctamente.';
       if (selectEl) selectEl.disabled = true;
@@ -793,14 +834,19 @@ export const WhatsAppLive = (mount, deps = {}) => {
         const canAssign = canAssignReplacement(r);
         const opts = canAssign ? optionsForRow(r) : [];
         const isSuperRow = rowClass === 'super_replacement';
+        const isReportOnly = !isSuperRow && rowClass === 'replace_yes' && !rowHasScheduledService(r);
         const baseNovedadText = String(r.novedadNombre || displayNovedad(r) || '-').trim() || '-';
-        const novedadText = isSuperRow ? `${baseNovedadText} · SUPERNUMERARIO` : baseNovedadText;
+        const novedadText = isSuperRow
+          ? `${baseNovedadText} · SUPERNUMERARIO`
+          : isReportOnly
+            ? `${baseNovedadText} · SOLO REPORTE`
+            : baseNovedadText;
         const novedadStyle = novedadTextStyleByClass(rowClass);
         const diasVal = incapacidadDaysForRow(r);
         const diasTxt = diasVal != null ? String(diasVal) : '-';
         const diasTitle = incapacidadTooltipForRow(r);
         const diasNode = el('span', diasTitle ? { title: diasTitle, style: 'cursor:help;' } : {}, [diasTxt]);
-        const replacementText = displayReplacementText(r, repl, rowClass, opts);
+        const replacementText = isReportOnly ? 'Solo reporte' : displayReplacementText(r, repl, rowClass, opts);
 
         if (isSuperRow) {
           return el('tr', { style: rowStyleByClass(rowClass) }, [
@@ -999,6 +1045,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
       const sedeTxt = sedeNameByCode(row.sedeCodigo, row.sedeNombre || '');
       return `REEMPLAZO EN SEDE: ${sedeTxt}`;
     }
+    if (rowClass === 'replace_yes' && !rowHasScheduledService(row)) return 'Solo reporte';
     if (!canAssignReplacement(row)) return 'No aplica';
 
     const decision = String(repl?.decision || '').trim().toLowerCase();
@@ -1025,6 +1072,12 @@ export const WhatsAppLive = (mount, deps = {}) => {
 
   function calculateStats() {
     const dayRows = (statsAttendance || []).filter((r) => String(r.fecha || '').trim() === today);
+    const operationalDayRows = dayRows.filter((row) => rowHasScheduledService(row));
+    const operationalStatusRows = (employeeDailyStatusRows || []).filter((row) =>
+      String(row?.fecha || '').trim() === today
+      && String(row?.tipoPersonal || '').trim() === 'empleado'
+      && row?.servicioProgramado === true
+    );
     const activeSedes = (sedes || []).filter((s) => String(s?.estado || 'activo').trim().toLowerCase() !== 'inactivo');
     const expectedLocal = (employees || []).filter((e) => {
       if (String(e?.estado || '').trim().toLowerCase() !== 'activo') return false;
@@ -1043,8 +1096,8 @@ export const WhatsAppLive = (mount, deps = {}) => {
       const key = replacementRowKey(r);
       replMap.set(key, r);
     });
-    const registeredLocal = dayRows.filter((row) => !isSupernumerarioAttendance(row)).length;
-    const attendanceLocal = dayRows.filter((row) => {
+    const registeredLocal = operationalDayRows.filter((row) => !isSupernumerarioAttendance(row)).length;
+    const attendanceLocal = operationalDayRows.filter((row) => {
       if (isSupernumerarioAttendance(row)) return false;
       const key = replacementRowKey({ fecha: row.fecha, empleadoId: row.empleadoId });
       const repl = replMap.get(key) || null;
@@ -1054,7 +1107,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
       }
       return true;
     }).length;
-    const absenteeismLocal = dayRows.filter((row) => {
+    const absenteeismLocal = operationalDayRows.filter((row) => {
       if (isSupernumerarioAttendance(row)) return false;
       const key = replacementRowKey({ fecha: row.fecha, empleadoId: row.empleadoId });
       const repl = replMap.get(key) || null;
@@ -1062,8 +1115,8 @@ export const WhatsAppLive = (mount, deps = {}) => {
       if (kind !== 'replace_yes') return false;
       return String(repl?.decision || '').trim() !== 'reemplazo';
     }).length;
-    const noveltyTotal = dayRows.filter((r) => canAssignReplacement(r)).length;
-    const noveltyHandled = dayRows.filter((r) => {
+    const noveltyTotal = operationalDayRows.filter((r) => canAssignReplacement(r)).length;
+    const noveltyHandled = operationalDayRows.filter((r) => {
       if (!canAssignReplacement(r)) return false;
       const key = replacementRowKey(r);
       const repl = replMap.get(key);
@@ -1074,10 +1127,18 @@ export const WhatsAppLive = (mount, deps = {}) => {
     const noveltyPending = Math.max(0, noveltyTotal - noveltyHandled);
     const plannedMetric = dailyMetrics?.planned == null || dailyMetrics?.planned === '' ? null : Number(dailyMetrics.planned);
     const expectedMetric = dailyMetrics?.expected == null || dailyMetrics?.expected === '' ? null : Number(dailyMetrics.expected);
+    const absenteeismStatus = operationalStatusRows.length
+      ? operationalStatusRows.filter((row) => row?.cuentaPagoServicio === false).length
+      : null;
+    const registeredStatus = operationalStatusRows.length
+      ? operationalStatusRows.filter((row) => row?.asistio === true || row?.asistio === false).length
+      : null;
     const expected = Number.isFinite(expectedMetric) ? expectedMetric : expectedLocal;
-    const registered = registeredLocal;
+    const registered = Number.isFinite(registeredStatus) ? registeredStatus : registeredLocal;
     const attendance = Math.min(registered, attendanceLocal);
-    const absenteeism = Math.min(Math.max(0, registered - attendance), absenteeismLocal);
+    const absenteeism = Number.isFinite(absenteeismStatus)
+      ? absenteeismStatus
+      : Math.min(Math.max(0, registered - attendance), absenteeismLocal);
     const pending = Math.max(0, expected - registered);
 
     return {
@@ -1101,6 +1162,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
     replacements = [];
     statsAttendance = [];
     statsReplacements = [];
+    employeeDailyStatusRows = [];
     dailyMetrics = null;
     lastLegacyBackfillAt = 0;
     attendanceSubscribed = false;
@@ -1113,6 +1175,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
         today,
         (row) => {
           dailyMetrics = row || null;
+          refreshEmployeeDailyStatusSnapshot({ silent: true }).catch(() => {});
           loadLegacySnapshotIfNeeded();
           render();
         },
@@ -1293,6 +1356,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
   bindDateStreams();
   mount.replaceChildren(ui);
   enableSectionToggles(ui);
+  refreshEmployeeDailyStatusSnapshot({ silent: true }).catch(() => {});
 
   return () => {
     unAttendance?.();
