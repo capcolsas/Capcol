@@ -336,23 +336,32 @@ export const CargarDatos = (mount, deps = {}) => {
       }
 
       const payload = {
-        employeeId: target.employeeId,
-        documento: target.documento,
-        nombre: target.nombre,
         fechaInicio,
         fechaFin,
-        source,
-        canalRegistro: currentRow?.canalRegistro || 'portal_web',
-        soporteUrl: supportInfo.url,
-        soporteNombre: supportInfo.name,
-        soporteTipo: supportInfo.mimeType,
-        soporteStoragePath: supportInfo.path
+        source
       };
 
       if (editingId) {
+        if (target.employeeId) payload.employeeId = target.employeeId;
+        if (target.documento) payload.documento = target.documento;
+        if (target.nombre) payload.nombre = target.nombre;
+        if (supportFile) {
+          payload.soporteUrl = supportInfo.url;
+          payload.soporteNombre = supportInfo.name;
+          payload.soporteTipo = supportInfo.mimeType;
+          payload.soporteStoragePath = supportInfo.path;
+        }
         await deps.updateIncapacidad?.(editingId, payload);
         setMessage(createMsg, 'Incapacidad actualizada correctamente.', 'ok');
       } else {
+        payload.employeeId = target.employeeId;
+        payload.documento = target.documento;
+        payload.nombre = target.nombre;
+        payload.canalRegistro = currentRow?.canalRegistro || 'portal_web';
+        payload.soporteUrl = supportInfo.url;
+        payload.soporteNombre = supportInfo.name;
+        payload.soporteTipo = supportInfo.mimeType;
+        payload.soporteStoragePath = supportInfo.path;
         await deps.createIncapacidad?.(payload);
         setMessage(createMsg, 'Incapacidad registrada correctamente.', 'ok');
       }
