@@ -203,7 +203,7 @@ export const ImportHistory = (mount, deps = {}) => {
       });
       const surplusKeys = surplusStatusKeys(statusRows || [], sedeClosures || []);
 
-      detailSnapshot = (statusRows || [])
+      const mappedStatusRows = (statusRows || [])
         .slice()
         .sort((a, b) => {
           const hourA = String(attendanceByKey.get(attendanceKey(a))?.hora || '');
@@ -226,6 +226,20 @@ export const ImportHistory = (mount, deps = {}) => {
             estado: statusDetailState(statusRow, surplusKeys.has(attendanceKey(statusRow)))
           };
         });
+      const missingRows = (sedeClosures || []).flatMap((closure) => {
+        const missingCount = Math.max(0, Number(closure?.faltantes || 0));
+        const sede = String(closure?.sedeNombre || closure?.sedeCodigo || '-').trim() || '-';
+        return Array.from({ length: missingCount }, (_, index) => ({
+          fecha: date,
+          hora: '-',
+          sede,
+          documento: '-',
+          nombre: `No contratado ${index + 1}`,
+          novedad: '-',
+          estado: 'No contratado'
+        }));
+      });
+      detailSnapshot = [...mappedStatusRows, ...missingRows];
       renderDetail();
       qs('#msg', ui).textContent = 'Consulta OK';
     } catch (err) {
