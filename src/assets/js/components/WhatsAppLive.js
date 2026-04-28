@@ -115,19 +115,25 @@ export const WhatsAppLive = (mount, deps = {}) => {
     el('section', { className: 'main-card section-block mt-2' }, [
       el('h3', { className: 'section-title', style: 'margin:0;width:100%;' }, ['Pendientes de registro']),
       el('div', { style: 'display:flex;justify-content:space-between;gap:.75rem;align-items:center;flex-wrap:wrap;' }, [
-        el('span', { id: 'waPendingSummary', className: 'text-muted', style: 'font-size:.86rem;' }, ['0 empleados pendientes'])
+        el('span', { id: 'waPendingSummary', className: 'text-muted', style: 'font-size:.86rem;' }, ['0 empleados pendientes']),
+        el('div', { className: 'wa-field', style: 'min-width:220px;' }, [
+          el('label', { className: 'label', for: 'waPendingZoneFilter' }, ['Zona']),
+          el('select', { id: 'waPendingZoneFilter', className: 'input wa-input' }, [
+            el('option', { value: 'all' }, ['Todas las zonas'])
+          ])
+        ])
       ]),
       el('div', { id: 'waPendingEmpty', className: 'text-muted mt-1', style: 'display:none;' }, ['Todos los empleados esperados para hoy ya realizaron su registro.']),
       el('div', { id: 'waPendingWrap', className: 'mt-1 table-wrap' }, [
         el('table', { className: 'table wa-live-table' }, [
           el('thead', {}, [
             el('tr', {}, [
-              el('th', {}, ['Cedula']),
-              el('th', {}, ['Nombre']),
-              el('th', {}, ['Telefono']),
-              el('th', {}, ['Sede']),
-              el('th', {}, ['Dependencia']),
-              el('th', {}, ['Zona']),
+              el('th', { 'data-pending-sort': 'documento', style: 'cursor:pointer' }, ['Cedula']),
+              el('th', { 'data-pending-sort': 'nombre', style: 'cursor:pointer' }, ['Nombre']),
+              el('th', { 'data-pending-sort': 'telefono', style: 'cursor:pointer' }, ['Telefono']),
+              el('th', { 'data-pending-sort': 'sede', style: 'cursor:pointer' }, ['Sede']),
+              el('th', { 'data-pending-sort': 'dependencia', style: 'cursor:pointer' }, ['Dependencia']),
+              el('th', { 'data-pending-sort': 'zona', style: 'cursor:pointer' }, ['Zona']),
               el('th', {}, ['Info'])
             ])
           ]),
@@ -152,6 +158,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
   const btnManualClose = qs('#btnManualClose', ui);
   const pendingBody = qs('#waPendingBody', ui);
   const pendingSummary = qs('#waPendingSummary', ui);
+  const pendingZoneFilter = qs('#waPendingZoneFilter', ui);
   const pendingEmpty = qs('#waPendingEmpty', ui);
   const pendingWrap = qs('#waPendingWrap', ui);
   const statNoveltyTotal = qs('#statNoveltyTotal', ui);
@@ -179,6 +186,9 @@ export const WhatsAppLive = (mount, deps = {}) => {
   let unDailyMetrics = null;
   let sortKey = 'hora';
   let sortDir = -1;
+  let pendingSortKey = 'zona';
+  let pendingSortDir = 1;
+  let pendingZone = 'all';
   let lastLegacyBackfillAt = 0;
   let dailyMetrics = null;
   let cardFilter = 'all';
@@ -745,6 +755,23 @@ export const WhatsAppLive = (mount, deps = {}) => {
     if ([...noveltyFilter.options].some((o) => o.value === current)) noveltyFilter.value = current;
   }
 
+  function refreshPendingZoneOptions(pendingRows = []) {
+    if (!pendingZoneFilter) return;
+    const current = String(pendingZoneFilter.value || pendingZone || 'all').trim();
+    const labels = Array.from(new Set(
+      (pendingRows || [])
+        .map((row) => String(row?.zona || '').trim())
+        .filter(Boolean)
+    )).sort((a, b) => a.localeCompare(b));
+    pendingZoneFilter.replaceChildren(
+      el('option', { value: 'all' }, ['Todas las zonas']),
+      ...labels.map((label) => el('option', { value: label }, [label]))
+    );
+    if ([...pendingZoneFilter.options].some((o) => o.value === current)) pendingZoneFilter.value = current;
+    else pendingZoneFilter.value = 'all';
+    pendingZone = String(pendingZoneFilter.value || 'all').trim();
+  }
+
   async function saveReplacement(row, selectedDoc, btn, selectEl = null) {
     const selectedValue = String(selectedDoc || '').trim();
     const wantsAusentismo = selectedValue === '__ausentismo__' || !selectedValue;
@@ -817,6 +844,19 @@ export const WhatsAppLive = (mount, deps = {}) => {
     });
     const stats = calculateStats();
     const pendingEmployees = pendingEmployeesForToday();
+    const pendingRows = pendingEmployees.map((row) => ({
+      row,
+      info: employeeInfoSnapshot(row)
+    }));
+    refreshPendingZoneOptions(pendingRows.map((entry) => entry.info));
+    const filteredPendingRows = pendingRows
+      .filter(({ info }) => pendingZone === 'all' || String(info?.zona || '').trim() === pendingZone)
+      .sort((a, b) => {
+        const va = pendingSortValue(a.info, pendingSortKey);
+        const vb = pendingSortValue(b.info, pendingSortKey);
+        if (va === vb) return 0;
+        return va > vb ? pendingSortDir : -pendingSortDir;
+      });
     const totalRows = rows.length;
     const effectivePageSize = showAllRows ? Math.max(totalRows, 1) : pageSize;
     const totalPages = Math.max(1, Math.ceil(totalRows / effectivePageSize));
@@ -974,8 +1014,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
     qs('#waNoveltyHandled', ui).textContent = String(stats.noveltyHandled);
     qs('#waNoveltyPending', ui).textContent = String(stats.noveltyPending);
     pendingBody.replaceChildren(
-      ...pendingEmployees.map((row) => {
-        const info = employeeInfoSnapshot(row);
+      ...filteredPendingRows.map(({ row, info }) => {
         return el('tr', {}, [
           el('td', {}, [info.documento]),
           el('td', {}, [info.nombre]),
@@ -987,9 +1026,20 @@ export const WhatsAppLive = (mount, deps = {}) => {
         ]);
       })
     );
-    if (pendingSummary) pendingSummary.textContent = `${pendingEmployees.length} empleado${pendingEmployees.length === 1 ? '' : 's'} pendiente${pendingEmployees.length === 1 ? '' : 's'}`;
-    if (pendingEmpty) pendingEmpty.style.display = pendingEmployees.length ? 'none' : '';
-    if (pendingWrap) pendingWrap.style.display = pendingEmployees.length ? '' : 'none';
+    if (pendingSummary) {
+      const totalPending = pendingEmployees.length;
+      const visiblePending = filteredPendingRows.length;
+      pendingSummary.textContent = pendingZone === 'all'
+        ? `${totalPending} empleado${totalPending === 1 ? '' : 's'} pendiente${totalPending === 1 ? '' : 's'}`
+        : `${visiblePending} de ${totalPending} empleado${totalPending === 1 ? '' : 's'} pendiente${totalPending === 1 ? '' : 's'}`;
+    }
+    if (pendingEmpty) {
+      pendingEmpty.textContent = pendingZone === 'all'
+        ? 'Todos los empleados esperados para hoy ya realizaron su registro.'
+        : 'No hay empleados pendientes para la zona seleccionada.';
+      pendingEmpty.style.display = filteredPendingRows.length ? 'none' : '';
+    }
+    if (pendingWrap) pendingWrap.style.display = filteredPendingRows.length ? '' : 'none';
     if (pageSummary) pageSummary.textContent = totalRows ? `Mostrando ${visibleFrom}-${visibleTo} de ${totalRows}` : 'Mostrando 0 de 0';
     if (pageIndicator) pageIndicator.textContent = showAllRows ? 'Todos los registros' : (totalRows ? `Pagina ${currentPage} de ${totalPages}` : 'Pagina 0 de 0');
     if (pageSizeSelect) pageSizeSelect.value = String(pageSize);
@@ -1002,6 +1052,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
       : 'Total registros del dia: 0.';
     updateCardFilterUI();
     updateSortIndicators();
+    updatePendingSortIndicators();
   }
 
   function setCardFilter(next) {
@@ -1070,14 +1121,28 @@ export const WhatsAppLive = (mount, deps = {}) => {
     });
   }
 
+  function pendingSortValue(info, key) {
+    if (key === 'documento') return String(info?.documento || '');
+    if (key === 'nombre') return normalize(info?.nombre || '');
+    if (key === 'telefono') return String(info?.telefono || '');
+    if (key === 'sede') return normalize(info?.sede || '');
+    if (key === 'dependencia') return normalize(info?.dependencia || '');
+    if (key === 'zona') return normalize(info?.zona || '');
+    return '';
+  }
+
+  function updatePendingSortIndicators() {
+    ui.querySelectorAll('th[data-pending-sort]').forEach((th) => {
+      const base = th.dataset.baseLabel || th.textContent.replace(/\s[\^v▲▼]$/, '');
+      th.dataset.baseLabel = base;
+      const key = th.getAttribute('data-pending-sort');
+      th.textContent = pendingSortKey === key ? `${base} ${pendingSortDir === 1 ? '▲' : '▼'}` : base;
+    });
+  }
+
   function calculateStats() {
     const dayRows = (statsAttendance || []).filter((r) => String(r.fecha || '').trim() === today);
     const operationalDayRows = dayRows.filter((row) => rowHasScheduledService(row));
-    const operationalStatusRows = (employeeDailyStatusRows || []).filter((row) =>
-      String(row?.fecha || '').trim() === today
-      && String(row?.tipoPersonal || '').trim() === 'empleado'
-      && row?.servicioProgramado === true
-    );
     const activeSedes = (sedes || []).filter((s) => String(s?.estado || 'activo').trim().toLowerCase() !== 'inactivo');
     const expectedLocal = (employees || []).filter((e) => {
       if (String(e?.estado || '').trim().toLowerCase() !== 'activo') return false;
@@ -1127,19 +1192,12 @@ export const WhatsAppLive = (mount, deps = {}) => {
     const noveltyPending = Math.max(0, noveltyTotal - noveltyHandled);
     const plannedMetric = dailyMetrics?.planned == null || dailyMetrics?.planned === '' ? null : Number(dailyMetrics.planned);
     const expectedMetric = dailyMetrics?.expected == null || dailyMetrics?.expected === '' ? null : Number(dailyMetrics.expected);
-    const absenteeismStatus = operationalStatusRows.length
-      ? operationalStatusRows.filter((row) => row?.cuentaPagoServicio === false).length
-      : null;
-    const registeredStatus = operationalStatusRows.length
-      ? operationalStatusRows.filter((row) => row?.asistio === true || row?.asistio === false).length
-      : null;
     const expected = Number.isFinite(expectedMetric) ? expectedMetric : expectedLocal;
-    const registered = Number.isFinite(registeredStatus) ? registeredStatus : registeredLocal;
+    const pendingListCount = pendingEmployeesForToday().length;
+    const registered = registeredLocal;
     const attendance = Math.min(registered, attendanceLocal);
-    const absenteeism = Number.isFinite(absenteeismStatus)
-      ? absenteeismStatus
-      : Math.min(Math.max(0, registered - attendance), absenteeismLocal);
-    const pending = Math.max(0, expected - registered);
+    const absenteeism = absenteeismLocal;
+    const pending = Math.max(0, pendingListCount);
 
     return {
       planned: Number.isFinite(plannedMetric) ? plannedMetric : plannedLocal,
@@ -1233,6 +1291,10 @@ export const WhatsAppLive = (mount, deps = {}) => {
 
   searchInput.addEventListener('input', () => { resetPagination(); render(); });
   noveltyFilter?.addEventListener('change', () => { resetPagination(); render(); });
+  pendingZoneFilter?.addEventListener('change', () => {
+    pendingZone = String(pendingZoneFilter.value || 'all').trim();
+    render();
+  });
   pageSizeSelect?.addEventListener('change', () => {
     pageSize = Number(pageSizeSelect.value || 50) || 50;
     resetPagination();
@@ -1274,6 +1336,18 @@ export const WhatsAppLive = (mount, deps = {}) => {
         sortDir = key === 'hora' ? -1 : 1;
       }
       resetPagination();
+      render();
+    });
+  });
+  ui.querySelectorAll('th[data-pending-sort]').forEach((th) => {
+    th.addEventListener('click', () => {
+      const key = String(th.getAttribute('data-pending-sort') || '').trim();
+      if (!key) return;
+      if (pendingSortKey === key) pendingSortDir *= -1;
+      else {
+        pendingSortKey = key;
+        pendingSortDir = 1;
+      }
       render();
     });
   });

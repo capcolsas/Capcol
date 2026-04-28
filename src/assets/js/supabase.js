@@ -916,25 +916,24 @@ async function computeDailyClosureSnapshot(fecha) {
     if (!sedeCode) return;
     const bucket = bySede.get(sedeCode) || {
       contratados: 0,
-      asistencias: 0,
-      ausentismos: 0
+      asistencias: 0
     };
     bucket.contratados += 1;
     if (row.cuentaPagoServicio === true) bucket.asistencias += 1;
-    if (row.cuentaPagoServicio === false) bucket.ausentismos += 1;
     bySede.set(sedeCode, bucket);
   });
 
   const summary = sedes.reduce((acc, sede) => {
     const sedeCode = String(sede?.codigo || '').trim();
     const planned = Number(sede?.numeroOperarios ?? 0) || 0;
-    const counts = bySede.get(sedeCode) || { contratados: 0, asistencias: 0, ausentismos: 0 };
+    const counts = bySede.get(sedeCode) || { contratados: 0, asistencias: 0 };
+    const ausentismos = computeOperationalAbsenteeism(planned, counts.contratados, counts.asistencias);
     acc.planeados += planned;
     acc.contratados += counts.contratados;
     acc.registrados += counts.asistencias;
     acc.faltan += Math.max(0, planned - counts.contratados);
     acc.sobran += Math.max(0, counts.contratados - planned);
-    acc.ausentismos += counts.ausentismos;
+    acc.ausentismos += ausentismos;
     return acc;
   }, {
     planeados: 0,
@@ -948,13 +947,21 @@ async function computeDailyClosureSnapshot(fecha) {
 
   if (summary.planeados === 0 && summary.contratados === 0 && actualRows.length) {
     summary.registrados = actualRows.filter((row) => row.asistio === true).length;
-    summary.ausentismos = actualRows.filter((row) => row.asistio === false).length;
+    summary.ausentismos = 0;
     summary.faltan = 0;
-    summary.sobran = 0;
+    summary.sobran = actualRows.length;
   }
 
   summary.noContratados = Math.max(0, summary.planeados - summary.contratados);
   return summary;
+}
+
+function computeOperationalAbsenteeism(planeados, contratados, cubiertos) {
+  const planned = Math.max(0, Number(planeados || 0));
+  const contracted = Math.max(0, Number(contratados || 0));
+  const covered = Math.max(0, Number(cubiertos || 0));
+  if (planned <= 0) return 0;
+  return Math.max(0, Math.min(planned, contracted) - covered);
 }
 
 async function computeDailySedeClosureSnapshot(fecha) {
