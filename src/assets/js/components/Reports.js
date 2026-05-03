@@ -566,6 +566,9 @@ export const Reports = (mount, deps = {}, options = {}) => {
   function isAttendanceWithoutFsWorked(row = {}) {
     if (!row) return false;
     if (row.asistio === true) return true;
+    if (row.servicioProgramado === true && (row.servicioCubierto === true || row.cuentaPagoServicio === true || String(row?.decisionCobertura || '').trim().toLowerCase() === 'reemplazo')) {
+      return true;
+    }
     return String(row?.tipoPersonal || '').trim() === 'supernumerario'
       && String(row?.estadoDia || '').trim() === 'trabajado_reemplazo';
   }
