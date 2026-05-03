@@ -770,6 +770,9 @@ export const Reports = (mount, deps = {}, options = {}) => {
                 value = 'NOCON';
               } else {
                 value = resolveSpecialServiceWithoutFsValue(previousValues);
+                if (value && value !== 'AUS' && value !== 'NOCON') {
+                  row.asistencias += 1;
+                }
               }
             } else if (!current) {
               value = 'NOCON';
