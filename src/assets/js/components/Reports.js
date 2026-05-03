@@ -662,7 +662,7 @@ export const Reports = (mount, deps = {}, options = {}) => {
             value = String(dayStatus?.sedeCodigo || '').trim() || '-';
             row.asistencias += 1;
             if (value && value !== '-') lastAttendanceSedeCode = value;
-          } else if (day.isSpecial && lastAttendanceSedeCode) {
+          } else if (day.isSpecial && lastAttendanceSedeCode && !row.isSupernumerario) {
             value = lastAttendanceSedeCode;
             row.asistencias += 1;
           } else if (shouldUseAbsenceMarker(dayStatus)) {
