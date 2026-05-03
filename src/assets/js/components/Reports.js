@@ -563,12 +563,21 @@ export const Reports = (mount, deps = {}, options = {}) => {
     return ['incapacidad', 'vacaciones', 'compensatorio', 'ausente_con_novedad', 'ausente_sin_reemplazo', 'sin_registro'].includes(estado);
   }
 
+  function isAttendanceWithoutFsWorked(row = {}) {
+    if (!row) return false;
+    if (row.asistio === true) return true;
+    return String(row?.tipoPersonal || '').trim() === 'supernumerario'
+      && String(row?.estadoDia || '').trim() === 'trabajado_reemplazo';
+  }
+
   function normalizeAttendanceWithoutFsRows(dateFrom, dateTo, employeeRows = [], statusRows = [], cargoRows = []) {
     const days = buildAttendanceWithoutFsDays(dateFrom, dateTo);
     const cargoByCode = new Map((cargoRows || []).map((cargo) => [String(cargo?.codigo || '').trim(), cargo || {}]).filter(([key]) => Boolean(key)));
     const statusByKey = new Map();
     const lastAttendanceBeforeRangeById = new Map();
     const lastAttendanceBeforeRangeByDoc = new Map();
+    const replacementSuperKeysInRange = new Set();
+    const syntheticSupernumerariosByKey = new Map();
     (statusRows || []).forEach((row) => {
       const day = String(row?.fecha || '').trim();
       const employeeId = String(row?.employeeId || '').trim();
@@ -577,15 +586,51 @@ export const Reports = (mount, deps = {}, options = {}) => {
       const docKey = buildEmployeeStatusLookupKey(day, 'doc', document);
       if (idKey && !statusByKey.has(idKey)) statusByKey.set(idKey, row);
       if (docKey && !statusByKey.has(docKey)) statusByKey.set(docKey, row);
-      if (day && day < dateFrom && row?.asistio === true) {
+      if (day >= dateFrom && day <= dateTo && String(row?.tipoPersonal || '').trim() === 'supernumerario' && String(row?.estadoDia || '').trim() === 'trabajado_reemplazo') {
+        const employeeKey = employeeId ? `id:${employeeId}` : document ? `doc:${document}` : '';
+        if (employeeId) replacementSuperKeysInRange.add(`id:${employeeId}`);
+        if (document) replacementSuperKeysInRange.add(`doc:${document}`);
+        if (employeeKey && !syntheticSupernumerariosByKey.has(employeeKey)) {
+          syntheticSupernumerariosByKey.set(employeeKey, {
+            id: employeeId || null,
+            documento: document || null,
+            nombre: String(row?.nombre || '-').trim() || '-',
+            cargoCodigo: null,
+            cargoNombre: 'Supernumerario',
+            estado: 'activo'
+          });
+        }
+      }
+      if (day && day < dateFrom && isAttendanceWithoutFsWorked(row)) {
         const sedeCode = String(row?.sedeCodigo || '').trim();
         if (employeeId && sedeCode) lastAttendanceBeforeRangeById.set(employeeId, sedeCode);
         if (document && sedeCode) lastAttendanceBeforeRangeByDoc.set(document, sedeCode);
       }
     });
 
-    const rows = (employeeRows || [])
+    const reportEmployees = [];
+    const reportEmployeeKeys = new Set();
+    (employeeRows || [])
       .filter((employee) => isEmployeeActiveInRange(employee, dateFrom, dateTo))
+      .forEach((employee) => {
+        const employeeId = String(employee?.id || '').trim();
+        const document = String(employee?.documento || '').trim();
+        const cargoCode = String(employee?.cargoCodigo || '').trim();
+        const cargo = cargoByCode.get(cargoCode) || null;
+        const isSupernumerario = normalizeCargoAlignment(cargo?.alineacionCrud || cargo?.alineacion_crud || employee?.cargoNombre || '') === 'supernumerario';
+        if (isSupernumerario && !replacementSuperKeysInRange.has(`id:${employeeId}`) && !replacementSuperKeysInRange.has(`doc:${document}`)) return;
+        const key = employeeId ? `id:${employeeId}` : document ? `doc:${document}` : '';
+        if (key && reportEmployeeKeys.has(key)) return;
+        if (key) reportEmployeeKeys.add(key);
+        reportEmployees.push(employee);
+      });
+    syntheticSupernumerariosByKey.forEach((employee, key) => {
+      if (reportEmployeeKeys.has(key)) return;
+      reportEmployeeKeys.add(key);
+      reportEmployees.push(employee);
+    });
+
+    const rows = reportEmployees
       .sort((a, b) => {
         const byName = String(a?.nombre || '').localeCompare(String(b?.nombre || ''));
         if (byName !== 0) return byName;
@@ -613,12 +658,13 @@ export const Reports = (mount, deps = {}, options = {}) => {
             || null;
 
           let value = '';
-          if (dayStatus?.asistio === true) {
+          if (isAttendanceWithoutFsWorked(dayStatus)) {
             value = String(dayStatus?.sedeCodigo || '').trim() || '-';
             row.asistencias += 1;
             if (value && value !== '-') lastAttendanceSedeCode = value;
           } else if (day.isSpecial && lastAttendanceSedeCode) {
             value = lastAttendanceSedeCode;
+            row.asistencias += 1;
           } else if (shouldUseAbsenceMarker(dayStatus)) {
             value = `AUS-${resolveAttendanceWithoutFsAbsenceCode(dayStatus)}`;
           }
