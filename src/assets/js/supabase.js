@@ -2669,8 +2669,16 @@ export async function updateEmployee(id, data = {}) {
   const nextIngresoPreview = patch.fecha_ingreso !== undefined ? toISODate(patch.fecha_ingreso) : currentIngreso;
   const sedeChangedPreview = nextSede !== currentSede;
   const cargoChangedPreview = nextCargoCodigo !== currentCargoCodigo;
+  const assignmentIngresoPreview = toISODate(
+    data.assignmentFechaIngreso ||
+    data.fechaHistorialIngreso ||
+    data.historialFechaIngreso
+  );
   if (sedeChangedPreview && !cargoChangedPreview && patch.fecha_ingreso !== undefined && nextIngresoPreview !== currentIngreso) {
     patch.fecha_ingreso = currentRow.fecha_ingreso || null;
+  }
+  if (cargoChangedPreview && assignmentIngresoPreview) {
+    patch.fecha_ingreso = data.assignmentFechaIngreso || data.fechaHistorialIngreso || data.historialFechaIngreso;
   }
   const { data: updated, error } = await supabase.from('employees').update(patch).eq('id', id).select('*').single();
   if (error) throw error;
@@ -2694,13 +2702,12 @@ export async function updateEmployee(id, data = {}) {
       data.assignmentFechaIngreso ||
       data.fechaHistorialIngreso ||
       data.historialFechaIngreso ||
-      (cargoChanged ? (updated.fecha_ingreso || null) : null) ||
       updated.updated_at ||
       new Date().toISOString();
     const historyRetiro =
+      data.assignmentFechaRetiro ||
       data.historialFechaRetiro ||
       data.fechaHistorialRetiro ||
-      data.assignmentFechaRetiro ||
       historyIngreso ||
       updated.updated_at ||
       new Date().toISOString();
