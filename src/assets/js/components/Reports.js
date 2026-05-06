@@ -700,6 +700,18 @@ export const Reports = (mount, deps = {}, options = {}) => {
     return '';
   }
 
+  function resolveServiceWithoutFsOwnDocument(row = {}) {
+    return String(row?.documento || '').trim();
+  }
+
+  function resolveServiceWithoutFsNovedadCode(row = {}) {
+    return String(row?.novedadCodigo || '').trim();
+  }
+
+  function isServiceWithoutFsCompensatory(row = {}) {
+    return String(row?.estadoDia || '').trim().toLowerCase() === 'compensatorio';
+  }
+
   function isConfirmedServiceWithoutFsAbsence(row = {}) {
     return String(row?.decisionCobertura || '').trim().toLowerCase() === 'ausentismo';
   }
@@ -715,6 +727,31 @@ export const Reports = (mount, deps = {}, options = {}) => {
       return prev2;
     }
     return prev;
+  }
+
+  function resolveSaturdayServiceWithoutFsValue(row = {}) {
+    if (!row) return '';
+    const ownDoc = resolveServiceWithoutFsOwnDocument(row);
+    const novedadCode = resolveServiceWithoutFsNovedadCode(row);
+    if (row?.asistio === true || isServiceWithoutFsCompensatory(row) || novedadCode === '8') {
+      return { value: ownDoc, counts: Boolean(ownDoc) };
+    }
+    if (['2', '3', '4', '5', '6', '9'].includes(novedadCode)) {
+      const replacementDoc = String(row?.reemplazadoPorDocumento || '').trim();
+      if (replacementDoc) return { value: replacementDoc, counts: true };
+      return { value: 'AUS', counts: false };
+    }
+    if (ownDoc) return { value: ownDoc, counts: true };
+    return { value: 'NOCON', counts: false };
+  }
+
+  function resolveSundayHolidayServiceWithoutFsValue(row = {}) {
+    if (!row) return '';
+    const replacementDoc = String(row?.reemplazadoPorDocumento || '').trim();
+    if (replacementDoc) return { value: replacementDoc, counts: true };
+    const ownDoc = resolveServiceWithoutFsOwnDocument(row);
+    if (ownDoc) return { value: ownDoc, counts: true };
+    return { value: 'NOCON', counts: false };
   }
 
   function normalizeServicesWithoutFsRows(dateFrom, dateTo, statusRows = [], sedeRows = []) {
@@ -850,14 +887,12 @@ export const Reports = (mount, deps = {}, options = {}) => {
             let value = '';
 
             if (day.isSpecial) {
-              const workedDoc = resolveServiceWithoutFsWorkedDocument(current);
-              if (workedDoc) {
-                value = workedDoc;
-                row.asistencias += 1;
-              } else if (current && isConfirmedServiceWithoutFsAbsence(current)) {
-                value = 'AUS';
-              } else if (current) {
-                value = 'NOCON';
+              if (current) {
+                const resolved = day.isSaturday
+                  ? resolveSaturdayServiceWithoutFsValue(current)
+                  : resolveSundayHolidayServiceWithoutFsValue(current);
+                value = String(resolved?.value || '').trim();
+                if (resolved?.counts) row.asistencias += 1;
               } else {
                 value = resolveSpecialServiceWithoutFsValue(previousValues);
                 if (value && value !== 'AUS' && value !== 'NOCON') {
