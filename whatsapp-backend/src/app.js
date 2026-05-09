@@ -59,7 +59,7 @@ const MENU_IDS = {
 };
 
 const NO_REGISTERED_MESSAGE = 'No estás registrado en nuestra base de datos, por favor comunícate con tu supervisor.';
-const EMPLOYEE_PORTAL_URL = 'https://rockymed.capcol.com.co/employee.html';
+const EMPLOYEE_PORTAL_URL = 'https://www.capcol.com.co/employee.html';
 
 app.get('/health', (_req, res) => {
   res.json({ ok: true });
@@ -529,14 +529,35 @@ async function handleTransferSelection(phone, session, parsed) {
     return;
   }
 
-  const { error } = await supabaseAdmin.from('employees').update({
+  const previousEmployeeSedeSnapshot = {
+    sede_codigo: employee.sede_codigo || null,
+    sede_nombre: employee.sede_nombre || null,
+    zona_codigo: employee.zona_codigo || null,
+    zona_nombre: employee.zona_nombre || null
+  };
+
+  const transferDate = currentDate();
+  const employeeUpdatePayload = {
     sede_codigo: selected.codigo || null,
     sede_nombre: selected.nombre || null,
     zona_codigo: selected.zona_codigo || null,
     zona_nombre: selected.zona_nombre || null,
     last_modified_at: new Date().toISOString()
-  }).eq('id', employee.id);
+  };
+
+  const { error } = await supabaseAdmin.from('employees').update(employeeUpdatePayload).eq('id', employee.id);
   if (error) throw error;
+
+  try {
+    await syncEmployeeSedeHistoryAfterTransfer(employee, selected, transferDate);
+    await refreshOperationalState(transferDate);
+  } catch (historyError) {
+    await supabaseAdmin.from('employees').update({
+      ...previousEmployeeSedeSnapshot,
+      last_modified_at: new Date().toISOString()
+    }).eq('id', employee.id);
+    throw historyError;
+  }
 
   const refreshed = { ...employee, sede_codigo: selected.codigo, sede_nombre: selected.nombre, zona_codigo: selected.zona_codigo, zona_nombre: selected.zona_nombre };
   await storeSession(phone, {
@@ -546,6 +567,56 @@ async function handleTransferSelection(phone, session, parsed) {
     session_data: { employee: sessionEmployee(refreshed) }
   });
   await sendText(phone, 'Información actualizada correctamente, si no haz realizado el registro por favor escribe nuevamente "Hola".');
+}
+
+async function syncEmployeeSedeHistoryAfterTransfer(employee, selectedSede, transferDate) {
+  const employeeId = String(employee?.id || '').trim();
+  const selectedCode = String(selectedSede?.codigo || '').trim();
+  if (!employeeId || !selectedCode || !transferDate) return;
+
+  const selectedName = selectedSede?.nombre || null;
+  const previousDay = addDaysToIsoDate(transferDate, -1) || transferDate;
+
+  const { data: openRows, error: openRowsError } = await supabaseAdmin
+    .from('employee_cargo_history')
+    .select('id, employee_id, sede_codigo, fecha_ingreso, fecha_retiro, created_at')
+    .eq('employee_id', employeeId)
+    .is('fecha_retiro', null)
+    .order('created_at', { ascending: false });
+  if (openRowsError) throw openRowsError;
+
+  const normalizedOpenRows = openRows || [];
+  const openOnSelectedSede = normalizedOpenRows.find((row) => String(row?.sede_codigo || '').trim() === selectedCode) || null;
+
+  for (const row of normalizedOpenRows) {
+    if (openOnSelectedSede && row.id === openOnSelectedSede.id) continue;
+    const ingresoDate = isoDatePart(row?.fecha_ingreso);
+    let retiroDate = previousDay;
+    if (ingresoDate && retiroDate < ingresoDate) retiroDate = ingresoDate;
+    const patchedRetiro = withIsoDatePreservingTime(row?.fecha_retiro, retiroDate);
+    const { error: closeError } = await supabaseAdmin
+      .from('employee_cargo_history')
+      .update({ fecha_retiro: patchedRetiro })
+      .eq('id', row.id);
+    if (closeError) throw closeError;
+  }
+
+  if (openOnSelectedSede) return;
+
+  const transferIngreso = `${transferDate}T05:00:00+00:00`;
+  const { error: insertError } = await supabaseAdmin.from('employee_cargo_history').insert({
+    employee_id: employeeId,
+    employee_codigo: employee?.codigo || null,
+    documento: employee?.documento || null,
+    cargo_codigo: employee?.cargo_codigo || null,
+    cargo_nombre: employee?.cargo_nombre || null,
+    fecha_ingreso: transferIngreso,
+    fecha_retiro: null,
+    source: 'sede_change',
+    sede_codigo: selectedCode,
+    sede_nombre: selectedName
+  });
+  if (insertError) throw insertError;
 }
 
 async function handleWorkingSedeSelection(phone, session, parsed) {
@@ -1939,6 +2010,18 @@ function addDaysToIsoDate(value, days = 1) {
   const m = String(utc.getUTCMonth() + 1).padStart(2, '0');
   const d = String(utc.getUTCDate()).padStart(2, '0');
   return `${y}-${m}-${d}`;
+}
+
+function isoDatePart(value) {
+  return String(value || '').slice(0, 10);
+}
+
+function withIsoDatePreservingTime(originalValue, newIsoDate) {
+  const original = String(originalValue || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(newIsoDate || '').trim())) return originalValue;
+  if (!original) return `${newIsoDate}T05:00:00+00:00`;
+  if (original.length < 10) return `${newIsoDate}T05:00:00+00:00`;
+  return `${newIsoDate}${original.slice(10)}`;
 }
 
 async function isOperationDayClosed(day) {
