@@ -728,8 +728,8 @@ export const Reports = (mount, deps = {}, options = {}) => {
   }
 
   function resolveSundayServiceWithoutFsCarryValue(previousValues = []) {
-    const prev = String(previousValues[previousValues.length - 1] || '').trim();
-    if (isServiceWithoutFsDocumentValue(prev)) return prev;
+    const lastDocument = findLastServiceWithoutFsDocumentValue(previousValues);
+    if (lastDocument) return lastDocument;
     return resolveSpecialServiceWithoutFsValue(previousValues);
   }
 
@@ -1006,9 +1006,9 @@ export const Reports = (mount, deps = {}, options = {}) => {
                 : resolveSundayHolidayServiceWithoutFsValue(current);
               value = String(resolved?.value || '').trim();
             } else {
-              value = validBaseDocForDay || (day.isSunday
+              value = (day.isSunday || day.isHoliday
                 ? resolveSundayServiceWithoutFsCarryValue(history)
-                : resolveSpecialServiceWithoutFsValue(history));
+                : resolveSpecialServiceWithoutFsValue(history)) || validBaseDocForDay;
             }
           } else if (!current) {
             value = 'NOCON';
@@ -1086,9 +1086,9 @@ export const Reports = (mount, deps = {}, options = {}) => {
                 value = String(resolved?.value || '').trim();
                 if (resolved?.counts) row.asistencias += 1;
               } else {
-                value = validBaseDocForDay || (day.isSunday
+                value = (day.isSunday || day.isHoliday
                   ? resolveSundayServiceWithoutFsCarryValue(previousValues)
-                  : resolveSpecialServiceWithoutFsValue(previousValues));
+                  : resolveSpecialServiceWithoutFsValue(previousValues)) || validBaseDocForDay;
                 if (value && value !== 'AUS' && value !== 'NOCON') {
                   row.asistencias += 1;
                 }
