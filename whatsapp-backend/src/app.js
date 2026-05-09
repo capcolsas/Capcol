@@ -59,7 +59,7 @@ const MENU_IDS = {
 };
 
 const NO_REGISTERED_MESSAGE = 'No estás registrado en nuestra base de datos, por favor comunícate con tu supervisor.';
-const EMPLOYEE_PORTAL_URL = 'https://www.capcol.com.co/employee.html';
+const EMPLOYEE_PORTAL_URL = 'https://rockymed.capcol.com.co/employee.html';
 
 app.get('/health', (_req, res) => {
   res.json({ ok: true });
@@ -777,7 +777,8 @@ async function removeInvalidScheduledEmployeeDailyStatusRows(date) {
     { data: statusRows, error: statusError },
     sedesRows,
     employeesRows,
-    cargosRows
+    cargosRows,
+    employeeHistoryRows
   ] = await Promise.all([
     supabaseAdmin
       .from('employee_daily_status')
@@ -787,7 +788,8 @@ async function removeInvalidScheduledEmployeeDailyStatusRows(date) {
       .eq('servicio_programado', true),
     selectAllRows('sedes'),
     selectAllRows('employees'),
-    selectAllRows('cargos', 'codigo, alineacion_crud, nombre')
+    selectAllRows('cargos', 'codigo, alineacion_crud, nombre'),
+    selectAllRows('employee_cargo_history', 'id, employee_id, sede_codigo, fecha_ingreso, fecha_retiro, created_at')
   ]);
   if (statusError) throw statusError;
 
@@ -801,13 +803,21 @@ async function removeInvalidScheduledEmployeeDailyStatusRows(date) {
       .map((row) => [String(row?.id || '').trim(), row])
       .filter(([id]) => Boolean(id))
   );
+  const historyByEmployeeId = new Map();
+  for (const row of employeeHistoryRows || []) {
+    const employeeId = String(row?.employee_id || '').trim();
+    if (!employeeId) continue;
+    if (!historyByEmployeeId.has(employeeId)) historyByEmployeeId.set(employeeId, []);
+    historyByEmployeeId.get(employeeId).push(row);
+  }
 
   const invalidIds = (statusRows || [])
     .filter((row) => {
-      const employee = employeeById.get(String(row?.employee_id || '').trim()) || null;
+      const employeeId = String(row?.employee_id || '').trim();
+      const employee = employeeById.get(employeeId) || null;
       if (!employee) return true;
       if (isEmployeeSupernumerarioByCargoMap(employee, cargoMap)) return true;
-      return !isEmployeeAssignedToActiveSedeOnDate(employee, day, activeSedeCodes);
+      return !isEmployeeAssignedToActiveSedeOnDate(employee, day, activeSedeCodes, historyByEmployeeId.get(employeeId) || []);
     })
     .map((row) => String(row?.id || '').trim())
     .filter(Boolean);
@@ -1257,15 +1267,39 @@ function isEmployeeSupernumerarioByCargoMap(emp, cargoMap = new Map()) {
   return alignment === 'supernumerario';
 }
 
-function isEmployeeAssignedToActiveSedeOnDate(emp, selectedDate, activeSedeCodes = new Set()) {
+function resolveEmployeeAssignmentHistoryOnDate(emp, selectedDate, historyRows = []) {
+  const day = String(selectedDate || '').trim();
+  if (!day) return null;
+  const matching = (Array.isArray(historyRows) ? historyRows : []).filter((row) => {
+    const ingreso = toISODate(row?.fecha_ingreso || row?.fechaIngreso);
+    if (!ingreso || ingreso > day) return false;
+    const retiro = toISODate(row?.fecha_retiro || row?.fechaRetiro);
+    return !retiro || retiro >= day;
+  });
+  if (!matching.length) return null;
+  matching.sort((left, right) => {
+    const leftIngreso = toISODate(left?.fecha_ingreso || left?.fechaIngreso) || '';
+    const rightIngreso = toISODate(right?.fecha_ingreso || right?.fechaIngreso) || '';
+    if (leftIngreso !== rightIngreso) return rightIngreso.localeCompare(leftIngreso);
+    const leftCreated = String(left?.created_at || left?.createdAt || '').trim();
+    const rightCreated = String(right?.created_at || right?.createdAt || '').trim();
+    if (leftCreated !== rightCreated) return rightCreated.localeCompare(leftCreated);
+    return String(right?.id || '').localeCompare(String(left?.id || ''));
+  });
+  return matching[0] || null;
+}
+
+function isEmployeeAssignedToActiveSedeOnDate(emp, selectedDate, activeSedeCodes = new Set(), historyRows = []) {
   if (!selectedDate) return false;
-  const ingreso = toISODate(emp?.fecha_ingreso || emp?.fechaIngreso);
+  const assignment = resolveEmployeeAssignmentHistoryOnDate(emp, selectedDate, historyRows);
+  const source = assignment || emp;
+  const ingreso = toISODate(source?.fecha_ingreso || source?.fechaIngreso);
   if (!ingreso || ingreso > selectedDate) return false;
-  const retiro = toISODate(emp?.fecha_retiro || emp?.fechaRetiro);
+  const retiro = toISODate(source?.fecha_retiro || source?.fechaRetiro);
   const estado = String(emp?.estado || '').trim().toLowerCase();
   if (estado === 'inactivo') return Boolean(retiro && retiro >= selectedDate);
   if (retiro && retiro < selectedDate) return false;
-  const sedeCodigo = String(emp?.sede_codigo || emp?.sedeCodigo || '').trim();
+  const sedeCodigo = String(source?.sede_codigo || source?.sedeCodigo || '').trim();
   if (!sedeCodigo) return false;
   if (activeSedeCodes.size && !activeSedeCodes.has(sedeCodigo)) return false;
   return true;
