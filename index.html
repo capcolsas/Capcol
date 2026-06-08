@@ -1,31 +1,26 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="es">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Capcol | Soluciones</title>
-  <meta name="description" content="Capcol: soluciones operativas, tecnologicas y acceso a plataformas Rocky." />
+  <title>Capcol S.A.S. | Rocky</title>
+  <meta name="description" content="Rocky de Capcol: plataforma simple y de bajo costo para centralizar empleados, sedes, novedades y reportes en tiempo real." />
   <link rel="icon" type="image/png" href="src/assets/img/capcol-logo.png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700;800&family=Manrope:wght@400;500;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Manrope:wght@400;500;700;800&display=swap" rel="stylesheet" />
   <style>
     :root {
-      --bg: #e9f1fb;
-      --ink: #0f1b2d;
-      --muted: #43556e;
-      --card: #ffffff;
-      --line: #cfdceb;
-      --brand: #1f6fb2;
-      --brand-dark: #144a76;
-      --green: #2f9e44;
-      --hero-a: #0f2d4a;
-      --hero-b: #1f6fb2;
-      --hero-c: #2f9e44;
-      --shadow: 0 18px 46px rgba(13, 30, 52, 0.14);
-      --radius-xl: 26px;
-      --radius-lg: 18px;
-      --radius-sm: 12px;
+      --ink: #172033;
+      --muted: #647184;
+      --paper: #ffffff;
+      --soft: #f6f8fb;
+      --line: #dfe7ef;
+      --blue: #1769aa;
+      --navy: #102a43;
+      --green: #278b5f;
+      --gold: #b98220;
+      --shadow: 0 14px 34px rgba(16, 42, 67, 0.08);
     }
 
     * { box-sizing: border-box; }
@@ -34,784 +29,738 @@
     body {
       margin: 0;
       color: var(--ink);
-      background:
-        radial-gradient(ellipse at 12% 12%, rgba(31, 111, 178, 0.24) 0, transparent 38%),
-        radial-gradient(ellipse at 86% 6%, rgba(47, 158, 68, 0.24) 0, transparent 36%),
-        linear-gradient(180deg, #f2f7ff 0%, #e9f1fb 100%);
-      font-family: "Manrope", "Segoe UI", Tahoma, sans-serif;
-      overflow-x: hidden;
+      background: #ffffff;
+      font-family: "Manrope", "Segoe UI", sans-serif;
+      line-height: 1.55;
     }
 
-    .bg-shape {
-      position: fixed;
-      z-index: -1;
-      border-radius: 999px;
-      filter: blur(44px);
-      opacity: 0.52;
-      animation: float 11s ease-in-out infinite;
-    }
+    a { color: inherit; }
+    img { display: block; max-width: 100%; }
+    h1, h2, h3 { margin: 0; font-family: "Sora", sans-serif; line-height: 1.12; }
+    p { margin: 0; }
 
-    .bg-shape.one { width: 260px; height: 260px; top: 12vh; left: -80px; background: #88c4ff; }
-    .bg-shape.two { width: 340px; height: 340px; bottom: 10vh; right: -110px; animation-delay: 1.5s; background: #8be39d; }
-
-    .container { width: min(1160px, 92%); margin: 0 auto; }
+    .container { width: min(1120px, calc(100% - 32px)); margin: 0 auto; }
 
     .topbar {
       position: sticky;
       top: 0;
       z-index: 20;
+      background: rgba(255, 255, 255, 0.95);
+      border-bottom: 1px solid var(--line);
       backdrop-filter: blur(12px);
-      background: rgba(244, 249, 255, 0.78);
-      border-bottom: 1px solid rgba(207, 220, 235, 0.75);
     }
 
     .topbar-inner {
+      min-height: 72px;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 12px;
-      padding: 12px 0;
+      gap: 18px;
     }
 
-    .brand-mini {
-      font-family: "Sora", sans-serif;
-      font-weight: 700;
-      letter-spacing: .01em;
-      font-size: 15px;
-      color: var(--brand-dark);
-    }
-
-    .nav { display: flex; flex-wrap: wrap; gap: 8px; }
-
-    .topbar-actions {
-      display: flex;
+    .brand {
+      display: inline-flex;
       align-items: center;
       gap: 10px;
+      color: var(--navy);
+      text-decoration: none;
+      font-family: "Sora", sans-serif;
+      font-size: 14px;
+      font-weight: 800;
+    }
+
+    .brand img { width: 34px; height: 34px; object-fit: contain; }
+
+    .nav {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 4px;
+      flex-wrap: wrap;
     }
 
     .nav a {
+      padding: 8px 10px;
+      border-radius: 9px;
+      color: #334258;
       text-decoration: none;
-      color: var(--ink);
       font-size: 13px;
-      font-weight: 700;
-      border: 1px solid transparent;
-      border-radius: 999px;
-      padding: 8px 12px;
-      transition: .2s ease;
+      font-weight: 800;
     }
 
-    .nav a:hover { border-color: var(--line); background: #ffffff; color: var(--brand); }
+    .nav a:hover { background: var(--soft); color: var(--blue); }
+    .nav .rocky-link { background: var(--navy); color: #ffffff; }
 
-    .login-icon-link {
-      width: 42px;
-      height: 42px;
-      border-radius: 999px;
-      border: 1px solid rgba(31, 111, 178, 0.24);
-      background: #ffffff;
+    .products-menu {
+      position: relative;
+    }
+
+    .products-trigger {
+      min-height: 34px;
       display: inline-flex;
       align-items: center;
-      justify-content: center;
-      color: var(--brand-dark);
-      text-decoration: none;
-      box-shadow: 0 10px 24px rgba(15, 27, 45, 0.08);
-      transition: .2s ease;
+      gap: 6px;
+      padding: 8px 10px;
+      border: 0;
+      border-radius: 9px;
+      background: transparent;
+      color: #334258;
+      font: inherit;
+      font-size: 13px;
+      font-weight: 800;
+      cursor: pointer;
     }
 
-    .login-icon-link:hover {
-      transform: translateY(-1px);
-      border-color: #8ebee4;
-      color: var(--brand);
-      box-shadow: 0 12px 28px rgba(15, 27, 45, 0.12);
+    .products-trigger:hover,
+    .products-menu:focus-within .products-trigger,
+    .products-menu:hover .products-trigger {
+      background: var(--soft);
+      color: var(--blue);
     }
 
-    .login-icon-link svg {
-      width: 18px;
-      height: 18px;
+    .products-trigger::after {
+      content: "⌄";
+      font-size: 13px;
+      line-height: 1;
+    }
+
+    .products-dropdown {
+      position: absolute;
+      top: calc(100% + 8px);
+      right: 0;
+      width: 250px;
+      display: grid;
+      gap: 4px;
+      padding: 8px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #ffffff;
+      box-shadow: var(--shadow);
+      opacity: 0;
+      visibility: hidden;
+      transform: translateY(-6px);
+      transition: 0.16s ease;
+    }
+
+    .products-menu:hover .products-dropdown,
+    .products-menu:focus-within .products-dropdown {
+      opacity: 1;
+      visibility: visible;
+      transform: translateY(0);
+    }
+
+    .products-dropdown a {
+      display: grid;
+      gap: 2px;
+      padding: 10px;
+      border-radius: 10px;
+    }
+
+    .products-dropdown span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
     }
 
     .hero {
-      padding: 32px 0 20px;
+      padding: 70px 0 44px;
+      border-bottom: 1px solid var(--line);
+      background:
+        linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+    }
+
+    .hero-grid {
       display: grid;
-      gap: 18px;
-      grid-template-columns: 1.2fr .8fr;
-      align-items: stretch;
+      grid-template-columns: minmax(0, 1fr) 360px;
+      gap: 44px;
+      align-items: center;
     }
 
-    .hero-main {
-      background: linear-gradient(130deg, var(--hero-a) 0%, var(--hero-b) 60%, var(--hero-c) 100%);
-      color: #eff7ff;
-      border-radius: var(--radius-xl);
-      padding: 30px;
-      box-shadow: var(--shadow);
-      position: relative;
-      overflow: hidden;
+    .micro-logo {
+      width: 96px;
+      margin-bottom: 18px;
     }
 
-    .hero-main::after {
-      content: "";
-      position: absolute;
-      width: 220px;
-      height: 220px;
-      border-radius: 50%;
-      border: 2px solid rgba(255, 255, 255, 0.16);
-      right: -60px;
-      top: -40px;
-    }
-
-    .hero-logo {
-      width: min(420px, 100%);
-      display: block;
-      background: #fff;
-      border-radius: var(--radius-sm);
-      padding: 10px;
+    .eyebrow {
+      display: inline-flex;
+      width: fit-content;
       margin-bottom: 16px;
+      padding: 7px 10px;
+      border-radius: 999px;
+      background: #edf6fc;
+      color: var(--blue);
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
     }
 
-    h1, h2, h3 { margin: 0; font-family: "Sora", sans-serif; letter-spacing: -0.01em; }
+    .hero h1 {
+      max-width: 760px;
+      color: #0f1f33;
+      font-size: clamp(2.35rem, 5.1vw, 4.75rem);
+      letter-spacing: -0.04em;
+    }
 
-    .hero-main h1 { font-size: clamp(1.6rem, 2.8vw, 2.4rem); margin-bottom: 12px; max-width: 620px; }
-    .hero-main p { margin: 0; color: #d8ecff; max-width: 650px; font-size: 1.02rem; }
+    .hero-copy {
+      max-width: 680px;
+      margin-top: 22px;
+      color: var(--muted);
+      font-size: clamp(1rem, 1.35vw, 1.16rem);
+    }
 
-    .hero-cta { margin-top: 20px; display: flex; flex-wrap: wrap; gap: 10px; }
+    .actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 28px; }
 
     .btn {
-      text-decoration: none;
+      min-height: 44px;
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      font-weight: 700;
-      border-radius: 11px;
       padding: 11px 15px;
+      border-radius: 10px;
       border: 1px solid transparent;
-      transition: transform .15s ease, box-shadow .2s ease;
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 900;
+      transition: 0.18s ease;
       cursor: pointer;
       font-family: inherit;
-      font-size: 14px;
     }
 
-    .btn:hover { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(0,0,0,.16); }
-    .btn-light { background: #ffffff; color: #123a5d; }
-    .btn-ghost { color: #e9f4ff; border-color: rgba(255, 255, 255, 0.45); background: rgba(255, 255, 255, 0.08); }
-    .btn-primary { background: var(--brand); color: #fff; }
+    .btn:hover { transform: translateY(-2px); box-shadow: var(--shadow); }
+    .btn-primary { background: var(--blue); color: #ffffff; }
+    .btn-secondary { background: #ffffff; color: var(--navy); border-color: var(--line); }
+    .btn-dark { background: var(--navy); color: #ffffff; }
 
-    .hero-side { display: grid; gap: 12px; }
-
-    .metric {
-      background: var(--card);
-      border: 1px solid var(--line);
-      border-radius: var(--radius-lg);
-      padding: 16px;
-      box-shadow: var(--shadow);
-    }
-
-    .metric strong { display: block; font-family: "Sora", sans-serif; font-size: 1.65rem; color: var(--brand-dark); }
-    .metric span { color: var(--muted); font-size: .95rem; }
-
-    .section {
-      margin-top: 16px;
-      background: var(--card);
-      border-radius: var(--radius-lg);
-      border: 1px solid var(--line);
-      box-shadow: var(--shadow);
-      padding: 24px;
-    }
-
-    .section-title { font-size: clamp(1.24rem, 2.1vw, 1.75rem); margin-bottom: 8px; }
-    .section-intro { color: var(--muted); margin: 0; }
-
-    .grid-2, .grid-3, .grid-logos { margin-top: 14px; display: grid; gap: 12px; }
-    .grid-2 { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
-    .grid-3 { grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
-    .grid-logos { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); align-items: stretch; }
-    .activities-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
-    .activities-grid .panel { padding: 18px 14px; }
-    .activities-grid .panel h3 { font-size: .98rem; line-height: 1.2; margin-bottom: 8px; }
-    .activities-grid .panel .muted { font-size: .9rem; line-height: 1.42; }
-
-    .panel {
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      padding: 16px;
-      background: linear-gradient(180deg, #fff, #f8fbff);
-      transition: transform .18s ease, border-color .18s ease;
-    }
-
-    .panel:hover { transform: translateY(-4px); border-color: #9fc5e9; }
-
-    .badge {
-      display: inline-block;
-      border-radius: 999px;
-      background: #d8ecff;
-      color: #114876;
-      font-size: 12px;
-      font-weight: 800;
-      padding: 4px 9px;
-      margin-bottom: 9px;
-    }
-
-    .panel h3 { font-size: 1.06rem; margin-bottom: 7px; }
-    .muted { color: var(--muted); margin: 0; }
-
-    .timeline { list-style: none; margin: 14px 0 0; padding: 0; border-left: 2px solid #d7e6f6; }
-    .timeline li { position: relative; margin: 0 0 10px 14px; padding: 0 0 0 10px; color: var(--muted); }
-    .timeline li::before {
-      content: "";
-      width: 10px;
-      height: 10px;
-      border-radius: 50%;
-      position: absolute;
-      left: -21px;
-      top: 6px;
-      background: var(--brand);
-      box-shadow: 0 0 0 4px #e7f2ff;
-    }
-
-    .platform-link {
-      text-decoration: none;
-      display: inline-flex;
-      margin-top: 11px;
-      color: var(--brand);
-      border: 1px solid #c1dff8;
-      border-radius: 10px;
-      padding: 8px 11px;
-      font-weight: 800;
-      transition: .2s ease;
-      background: #f5fbff;
-    }
-
-    .platform-link:hover { background: #e8f4ff; border-color: #95c1e7; }
-    .platform-meta { margin: 2px 0 0; font-size: .94rem; line-height: 1.45; color: var(--muted); }
-
-    .banner {
-      margin-top: 16px;
-      border-radius: var(--radius-lg);
-      overflow: hidden;
-      border: 1px solid #1a4f7f;
-      background: linear-gradient(120deg, #05213c 0%, #1f6fb2 65%, #2f9e44 100%);
-      color: #ecf7ff;
-      box-shadow: var(--shadow);
-      display: grid;
-      grid-template-columns: 1.2fr .8fr;
-      gap: 12px;
+    .summary-card {
       padding: 22px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: #ffffff;
+      box-shadow: var(--shadow);
     }
 
-    .banner h2 { font-size: clamp(1.28rem, 2.3vw, 1.9rem); margin-bottom: 9px; }
-    .banner p { margin: 0; color: #d6ecff; }
+    .summary-card h2 { font-size: 1.2rem; margin-bottom: 10px; }
+    .summary-card p { color: var(--muted); }
 
-    .banner-box {
-      border: 1px dashed rgba(255,255,255,.45);
-      border-radius: 14px;
-      padding: 14px;
+    .summary-list {
       display: grid;
-      align-content: center;
-      justify-items: start;
-      gap: 9px;
-      background: rgba(255,255,255,.08);
+      gap: 10px;
+      margin-top: 18px;
     }
 
-    .mini-chip {
-      background: rgba(255,255,255,.16);
-      border: 1px solid rgba(255,255,255,.32);
-      border-radius: 999px;
-      padding: 6px 10px;
-      font-size: 12px;
-      font-weight: 700;
-    }
-
-    .logo-card {
-      border: 1px solid var(--line);
-      background: #fff;
-      border-radius: 14px;
-      padding: 14px;
-      display: grid;
-      align-items: center;
-      justify-items: center;
-      min-height: 96px;
-    }
-
-    .logo-card img {
-      max-width: 100%;
-      max-height: 46px;
-      object-fit: contain;
-      filter: saturate(1.05);
-    }
-
-    .logo-marquee {
-      margin-top: 14px;
-      overflow: hidden;
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      background: #fff;
-      padding: 10px 0;
-    }
-
-    .logo-track {
-      display: flex;
-      width: max-content;
-      gap: 12px;
-      animation: marquee 42s linear infinite;
-      will-change: transform;
-    }
-
-    .logo-pill {
-      min-width: 220px;
-      border: 1px solid var(--line);
-      background: #f8fbff;
+    .summary-list div {
+      padding: 12px;
       border-radius: 12px;
-      padding: 10px 12px;
-      display: grid;
-      justify-items: center;
-      align-items: center;
-      gap: 6px;
-    }
-
-    .logo-pill img {
-      width: 100%;
-      height: 44px;
-      object-fit: contain;
-    }
-
-    .logo-pill span {
-      font-size: 12px;
-      font-weight: 700;
+      background: var(--soft);
       color: var(--muted);
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .summary-list strong { color: var(--navy); }
+
+    .section { padding: 64px 0; }
+    .section.soft { background: var(--soft); }
+
+    .section-head {
+      display: grid;
+      grid-template-columns: minmax(0, 0.95fr) minmax(280px, 0.72fr);
+      gap: 26px;
+      align-items: end;
+      margin-bottom: 24px;
+    }
+
+    .kicker {
+      margin-bottom: 10px;
+      color: var(--blue);
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    .section h2 {
+      color: #102136;
+      font-size: clamp(1.65rem, 3vw, 2.75rem);
+      letter-spacing: -0.03em;
+    }
+
+    .section-intro { color: var(--muted); font-size: 1.01rem; }
+
+    .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+
+    .card {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 20px;
+      box-shadow: 0 10px 26px rgba(16, 42, 67, 0.06);
+    }
+
+    .card h3 { font-size: 1.04rem; margin-bottom: 9px; }
+    .card p, .card li { color: var(--muted); }
+    .card ul { margin: 12px 0 0; padding-left: 19px; }
+
+    .tag {
+      width: 38px;
+      height: 38px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 14px;
+      border-radius: 11px;
+      color: #ffffff;
+      font-weight: 900;
+      background: var(--blue);
+    }
+
+    .tag.green { background: var(--green); }
+    .tag.gold { background: var(--gold); }
+
+    .product-strip {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 22px;
+      align-items: center;
+      padding: 24px;
+      border-radius: 18px;
+      background: var(--navy);
+      color: #ffffff;
+    }
+
+    .product-strip h2 { color: #ffffff; }
+    .product-strip p { color: #cbd9e8; margin-top: 12px; max-width: 760px; }
+
+    .process {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .process li {
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: #ffffff;
+    }
+
+    .process strong {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 34px;
+      height: 34px;
+      margin-bottom: 12px;
+      border-radius: 10px;
+      background: #eaf3fb;
+      color: var(--blue);
+      font-family: "Sora", sans-serif;
+    }
+
+    .process span { display: block; color: var(--muted); }
+
+    .clients {
+      display: flex;
+      gap: 12px;
+      overflow-x: auto;
+      overscroll-behavior-inline: contain;
+      padding-bottom: 8px;
+      scroll-snap-type: inline proximity;
+    }
+
+    .clients::-webkit-scrollbar {
+      height: 8px;
+    }
+
+    .clients::-webkit-scrollbar-track {
+      background: #edf2f7;
+      border-radius: 999px;
+    }
+
+    .clients::-webkit-scrollbar-thumb {
+      background: #b7c8da;
+      border-radius: 999px;
+    }
+
+    .client-logo {
+      flex: 0 0 calc((100% - 48px) / 5);
+      min-height: 94px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      padding: 16px;
+      border-radius: 14px;
+      background: #ffffff;
+      border: 1px solid var(--line);
+      scroll-snap-align: start;
+    }
+
+    .client-logo img { max-height: 52px; width: auto; object-fit: contain; }
+
+    .client-logo span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      line-height: 1.25;
       text-align: center;
     }
 
-    ul { margin: 10px 0 0; padding-left: 18px; }
-    li { margin-bottom: 5px; }
+    .clients-track {
+      display: flex;
+      gap: 12px;
+      min-width: 100%;
+      animation: clients-scroll 24s linear infinite;
+    }
 
-    a { color: var(--brand); text-underline-offset: 2px; }
-
-    .contact-card {
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      padding: 15px;
-      background: #fff;
+    .clients:hover .clients-track {
+      animation-play-state: paused;
     }
 
     .form-grid {
       display: grid;
-      gap: 10px;
       grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
     }
 
-    .field {
-      display: grid;
-      gap: 5px;
-    }
-
+    .field { display: grid; gap: 7px; }
     .field-full { grid-column: 1 / -1; }
-
-    label {
-      font-size: 13px;
-      color: var(--muted);
-      font-weight: 700;
-    }
-
+    label { color: var(--navy); font-size: 13px; font-weight: 900; }
     input, textarea {
       width: 100%;
-      border: 1px solid #bdd5ea;
+      border: 1px solid var(--line);
       border-radius: 10px;
-      padding: 11px 12px;
-      font: inherit;
+      padding: 12px 13px;
       color: var(--ink);
-      background: #fbfdff;
-      outline: none;
+      background: #ffffff;
+      font: inherit;
     }
 
-    input:focus, textarea:focus {
-      border-color: var(--brand);
-      box-shadow: 0 0 0 3px rgba(31, 111, 178, .15);
-    }
-
-    textarea { resize: vertical; min-height: 110px; }
-
-    .form-actions { margin-top: 10px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-    .form-note { font-size: 13px; color: var(--muted); margin: 0; }
-    .form-note.ok { color: #136f3d; }
-    .form-note.error { color: #b42318; }
+    textarea { min-height: 116px; resize: vertical; }
+    .form-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 16px; }
+    .form-note { color: var(--muted); font-size: 13px; }
+    .form-note.ok { color: var(--green); font-weight: 800; }
+    .form-note.error { color: #b94343; font-weight: 800; }
 
     footer {
-      margin-top: 18px;
+      padding: 28px 0 34px;
+      background: #ffffff;
       border-top: 1px solid var(--line);
-      padding: 18px 0 28px;
       color: var(--muted);
       font-size: 14px;
     }
 
-    .reveal { opacity: 0; transform: translateY(12px); animation: reveal .7s ease forwards; }
-    .d1 { animation-delay: .1s; }
-    .d2 { animation-delay: .2s; }
-    .d3 { animation-delay: .3s; }
-    .d4 { animation-delay: .4s; }
-
-    @keyframes float { 0%, 100% { transform: translateY(0px); } 50% { transform: translateY(-16px); } }
-    @keyframes reveal { to { opacity: 1; transform: translateY(0); } }
-    @keyframes marquee { from { transform: translateX(0); } to { transform: translateX(-50%); } }
-
-    @media (max-width: 980px) {
-      .hero { grid-template-columns: 1fr; }
-      .hero-side { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-      .banner { grid-template-columns: 1fr; }
-      .activities-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .footer-grid {
+      display: grid;
+      grid-template-columns: 1.2fr repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      text-align: left;
     }
 
-    @media (max-width: 760px) {
-      .topbar-inner { flex-direction: column; align-items: flex-start; }
-      .nav { width: 100%; }
-      .hero { padding-top: 20px; }
-      .hero-main { padding: 22px; }
-      .hero-side { grid-template-columns: 1fr; }
-      .section { padding: 18px; }
-      .form-grid { grid-template-columns: 1fr; }
-      .activities-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .footer-grid strong {
+      display: block;
+      color: var(--navy);
+      font-size: 13px;
+      margin-bottom: 4px;
     }
-    @media (max-width: 560px) {
-      .activities-grid { grid-template-columns: 1fr; }
+
+    .footer-grid span { display: block; }
+
+    .reveal { animation: reveal 0.7s ease both; }
+    .d1 { animation-delay: 0.1s; }
+    .d2 { animation-delay: 0.18s; }
+    .d3 { animation-delay: 0.26s; }
+
+    @keyframes reveal {
+      from { opacity: 0; transform: translateY(14px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes clients-scroll {
+      from { transform: translateX(0); }
+      to { transform: translateX(calc(-100% - 12px)); }
+    }
+
+    @media (max-width: 960px) {
+      .topbar-inner { align-items: flex-start; flex-direction: column; padding: 12px 0; }
+      .nav { justify-content: flex-start; }
+      .products-dropdown { left: 0; right: auto; }
+      .hero-grid, .section-head, .product-strip { grid-template-columns: 1fr; }
+      .grid-3, .process, .footer-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+
+    @media (max-width: 640px) {
+      .container { width: min(100% - 22px, 1120px); }
+      .hero { padding-top: 46px; }
+      .hero h1 { font-size: 2.25rem; }
+      .grid-2, .grid-3, .form-grid, .process, .footer-grid { grid-template-columns: 1fr; }
+      .client-logo { flex-basis: min(72vw, 240px); }
+      .section { padding: 48px 0; }
     }
   </style>
 </head>
 <body>
-  <div class="bg-shape one"></div>
-  <div class="bg-shape two"></div>
-
   <header class="topbar">
     <div class="container topbar-inner">
-      <div class="brand-mini">CAPCOL | Soluciones Integrales</div>
-      <div class="topbar-actions">
-        <nav class="nav">
-          <a href="#nosotros">Nosotros</a>
-          <a href="#actividades">Actividades</a>
-          <a href="#plataformas">Plataformas</a>
-          <a href="#aliados">Aliados</a>
-          <a href="#contacto">Contacto</a>
-          <a href="#datos">Tratamiento de datos</a>
-          <a href="#propuesta">Propuesta</a>
-        </nav>
-        <a class="login-icon-link" href="access.html" target="_blank" rel="noopener noreferrer" aria-label="Ingresar a RockyDEMO" title="Ingresar a RockyDEMO">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"></path>
-            <path d="M10 17l5-5-5-5"></path>
-            <path d="M15 12H3"></path>
-          </svg>
-        </a>
-      </div>
+      <a class="brand" href="#inicio" aria-label="Capcol S.A.S.">
+        <img src="src/assets/img/capcol-logo.png" alt="Capcol" />
+        <span>CAPCOL S.A.S.</span>
+      </a>
+      <nav class="nav" aria-label="Navegación principal">
+        <div class="products-menu">
+          <button class="products-trigger" type="button" aria-haspopup="true">Productos</button>
+          <div class="products-dropdown" role="menu" aria-label="Líneas de negocio Capcol">
+            <a href="#clientes" role="menuitem">Logística de eventos<span>Operación masiva y elecciones</span></a>
+            <a href="#clientes" role="menuitem">Transporte de pasajeros<span>Rutas, control y seguimiento</span></a>
+            <a href="#clientes" role="menuitem">Proyectos de construcción<span>Planeación, ejecución y trazabilidad</span></a>
+            <a href="#rocky" role="menuitem">Desarrollo de software<span>Rocky y soluciones operativas</span></a>
+            <a href="#clientes" role="menuitem">Suministro de bienes<span>Gestión de bienes para entidades</span></a>
+          </div>
+        </div>
+        <a href="#contacto">Contacto</a>
+        <a href="#datos">Datos</a>
+        <a class="rocky-link" href="access.html" target="_blank" rel="noopener noreferrer">Ingresar a Rocky</a>
+      </nav>
     </div>
   </header>
 
-  <main class="container">
-    <section class="hero reveal">
-      <article class="hero-main d1">
-        <img class="hero-logo" src="src/assets/img/capcol-header.png" alt="Logo Capcol" />
-        <h1>Gestión, logística y tecnología para la ejecución en tiempo real</h1>
-        <p>
-          Capcol integra operación en campo, procesos administrativos y desarrollo de software para entregar resultados
-          medibles en proyectos públicos y privados en Colombia.
-        </p>
-        <div class="hero-cta">
-          <a class="btn btn-light" href="#plataformas">Ingresar a plataformas Rocky</a>
-          <a class="btn btn-ghost" href="#propuesta">Solicitar propuesta</a>
-        </div>
-      </article>
-
-      <aside class="hero-side d2">
-        <div class="metric"><strong>5</strong><span>Líneas principales de servicio</span></div>
-        <div class="metric"><strong>4</strong><span>Plataformas Rocky activas</span></div>
-        <div class="metric"><strong>100%</strong><span>Enfoque en trazabilidad operativa</span></div>
-      </aside>
-    </section>
-
-    <section class="banner reveal d2" id="institucional">
-      <div>
-        <h2>Capcol S.A.S.</h2>
-        <p>
-          "Transformamos operación en resultados: conectamos personas, procesos y tecnología para proyectos
-          con impacto real".
-        </p>
-      </div>
-      <div class="banner-box">
-        <span class="mini-chip">Presentación institucional</span>
-        <span class="mini-chip">Portafolio de servicios</span>
-        <span class="mini-chip">Cobertura nacional</span>
-        <a class="btn btn-light" href="#propuesta">Quiero una reunión comercial</a>
-      </div>
-    </section>
-
-    <section id="nosotros" class="section reveal d1">
-      <h2 class="section-title">Nosotros</h2>
-      <p class="section-intro">
-        Consultores en Administracion Publica Colombiana S.A.S. (Capcol) es una compañía enfocada en proyectos
-        administrativos, operativos, logísticos y tecnológicos para organizaciones que requieren ejecución y control.
-      </p>
-
-      <div class="grid-2">
-        <article class="panel">
-          <span class="badge">Datos de empresa</span>
-          <ul>
-            <li><strong>Razon social:</strong> Consultores en Administracion Publica Colombiana S.A.S.</li>
-            <li><strong>Nombre comercial:</strong> Capcol S.A.S.</li>
-            <li><strong>NIT:</strong> 900.939.656-7</li>
-            <li><strong>Sede principal:</strong> Caramanta, Antioquia, Colombia</li>
-          </ul>
-        </article>
-
-        <article class="panel">
-          <span class="badge">Historia</span>
-          <p class="muted">
-            Capcol nace en 2016 para unir capacidad operativa con gestión técnica. Con los años, evolucionó hacia un modelo que
-            combina operaciones en terreno con productos digitales para seguimiento y toma de decisiones.
+  <main id="inicio">
+    <section class="hero">
+      <div class="container hero-grid">
+        <div class="reveal">
+          <h1>Controla empleados, sedes y novedades en tiempo real.</h1>
+          <p class="hero-copy">
+            Rocky centraliza la operación de equipos ubicados en diferentes sedes, municipios o puntos de servicio. Menos hojas de cálculo, menos reprocesos y más información disponible para decidir.
           </p>
-          <ul class="timeline">
-            <li><strong>Constitución:</strong> 2016.</li>
-            <li><strong>Primeros proyectos operativos:</strong> 2016.</li>
-            <li><strong>Fortalecimiento en logística:</strong> 2017.</li>
-            <li><strong>Expansión a infraestructura:</strong> 2019.</li>
-            <li><strong>Inicio de desarrollo de software:</strong> 2022.</li>
-            <li><strong>Lanzamiento de plataformas Rocky:</strong> 2023.</li>
-          </ul>
-        </article>
-      </div>
-    </section>
-
-    <section id="actividades" class="section reveal d2">
-      <h2 class="section-title">Principales Actividades</h2>
-      <p class="section-intro">Servicios clave para ejecución de proyectos de alto impacto.</p>
-
-      <div class="grid-2 activities-grid">
-        <article class="panel"><span class="badge">Operación</span><h3>Logística de eventos masivos y elecciones</h3><p class="muted">Planeación, coordinación y despliegue logístico para jornadas masivas en Colombia.</p></article>
-        <article class="panel"><span class="badge">Movilidad</span><h3>Transporte de pasajeros</h3><p class="muted">Gestion de rutas, control operativo y seguimiento para movilidad segura y eficiente.</p></article>
-        <article class="panel"><span class="badge">Infraestructura</span><h3>Proyectos de construcción</h3><p class="muted">Acompañamiento a planeación y ejecución de obras con enfoque en cumplimiento y trazabilidad.</p></article>
-        <article class="panel"><span class="badge">Tecnología</span><h3>Desarrollo de software</h3><p class="muted">Diseño de sistemas y plataformas para control operativo, automatización y analítica.</p></article>
-        <article class="panel"><span class="badge">Suministro</span><h3>Suministro de bienes</h3><p class="muted">Suministro en un solo lugar de los bienes necesarios para entidades públicas, cumplimiento y agilidad</p></article>
-      </div>
-    </section>
-
-    <section id="plataformas" class="section reveal d3">
-      <h2 class="section-title">Productos y Plataformas Rocky</h2>
-      <p class="section-intro">Accesos directos a los entornos de trabajo digitales.</p>
-
-      <div class="grid-3">
-        <article class="panel">
-          <span class="badge">Plataforma</span>
-          <h3>RockyEDU</h3>
-          <p class="platform-meta">Sec. Educación Medellín</p>
-          <a class="platform-link" href="https://rockyedu.capcol.com.co/" target="_blank" rel="noopener noreferrer">Ingresar a RockyEDU</a>
-        </article>
-
-        <article class="panel">
-          <span class="badge">Plataforma</span>
-          <h3>RockyRAM</h3>
-          <p class="platform-meta">Rama Judicial Antioquia</p>
-          <a class="platform-link" href="https://rockyram.capcol.com.co/" target="_blank" rel="noopener noreferrer">Ingresar a RockyRAM</a>
-        </article>
-
-        <article class="panel">
-          <span class="badge">Plataforma</span>
-          <h3>RockyMED</h3>
-          <p class="platform-meta">Alcaldía de Medellín</p>
-          <a class="platform-link" href="https://rockymed.capcol.com.co/" target="_blank" rel="noopener noreferrer">Ingresar a RockyMED</a>
-        </article>
-
-        <article class="panel">
-          <span class="badge">Plataforma</span>
-          <h3>RockySEN</h3>
-          <p class="platform-meta">SENA Antioquia</p>
-          <a class="platform-link" href="https://rockysen.capcol.com.co/" target="_blank" rel="noopener noreferrer">Ingresar a RockySEN</a>
-        </article>
-      </div>
-    </section>
-
-    <section id="aliados" class="section reveal d3">
-      <h2 class="section-title">Aliados y Clientes</h2>
-      <p class="section-intro">Organizaciones con las que construimos operacion y tecnologia.</p>
-      <div class="logo-marquee" aria-label="Logos de aliados y clientes">
-        <div class="logo-track">
-          <article class="logo-pill">
-            <img src="src/assets/img/alcaldia-medellin.png" alt="Alcaldia de Medellin" onerror="this.style.display='none'" />
-            <span>Alcaldía de Medellín</span>
-          </article>
-          <article class="logo-pill">
-            <img src="src/assets/img/servilimpieza-logo.svg" alt="Servilimpieza" onerror="this.style.display='none'" />
-            <span>Servilimpieza</span>
-          </article>
-          <article class="logo-pill">
-            <img src="src/assets/img/alcaldia-caramanta.png" alt="Alcaldia de Caramanta" onerror="this.style.display='none'" />
-            <span>Alcaldía de Caramanta</span>
-          </article>
-          <article class="logo-pill">
-            <img src="src/assets/img/alcaldia-valdivia.png" alt="Alcaldia de Valdivia" onerror="this.style.display='none'" />
-            <span>Alcaldía de Valdivia</span>
-          </article>
-          <article class="logo-pill">
-            <img src="src/assets/img/reforestadora-integral-antioquia.png" alt="Reforestadora Integral de Antioquia" onerror="this.style.display='none'" />
-            <span>Reforestadora Integral de Antioquia</span>
-          </article>
-
-          <article class="logo-pill">
-            <img src="src/assets/img/alcaldia-medellin.png" alt="Alcaldia de Medellin" onerror="this.style.display='none'" />
-            <span>Alcaldía de Medellín</span>
-          </article>
-          <article class="logo-pill">
-            <img src="src/assets/img/servilimpieza-logo.svg" alt="Servilimpieza" onerror="this.style.display='none'" />
-            <span>Servilimpieza</span>
-          </article>
-          <article class="logo-pill">
-            <img src="src/assets/img/alcaldia-caramanta.png" alt="Alcaldia de Caramanta" onerror="this.style.display='none'" />
-            <span>Alcaldía de Caramanta</span>
-          </article>
-          <article class="logo-pill">
-            <img src="src/assets/img/alcaldia-valdivia.png" alt="Alcaldia de Valdivia" onerror="this.style.display='none'" />
-            <span>Alcaldía de Valdivia</span>
-          </article>
-          <article class="logo-pill">
-            <img src="src/assets/img/reforestadora-integral-antioquia.png" alt="Reforestadora Integral de Antioquia" onerror="this.style.display='none'" />
-            <span>Reforestadora Integral de Antioquia</span>
-          </article>
-        </div>
-      </div>
-      <div class="grid-3" style="margin-top:12px;">
-        <article class="panel"><span class="badge">Testimonio</span><p class="muted">"Capcol nos ha permitido mejorar la trazabilidad operativa y el control diario de nuestros servicios."</p></article>
-        <article class="panel"><span class="badge">Testimonio</span><p class="muted">"El equipo combina muy bien ejecucion en campo y herramientas digitales para seguimiento."</p></article>
-        <article class="panel"><span class="badge">Testimonio</span><p class="muted">"La suite Rocky facilita decision rapida con informacion consolidada y confiable."</p></article>
-      </div>
-    </section>
-
-    <section id="contacto" class="section reveal d4">
-      <h2 class="section-title">Contacto</h2>
-      <div class="grid-2">
-        <article class="contact-card">
-          <h3>Capcol S.A.S.</h3>
-          <ul>
-            <li><strong>Web:</strong> <a href="https://www.capcol.com.co" target="_blank" rel="noopener noreferrer">www.capcol.com.co</a></li>
-            <li><strong>Dirección:</strong> Calle 20 # 18-62, Caramanta, Antioquia, Colombia</li>
-            <li><strong>Teléfono:</strong> 3502624742</li>
-            <li><strong>Email:</strong> <a href="mailto:capcol@capcol.com.co">capcol@capcol.com.co</a></li>
-          </ul>
-        </article>
-
-        <article class="contact-card">
-          <h3>Atención comercial y soporte</h3>
-          <ul>
-            <li><strong>Email comercial:</strong> <a href="mailto:capcol@capcol.com.co">capcol@capcol.com.co</a></li>
-            <li><strong>Email soporte:</strong> <a href="mailto:soporte@capcol.com.co">soporte@capcol.com.co</a></li>
-            <li><strong>Teléfono de Soporte:</strong> 3502624743</li>
-            <li><strong>Horario:</strong> Lunes a viernes, 8:00 a.m. a 5:00 p.m.</li>
-          </ul>
-        </article>
-      </div>
-    </section>
-
-    <section id="propuesta" class="section reveal d4">
-      <h2 class="section-title">Solicitar Propuesta</h2>
-      <p class="section-intro">Cuéntanos tu necesidad y nuestro equipo comercial te contacta.</p>
-
-      <form id="proposalForm" class="panel" style="margin-top:12px;">
-        <div class="form-grid">
-          <div class="field">
-            <label for="name">Nombre completo</label>
-            <input id="name" name="name" type="text" required />
-          </div>
-          <div class="field">
-            <label for="email">Correo empresarial</label>
-            <input id="email" name="email" type="email" required />
-          </div>
-          <div class="field field-full">
-            <label for="subject">Asunto</label>
-            <input id="subject" name="subject" type="text" value="Solicitud de propuesta comercial" required />
-          </div>
-          <div class="field field-full">
-            <label for="message">Mensaje</label>
-            <textarea id="message" name="message" required placeholder="Describe brevemente tu proyecto o necesidad"></textarea>
+          <div class="actions">
+            <a class="btn btn-primary" href="#contacto">Solicitar demostración</a>
+            <a class="btn btn-secondary" href="#beneficios">Ver beneficios</a>
           </div>
         </div>
-        <div class="form-actions">
-          <button class="btn btn-primary" type="submit" id="submitBtn">Enviar solicitud</button>
-          <p id="formStatus" class="form-note">El formulario envia la solicitud al equipo comercial de Capcol.</p>
-        </div>
-      </form>
+
+        <aside class="summary-card reveal d1">
+          <img class="micro-logo" src="src/assets/img/rocky-logo.png" alt="Rocky" />
+          <h2>Plataforma para operación distribuida</h2>
+          <p>Una herramienta práctica para organizaciones que necesitan visibilidad operativa sin una implementación costosa.</p>
+          <div class="summary-list">
+            <div><strong>Bajo costo:</strong> implementación liviana y escalable.</div>
+            <div><strong>Tiempo real:</strong> novedades y reportes disponibles al consultar.</div>
+            <div><strong>Cobertura:</strong> empleados por sedes, zonas y contratos.</div>
+          </div>
+        </aside>
+      </div>
     </section>
 
-    <section id="datos" class="section reveal d4">
-      <h2 class="section-title">Tratamiento de Datos</h2>
-      <p class="section-intro">
-        Consultores en Administracion Publica Colombiana S.A.S. (Capcol S.A.S.) informa su politica de tratamiento
-        de datos personales, conforme a la Ley 1581 de 2012, el Decreto 1377 de 2013, el Decreto 1074 de 2015 y
-        demas normas que las modifiquen, adicionen o sustituyan.
-      </p>
-      <div class="grid-2">
-        <article class="panel">
-          <span class="badge">Responsable</span>
-          <ul>
-            <li><strong>Razon social:</strong> Consultores en Administracion Publica Colombiana S.A.S. (Capcol S.A.S.)</li>
-            <li><strong>NIT:</strong> 900.939.656-7</li>
-            <li><strong>Canal de privacidad:</strong> <a href="mailto:capcol@capcol.com.co">capcol@capcol.com.co</a></li>
-            <li><strong>Domicilio:</strong> Caramanta, Antioquia, Colombia</li>
-          </ul>
-        </article>
-        <article class="panel">
-          <span class="badge">Finalidades</span>
-          <ul>
-            <li>Gestion comercial, contractual, operativa y administrativa.</li>
-            <li>Atencion de solicitudes, PQRS, soporte y servicio al cliente.</li>
-            <li>Control de acceso a plataformas, autenticacion y seguridad digital.</li>
-            <li>Cumplimiento de obligaciones legales y requerimientos de autoridad competente.</li>
-          </ul>
-        </article>
+    <section id="rocky" class="section">
+      <div class="container product-strip reveal">
+        <div>
+          <div class="kicker" style="color:#8fd8ff;">Rocky de Capcol</div>
+          <h2>Una plataforma para ordenar operaciones con personal en campo.</h2>
+          <p>
+            Rocky está pensado para empresas y entidades que manejan empleados en ubicaciones distintas y necesitan consolidar información de forma clara, rápida y verificable.
+          </p>
+        </div>
+        <a class="btn btn-primary" href="access.html" target="_blank" rel="noopener noreferrer">Ingresar a Rocky</a>
       </div>
-      <div class="grid-2">
-        <article class="panel">
-          <span class="badge">Principios y autorizacion</span>
-          <ul>
-            <li>Capcol aplica principios de legalidad, finalidad, libertad, veracidad, transparencia, acceso restringido y seguridad.</li>
-            <li>El tratamiento se realiza con autorizacion previa, expresa e informada del titular, salvo excepciones legales.</li>
-            <li>Los datos sensibles y de menores de edad se tratan con proteccion reforzada y solo cuando sea estrictamente necesario.</li>
-          </ul>
-        </article>
-        <article class="panel">
-          <span class="badge">Derechos del titular</span>
-          <ul>
-            <li>Conocer, actualizar y rectificar sus datos personales.</li>
-            <li>Solicitar prueba de la autorizacion otorgada cuando aplique.</li>
-            <li>Ser informado sobre el uso dado a sus datos.</li>
-            <li>Presentar consultas y reclamos, y solicitar supresion o revocatoria cuando sea procedente.</li>
-          </ul>
-        </article>
+    </section>
+
+    <section id="beneficios" class="section soft">
+      <div class="container">
+        <div class="section-head reveal">
+          <div>
+            <div class="kicker">Beneficios</div>
+            <h2>Lo esencial que el cliente necesita entender.</h2>
+          </div>
+          <p class="section-intro">
+            Rocky ayuda a equipos administrativos y supervisores a tener una operación más visible, ordenada y fácil de consultar.
+          </p>
+        </div>
+
+        <div class="grid-3">
+          <article class="card reveal d1"><div class="tag">01</div><h3>Empleados centralizados</h3><p>Información del personal organizada por sede, dependencia, zona o punto geográfico.</p></article>
+          <article class="card reveal d2"><div class="tag green">02</div><h3>Novedades en tiempo real</h3><p>Registros, permisos e historial disponibles para supervisión y administración.</p></article>
+          <article class="card reveal d3"><div class="tag gold">03</div><h3>Reportes claros</h3><p>Seguimiento por sede, contrato, equipo o territorio sin depender de archivos dispersos.</p></article>
+          <article class="card reveal d1"><div class="tag">04</div><h3>Bajo costo</h3><p>Digitalización útil sin desarrollos empresariales pesados ni licencias innecesarias.</p></article>
+          <article class="card reveal d2"><div class="tag green">05</div><h3>Operación verificable</h3><p>Evidencia de movimientos, novedades y datos para control interno o contractual.</p></article>
+          <article class="card reveal d3"><div class="tag gold">06</div><h3>Soporte Capcol</h3><p>Acompañamiento de un equipo que entiende operación, administración y tecnología.</p></article>
+        </div>
       </div>
-      <div class="grid-2">
-        <article class="panel">
-          <span class="badge">Consultas y reclamos</span>
-          <ul>
-            <li>El titular podra radicar su consulta o reclamo al correo <a href="mailto:capcol@capcol.com.co">capcol@capcol.com.co</a>.</li>
-            <li><strong>Consultas:</strong> se atenderan en un termino maximo de diez (10) dias habiles, prorrogables por cinco (5) dias habiles adicionales cuando sea procedente.</li>
-            <li><strong>Reclamos:</strong> se atenderan en un termino maximo de quince (15) dias habiles, prorrogables por ocho (8) dias habiles adicionales cuando exista justa causa.</li>
-            <li>Si el reclamo esta incompleto, se solicitara subsanacion dentro de los terminos legales.</li>
-          </ul>
-        </article>
-        <article class="panel">
-          <span class="badge">Seguridad, transferencia y vigencia</span>
-          <ul>
-            <li>Capcol adopta medidas tecnicas, humanas y administrativas razonables para proteger la informacion frente a acceso no autorizado, perdida, uso indebido o fraude.</li>
-            <li>Los datos podran compartirse con encargados o terceros cuando sea necesario para la operacion contractual o por deber legal, bajo obligaciones de confidencialidad.</li>
-            <li>La informacion se conserva por el tiempo necesario para cumplir finalidades contractuales, legales y de control interno.</li>
-            <li>La presente politica puede actualizarse; su version vigente se publicara en este sitio web.</li>
-            <li><strong>Autoridad de control:</strong> Superintendencia de Industria y Comercio (SIC).</li>
-          </ul>
-        </article>
+    </section>
+
+    <section id="implementacion" class="section">
+      <div class="container">
+        <div class="section-head reveal">
+          <div>
+            <div class="kicker">Implementación</div>
+            <h2>De diagnóstico a operación activa.</h2>
+          </div>
+          <p class="section-intro">
+            Capcol acompaña la adopción de Rocky desde el levantamiento inicial hasta los primeros ciclos de operación.
+          </p>
+        </div>
+
+        <ol class="process">
+          <li class="reveal d1"><strong>1</strong><span><b>Diagnóstico:</b> empleados, sedes, zonas y reportes necesarios.</span></li>
+          <li class="reveal d2"><strong>2</strong><span><b>Configuración:</b> datos base, perfiles y reglas del proyecto.</span></li>
+          <li class="reveal d3"><strong>3</strong><span><b>Activación:</b> capacitación y primeros ciclos de uso.</span></li>
+          <li class="reveal d1"><strong>4</strong><span><b>Soporte:</b> ajustes y evolución según la operación real.</span></li>
+        </ol>
+      </div>
+    </section>
+
+    <section id="clientes" class="section soft">
+      <div class="container">
+        <div class="section-head reveal">
+          <div>
+            <div class="kicker">Clientes y aliados</div>
+            <h2>Experiencia en contextos institucionales y operativos.</h2>
+          </div>
+          <p class="section-intro">Capcol construye relaciones comerciales e institucionales alrededor de operación, logística, tecnología, suministro y soporte a proyectos.</p>
+        </div>
+        <div class="clients reveal d1" aria-label="Clientes y aliados de Capcol">
+          <div class="clients-track">
+            <div class="client-logo"><img src="src/assets/img/alcaldia-medellin.png" alt="Alcaldía de Medellín" /><span>Alcaldía de Medellín</span></div>
+            <div class="client-logo"><img src="src/assets/img/alcaldia-caramanta.png" alt="Alcaldía de Caramanta" /><span>Alcaldía de Caramanta</span></div>
+            <div class="client-logo"><img src="src/assets/img/alcaldia-valdivia.png" alt="Alcaldía de Valdivia" /><span>Alcaldía de Valdivia</span></div>
+            <div class="client-logo"><img src="src/assets/img/reforestadora-integral-antioquia.png" alt="Reforestadora Integral de Antioquia" /><span>Reforestadora Integral de Antioquia</span></div>
+            <div class="client-logo"><img src="src/assets/img/servilimpieza.png" alt="Servilimpieza" /><span>Servilimpieza</span></div>
+            <div class="client-logo"><img src="src/assets/img/ServiciosIntegrales.png" alt="Servicios Integrales S.I." /><span>Servicios Integrales S.I.</span></div>
+          </div>
+          <div class="clients-track" aria-hidden="true">
+            <div class="client-logo"><img src="src/assets/img/alcaldia-medellin.png" alt="" /><span>Alcaldía de Medellín</span></div>
+            <div class="client-logo"><img src="src/assets/img/alcaldia-caramanta.png" alt="" /><span>Alcaldía de Caramanta</span></div>
+            <div class="client-logo"><img src="src/assets/img/alcaldia-valdivia.png" alt="" /><span>Alcaldía de Valdivia</span></div>
+            <div class="client-logo"><img src="src/assets/img/reforestadora-integral-antioquia.png" alt="" /><span>Reforestadora Integral de Antioquia</span></div>
+            <div class="client-logo"><img src="src/assets/img/servilimpieza.png" alt="" /><span>Servilimpieza</span></div>
+            <div class="client-logo"><img src="src/assets/img/ServiciosIntegrales.png" alt="" /><span>Servicios Integrales S.I.</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="contacto" class="section">
+      <div class="container">
+        <div class="section-head reveal">
+          <div>
+            <div class="kicker">Contacto comercial</div>
+            <h2>Solicita una demostración de Rocky.</h2>
+          </div>
+          <p class="section-intro">Cuéntanos tu operación y revisamos cómo centralizar empleados, sedes, novedades y reportes.</p>
+        </div>
+
+        <form id="proposalForm" class="card reveal d1">
+          <div class="form-grid">
+            <div class="field">
+              <label for="name">Nombre completo</label>
+              <input id="name" name="name" type="text" required />
+            </div>
+            <div class="field">
+              <label for="email">Correo empresarial</label>
+              <input id="email" name="email" type="email" required />
+            </div>
+            <div class="field field-full">
+              <label for="subject">Asunto</label>
+              <input id="subject" name="subject" type="text" value="Solicitud de demostración de Rocky" required />
+            </div>
+            <div class="field field-full">
+              <label for="message">Mensaje</label>
+              <textarea id="message" name="message" required placeholder="Describe sedes, empleados o necesidades de seguimiento"></textarea>
+            </div>
+          </div>
+          <div class="form-actions">
+            <button class="btn btn-primary" type="submit" id="submitBtn">Enviar solicitud</button>
+            <p id="formStatus" class="form-note">El formulario envía la solicitud al equipo comercial de Capcol.</p>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <section id="datos" class="section soft">
+      <div class="container">
+        <div class="section-head reveal">
+          <div>
+            <div class="kicker">Tratamiento de datos</div>
+            <h2>Política de tratamiento de datos personales.</h2>
+          </div>
+          <p class="section-intro">
+            Consultores en Administración Pública Colombiana S.A.S. informa su política de tratamiento de datos personales conforme a la Ley 1581 de 2012, el Decreto 1377 de 2013, el Decreto 1074 de 2015 y demás normas aplicables.
+          </p>
+        </div>
+
+        <div class="grid-2">
+          <article class="card reveal d1">
+            <h3>Responsable</h3>
+            <ul>
+              <li><strong>Razón social:</strong> Consultores en Administración Pública Colombiana S.A.S. (Capcol S.A.S.)</li>
+              <li><strong>NIT:</strong> 900.939.656-7</li>
+              <li><strong>Canal de privacidad:</strong> <a href="mailto:capcol@capcol.com.co">capcol@capcol.com.co</a></li>
+              <li><strong>Domicilio:</strong> Caramanta, Antioquia, Colombia</li>
+            </ul>
+          </article>
+          <article class="card reveal d2">
+            <h3>Finalidades</h3>
+            <ul>
+              <li>Gestión comercial, contractual, operativa y administrativa.</li>
+              <li>Atención de solicitudes, PQRS, soporte y servicio al cliente.</li>
+              <li>Control de acceso a plataformas, autenticación y seguridad digital.</li>
+              <li>Cumplimiento de obligaciones legales y requerimientos de autoridad competente.</li>
+            </ul>
+          </article>
+          <article class="card reveal d1">
+            <h3>Derechos del titular</h3>
+            <ul>
+              <li>Conocer, actualizar y rectificar sus datos personales.</li>
+              <li>Solicitar prueba de la autorización otorgada cuando aplique.</li>
+              <li>Ser informado sobre el uso dado a sus datos.</li>
+              <li>Presentar consultas y reclamos, y solicitar supresión o revocatoria cuando sea procedente.</li>
+            </ul>
+          </article>
+          <article class="card reveal d2">
+            <h3>Consultas, seguridad y vigencia</h3>
+            <ul>
+              <li>El titular podrá radicar su consulta o reclamo al correo <a href="mailto:capcol@capcol.com.co">capcol@capcol.com.co</a>.</li>
+              <li>Capcol adopta medidas técnicas, humanas y administrativas razonables para proteger la información.</li>
+              <li>La información se conserva por el tiempo necesario para cumplir finalidades contractuales, legales y de control interno.</li>
+              <li><strong>Autoridad de control:</strong> Superintendencia de Industria y Comercio (SIC).</li>
+            </ul>
+          </article>
+        </div>
       </div>
     </section>
   </main>
 
   <footer>
-    <div class="container">Capcol S.A.S. | Consultores en Administracion Publica Colombiana S.A.S.</div>
+    <div class="container footer-grid">
+      <div>
+        <strong>Capcol S.A.S.</strong>
+        <span>Consultores en Administración Pública Colombiana S.A.S.</span>
+      </div>
+      <div>
+        <strong>NIT</strong>
+        <span>900.939.656-7</span>
+      </div>
+      <div>
+        <strong>Domicilio</strong>
+        <span>Caramanta, Antioquia, Colombia</span>
+      </div>
+      <div>
+        <strong>Contacto</strong>
+        <span><a href="mailto:capcol@capcol.com.co">capcol@capcol.com.co</a> | 3502624742</span>
+      </div>
+    </div>
   </footer>
 
   <script>
     const form = document.getElementById('proposalForm');
     const statusEl = document.getElementById('formStatus');
     const submitBtn = document.getElementById('submitBtn');
-    const proposalDefaultSubject = 'Solicitud de propuesta comercial';
+    const proposalDefaultSubject = 'Solicitud de demostración de Rocky';
 
     form?.addEventListener('submit', async (event) => {
       event.preventDefault();

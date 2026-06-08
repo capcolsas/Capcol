@@ -2,9 +2,9 @@
 <html lang="es" data-theme="light">
 <head>
   <meta charset="UTF-8" />
-  <title>Accesos Rocky | RockyDEMO</title>
+  <title>Accesos Rocky | Capcol</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="description" content="Centro de accesos de RockyDEMO para personal administrativo y empleados." />
+  <meta name="description" content="Centro de accesos Rocky para portales administrativos y empleados por producto." />
   <link rel="icon" type="image/png" href="src/assets/img/capcol-logo.png" />
   <link rel="stylesheet" href="src/assets/css/base.css" />
   <link rel="stylesheet" href="src/assets/css/components.css" />
@@ -13,84 +13,173 @@
   <link rel="stylesheet" href="src/assets/css/access.css" />
 </head>
 <body>
+  <header class="access-topbar">
+    <div class="access-topbar__inner">
+      <a class="access-brand" href="index.html" aria-label="Capcol S.A.S.">
+        <img src="src/assets/img/capcol-logo.png" alt="Capcol" />
+        <span>CAPCOL S.A.S.</span>
+      </a>
+      <nav class="access-nav" aria-label="Navegación de accesos">
+        <a href="#plataformas">Plataformas</a>
+        <a href="#novedades">Novedades</a>
+        <a class="access-nav__primary" href="index.html">Volver al inicio</a>
+      </nav>
+    </div>
+  </header>
+
   <main class="access-shell">
     <div class="access-shell__inner">
       <section class="access-hero">
         <div class="access-hero__copy">
-          <p class="access-hero__eyebrow">Bienvenido a Rocky</p>
-          <h1>Centro de accesos</h1>
+          <p class="access-hero__eyebrow">Centro de accesos</p>
+          <h1>Elige tu producto y tipo de ingreso</h1>
           <p>
-            Selecciona el tipo de ingreso que necesitas.
+            Accede al portal administrativo o al portal de empleados de cada plataforma Rocky.
           </p>
         </div>
-        <div class="access-hero__art">
-          <img src="src/assets/img/rocky-logo.png" alt="Rocky" />
-        </div>
       </section>
 
-      <section class="main-card access-section">
+      <section class="access-section" id="plataformas">
         <div class="access-section__head">
           <div>
-            <p class="access-section__eyebrow">Accesos</p>
-            <h2>Ingresa por el camino correcto</h2>
+            <p class="access-section__eyebrow">Productos</p>
+            <h2>Selecciona la plataforma Rocky</h2>
           </div>
-          <a class="btn" href="index.html">Volver al inicio</a>
         </div>
 
-        <div class="access-grid">
-          <article class="access-card access-card--admin">
-            <p class="access-card__tag">Administrativo</p>
-            <h3>Portal Administrativo y Operativo</h3>
-            <p>Para administradores, supervisores, editores y consultores.</p>
-            <ul class="access-list">
-              <li>Login con usuario y contraseña</li>
-              <li>Acceso a modulos administrativos y operativos</li>
-            </ul>
-            <a class="btn btn--primary" href="app.html#/login">Entrar Administrativo</a>
+        <div class="platform-grid">
+          <article class="platform-card">
+            <p class="access-card__tag">Demo interno</p>
+            <h3><img src="src/assets/img/rocky-logo.png" alt="" />RockyDEMO</h3>
+            <p>Selecciona la plataforma según tu perfil.</p>
+            <div class="platform-actions">
+              <a class="btn btn--primary" href="app.html#/login">Administrativo</a>
+              <a class="btn" href="employee.html">Empleados</a>
+            </div>
           </article>
 
-          <article class="access-card access-card--employee">
-            <p class="access-card__tag">Empleados</p>
-            <h3>Portal de empleados</h3>
-            <p>Espacio personal de los empleados</p>
-            <ul class="access-list">
-              <li>Ingreso con documento</li>
-              <li>Validacion con ultimos 4 del celular</li>
-            </ul>
-            <a class="btn btn--primary" href="employee.html">Entrar a Empleados</a>
+          <article class="platform-card">
+            <p class="access-card__tag">Sec. de Educación Medellín</p>
+            <h3><img src="src/assets/img/rocky-logo.png" alt="" />RockyEDU</h3>
+            <p>Selecciona la plataforma según tu perfil.</p>
+            <div class="platform-actions">
+              <a class="btn btn--primary" href="https://rockyedu.capcol.com.co/app.html#/login">Administrativo</a>
+              <a class="btn" href="https://rockyedu.capcol.com.co/employee.html">Empleados</a>
+            </div>
+          </article>
+
+          <article class="platform-card">
+            <p class="access-card__tag">Alcaldía de Medellín</p>
+            <h3><img src="src/assets/img/rocky-logo.png" alt="" />RockyMED</h3>
+            <p>Selecciona la plataforma según tu perfil.</p>
+            <div class="platform-actions">
+              <a class="btn btn--primary" href="https://rockymed.capcol.com.co/app.html#/login">Administrativo</a>
+              <a class="btn" href="https://rockymed.capcol.com.co/employee.html">Empleados</a>
+            </div>
+          </article>
+
+          <article class="platform-card">
+            <p class="access-card__tag">Rama Judicial Antioquia</p>
+            <h3><img src="src/assets/img/rocky-logo.png" alt="" />RockyRAM</h3>
+            <p>Selecciona la plataforma según tu perfil.</p>
+            <div class="platform-actions">
+              <a class="btn btn--primary" href="https://rockyram.capcol.com.co/app.html#/login">Administrativo</a>
+              <a class="btn" href="https://rockyram.capcol.com.co/employee.html">Empleados</a>
+            </div>
+          </article>
+
+          <article class="platform-card">
+            <p class="access-card__tag">SENA Antioquia</p>
+            <h3><img src="src/assets/img/rocky-logo.png" alt="" />RockySEN</h3>
+            <p>Selecciona la plataforma según tu perfil.</p>
+            <div class="platform-actions">
+              <a class="btn btn--primary" href="https://rockysen.capcol.com.co/app.html#/login">Administrativo</a>
+              <a class="btn" href="https://rockysen.capcol.com.co/employee.html">Empleados</a>
+            </div>
+          </article>
+
+          <article class="platform-card">
+            <p class="access-card__tag">Colegio Mayor de Antioquia</p>
+            <h3><img src="src/assets/img/rocky-logo.png" alt="" />RockyMAY</h3>
+            <p>Selecciona la plataforma según tu perfil.</p>
+            <div class="platform-actions">
+              <a class="btn btn--primary" href="https://rockymay.capcol.com.co/app.html#/login">Administrativo</a>
+              <a class="btn" href="https://rockymay.capcol.com.co/employee.html">Empleados</a>
+            </div>
+          </article>
+
+          <article class="platform-card">
+            <p class="access-card__tag">Alcaldía de Bello</p>
+            <h3><img src="src/assets/img/rocky-logo.png" alt="" />RockyBEL</h3>
+            <p>Selecciona la plataforma según tu perfil.</p>
+            <div class="platform-actions">
+              <a class="btn btn--primary" href="https://rockybel.capcol.com.co/app.html#/login">Administrativo</a>
+              <a class="btn" href="https://rockybel.capcol.com.co/employee.html">Empleados</a>
+            </div>
+          </article>
+
+          <article class="platform-card">
+            <p class="access-card__tag">Servicios Integrales S.I.</p>
+            <h3><img src="src/assets/img/rocky-logo.png" alt="" />RockySI</h3>
+            <p>Selecciona la plataforma según tu perfil.</p>
+            <div class="platform-actions">
+              <a class="btn btn--primary" href="https://rockysi.capcol.com.co/app.html#/login">Administrativo</a>
+              <a class="btn" href="https://rockysi.capcol.com.co/employee.html">Empleados</a>
+            </div>
           </article>
         </div>
       </section>
 
-      <section class="main-card access-section">
+      <section class="access-section access-section--soft" id="novedades">
         <div class="access-section__head">
           <div>
             <p class="access-section__eyebrow">Novedades</p>
-            <h2>Lo mas reciente del ingreso a plataforma</h2>
+            <h2>Información útil para el ingreso</h2>
           </div>
         </div>
 
         <div class="news-grid">
           <article class="news-card">
-            <span class="news-card__date">Actual</span>
-            <h3>Nuevo portal de empleados</h3>
-            <p>Se habilito un acceso separado para empleados para la gestiones personales.</p>
+            <span class="news-card__date">Administrativo</span>
+            <h3>Gestión operativa</h3>
+            <p>Ingreso para administradores, supervisores, editores y consultores con usuario y contraseña.</p>
           </article>
 
           <article class="news-card">
-            <span class="news-card__date">Seguridad</span>
-            <h3>Validacion con celular registrado</h3>
-            <p>El ingreso de empleados ahora valida documento y ultimos 4 digitos del celular almacenado en la base de empleados.</p>
+            <span class="news-card__date">Empleados</span>
+            <h3>Consulta personal</h3>
+            <p>Ingreso con documento y validación de los últimos 4 dígitos del celular registrado.</p>
           </article>
 
           <article class="news-card">
-            <span class="news-card__date">Experiencia</span>
-            <h3>Separacion de accesos</h3>
-            <p>El acceso administrativo y el acceso de empleados quedaron diferenciados para guiar mejor a cada perfil desde el primer clic.</p>
+            <span class="news-card__date">Soporte</span>
+            <h3>¿No sabes cuál elegir?</h3>
+            <p>Selecciona tu producto y luego el tipo de ingreso. Si no tienes acceso, contacta al equipo administrador.</p>
           </article>
         </div>
       </section>
     </div>
   </main>
+
+  <footer class="access-footer">
+    <div class="access-footer__grid">
+      <div>
+        <strong>Capcol S.A.S.</strong>
+        <span>Consultores en Administración Pública Colombiana S.A.S.</span>
+      </div>
+      <div>
+        <strong>NIT</strong>
+        <span>900.939.656-7</span>
+      </div>
+      <div>
+        <strong>Domicilio</strong>
+        <span>Caramanta, Antioquia, Colombia</span>
+      </div>
+      <div>
+        <strong>Contacto</strong>
+        <span><a href="mailto:capcol@capcol.com.co">capcol@capcol.com.co</a> | 3502624742</span>
+      </div>
+    </div>
+  </footer>
 </body>
 </html>
