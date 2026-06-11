@@ -1,4 +1,4 @@
-# RockyDEMO
+# Rocky
 
 Plataforma de gestion operativa y administrativa para el seguimiento de servicios, personal y novedades.
 
@@ -29,6 +29,16 @@ Plataforma de gestion operativa y administrativa para el seguimiento de servicio
 - Backend actual en `whatsapp-backend/`
 - Guia de migracion y despliegue en `WHATSAPP_BACKEND_MIGRATION.md`
 - Configurar nuevos secretos en `whatsapp-backend/.env` y en Vercel.
+
+## Registro QR por sede
+- Migracion requerida: `supabase/schema_operations_phase16_qr_attendance.sql`.
+- Cada sede puede activar o desactivar `qr_enabled`.
+- Si una sede tiene QR activo, el flujo WhatsApp `Soy yo -> Trabajando` solicita `Ingreso` o `Salida` y envia un QR temporal.
+- El ingreso por QR registra en `attendance`; la salida registra en `employee_daily_exits`.
+- La tablet usa `app.html#/lector-qr` y debe activarse con un token de dispositivo generado desde `Sedes`.
+- Variables opcionales del backend:
+  - `WHATSAPP_BACKEND_PUBLIC_URL` o `PUBLIC_BACKEND_URL`
+  - `ATTENDANCE_QR_TOKEN_MINUTES`
 
 ## Rutas de la app
 - `#/login`

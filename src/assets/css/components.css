@@ -499,6 +499,8 @@
 .badge{display:inline-block;padding:.18rem .58rem;border-radius:999px;border:1px solid var(--color-border);font-size:.75rem}
 .badge--ok{color:#187a46;border-color:#187a4633;background:#187a4612}
 .badge--off{color:#c43d34;border-color:#c43d3433;background:#c43d3412}
+.text-success{color:#187a46}
+.text-danger{color:#c43d34}
 .row-actions{display:inline-flex;gap:.36rem;flex-wrap:nowrap;align-items:center;white-space:nowrap}
 .row-actions .btn{padding:.4rem .62rem;font-size:.82rem;line-height:1}
 .row-actions .btn--icon{padding:0}

@@ -21,6 +21,10 @@ export const SedesAdmin=(mount,deps={})=>{
           el('option',{value:'lun_sab'},['Lunes a sabado']),
           el('option',{value:'lun_dom'},['Lunes a domingo'])
         ]) ]),
+        el('div',{},[ el('label',{className:'label'},['QR']), el('select',{id:'sQrEnabled',className:'select'},[
+          el('option',{value:'false'},['Inactivo']),
+          el('option',{value:'true'},['Activo'])
+        ]) ]),
         el('button',{id:'btnCreate',className:'btn btn--primary'},['Crear sede']),
         el('span',{id:'msgCreate',className:'text-muted'},[' '])
       ]),
@@ -41,6 +45,7 @@ export const SedesAdmin=(mount,deps={})=>{
             el('th',{'data-sort':'zonaNombre',style:'cursor:pointer'},['Zona']),
             el('th',{'data-sort':'numeroOperarios',style:'cursor:pointer'},['Operarios']),
             el('th',{'data-sort':'jornada',style:'cursor:pointer'},['Jornada']),
+            el('th',{'data-sort':'qrEnabled',style:'cursor:pointer'},['QR']),
             el('th',{'data-sort':'estado',style:'cursor:pointer'},['Estado']),
             el('th',{},['Acciones'])
           ]) ]),
@@ -140,6 +145,16 @@ export const SedesAdmin=(mount,deps={})=>{
             { value:'lun_sab', label:'Lunes a sabado' },
             { value:'lun_dom', label:'Lunes a domingo' }
           ]
+        },
+        {
+          id:'qrEnabled',
+          label:'QR',
+          type:'select',
+          value:'false',
+          options:[
+            { value:'false', label:'Inactivo' },
+            { value:'true', label:'Activo' }
+          ]
         }
       ]
     });
@@ -154,6 +169,7 @@ export const SedesAdmin=(mount,deps={})=>{
     if(!zoneCode){ alert('Selecciona una zona valida.'); return; }
     const ops=Number(opsRaw);
     if(!Number.isFinite(ops) || ops<0 || !Number.isInteger(ops)){ alert('Ingresa un numero entero de operarios valido.'); return; }
+    const qrEnabled=String(modal.values.qrEnabled||'false')==='true';
     try{
       const code=await deps.getNextSedeCode?.();
       const dep=depList.find(d=>d.codigo===depCode);
@@ -166,9 +182,10 @@ export const SedesAdmin=(mount,deps={})=>{
         zonaCodigo:zoneCode,
         zonaNombre:zone?.nombre||null,
         numeroOperarios:ops,
-        jornada
+        jornada,
+        qrEnabled
       });
-      await deps.addAuditLog?.({ targetType:'sede', targetId:id, action:'create_sede', after:{ codigo:code, nombre:name, estado:'activo', dependenciaCodigo:depCode, zonaCodigo:zoneCode, numeroOperarios:ops, jornada } });
+      await deps.addAuditLog?.({ targetType:'sede', targetId:id, action:'create_sede', after:{ codigo:code, nombre:name, estado:'activo', dependenciaCodigo:depCode, zonaCodigo:zoneCode, numeroOperarios:ops, jornada, qrEnabled } });
       alert('Sede creada OK');
     }catch(e){ alert('Error: '+(e?.message||e)); }
   }
@@ -187,6 +204,7 @@ export const SedesAdmin=(mount,deps={})=>{
     const zoneCode=resolveCode(zoneList, zoneInput.value);
     const opsRaw=qs('#sOps',ui).value.trim();
     const jornada=qs('#sJornada',ui).value;
+    const qrEnabled=qs('#sQrEnabled',ui).value==='true';
     const msg=qs('#msgCreate',ui); msg.textContent=' ';
     if(!name){ msg.textContent='Escribe el nombre de la sede.'; return; }
     if(!depCode){ msg.textContent='Selecciona una dependencia.'; return; }
@@ -205,10 +223,11 @@ export const SedesAdmin=(mount,deps={})=>{
         zonaCodigo:zoneCode,
         zonaNombre:zone?.nombre||null,
         numeroOperarios:ops,
-        jornada:jornada||'lun_vie'
+        jornada:jornada||'lun_vie',
+        qrEnabled
       });
-      await deps.addAuditLog?.({ targetType:'sede', targetId:id, action:'create_sede', after:{ codigo:code, nombre:name, estado:'activo', dependenciaCodigo:depCode, zonaCodigo:zoneCode, numeroOperarios:ops, jornada:jornada||'lun_vie' } });
-      qs('#sName',ui).value=''; qs('#sOps',ui).value=''; depInput.value=''; zoneInput.value=''; renderSelects();
+      await deps.addAuditLog?.({ targetType:'sede', targetId:id, action:'create_sede', after:{ codigo:code, nombre:name, estado:'activo', dependenciaCodigo:depCode, zonaCodigo:zoneCode, numeroOperarios:ops, jornada:jornada||'lun_vie', qrEnabled } });
+      qs('#sName',ui).value=''; qs('#sOps',ui).value=''; qs('#sQrEnabled',ui).value='false'; depInput.value=''; zoneInput.value=''; renderSelects();
       msg.textContent='Sede creada OK'; setTab('list'); setTimeout(()=> msg.textContent=' ',1200);
     }catch(e){ msg.textContent='Error: '+(e?.message||e); }
   });
@@ -223,6 +242,7 @@ export const SedesAdmin=(mount,deps={})=>{
     if(key==='zonaNombre') return (s.zonaNombre||zoneNameByCode(s.zonaCodigo)||'').toLowerCase();
     if(key==='numeroOperarios') return Number(s.numeroOperarios||0);
     if(key==='jornada') return String(s.jornada||'lun_vie').toLowerCase();
+    if(key==='qrEnabled') return s.qrEnabled===true ? 1 : 0;
     if(key==='createdAt') return toDate(s.createdAt);
     return String(s[key]??'').toLowerCase();
   }
@@ -274,9 +294,10 @@ export const SedesAdmin=(mount,deps={})=>{
     const tdZone=el('td',{},[ s.zonaNombre||zoneNameByCode(s.zonaCodigo) ]);
     const tdOps=el('td',{},[ String(s.numeroOperarios ?? '-') ]);
     const tdJornada=el('td',{},[ labelJornada(s.jornada) ]);
+    const tdQr=el('td',{},[ qrBadge(s.qrEnabled) ]);
     const tdEstado=el('td',{},[ statusBadge(s.estado) ]);
     const tdAcc=el('td',{},[ actionsCell(s) ]);
-    tr.append(tdCodigo,tdNombre,tdDep,tdZone,tdOps,tdJornada,tdEstado,tdAcc);
+    tr.append(tdCodigo,tdNombre,tdDep,tdZone,tdOps,tdJornada,tdQr,tdEstado,tdAcc);
     return tr;
   }
   function labelJornada(v){
@@ -285,6 +306,7 @@ export const SedesAdmin=(mount,deps={})=>{
     return 'Lunes a viernes';
   }
   function statusBadge(st){ return el('span',{className:'badge '+(st==='activo'?'badge--ok':'badge--off')},[st||'-']); }
+  function qrBadge(enabled){ return el('span',{className:'badge '+(enabled===true?'badge--ok':'badge--off')},[enabled===true?'Activo':'Inactivo']); }
   function formatDate(ts){ try{ const d=ts?.toDate? ts.toDate(): (ts? new Date(ts): null); return d? new Date(d).toLocaleString(): '-'; }catch{ return '-'; } }
   function auditInfoData(s){
     const hasMod = Boolean(s.lastModifiedAt || s.lastModifiedByEmail || s.lastModifiedByUid);
@@ -298,6 +320,28 @@ export const SedesAdmin=(mount,deps={})=>{
     const box=el('div',{className:'row-actions'},[]);
     const btnEdit=el('button',{className:'btn btn--icon',title:'Editar'},['\u270E']);
     btnEdit.addEventListener('click',()=>{ const tr=tbody.querySelector(`tr[data-id="${s.id}"]`); if(tr) startEdit(tr,s); });
+    const btnQr=el('button',{className:'btn btn--icon',title:'Registrar tablet QR','aria-label':'Registrar tablet QR'},['QR']);
+    btnQr.disabled=s.qrEnabled!==true;
+    btnQr.addEventListener('click',async()=>{
+      const modal=await showActionModal({
+        title:'Registrar tablet QR',
+        message:`Sede: ${s.nombre||s.codigo||'-'}`,
+        confirmText:'Generar token',
+        fields:[{ id:'deviceName', label:'Nombre de la tablet', type:'text', required:true, placeholder:'Ej: Tablet recepcion principal' }]
+      });
+      if(!modal.confirmed) return;
+      try{
+        const result=await deps.createQrDevice?.({ sedeCodigo:s.codigo, deviceName:modal.values.deviceName });
+        const token=String(result?.deviceToken||'').trim();
+        showInfoModal('Tablet QR registrada',[
+          `Sede: ${s.nombre||s.codigo||'-'}`,
+          `Tablet: ${modal.values.deviceName}`,
+          'Abre Lector QR en la tablet y pega este token de dispositivo:',
+          token
+        ]);
+        await deps.addAuditLog?.({ targetType:'sede', targetId:s.id, action:'create_qr_device', after:{ sedeCodigo:s.codigo, deviceName:modal.values.deviceName } });
+      }catch(e){ alert('Error: '+(e?.message||e)); }
+    });
     const btnToggle=el('button',{className:'btn btn--icon '+(s.estado==='activo'?'btn--danger':'' ),title:s.estado==='activo'?'Desactivar':'Activar','aria-label':s.estado==='activo'?'Desactivar':'Activar'},[ s.estado==='activo'?'\u23FB':'\u21BA' ]);
     btnToggle.addEventListener('click',async()=>{
       const target=s.estado==='activo'?'inactivo':'activo';
@@ -312,7 +356,7 @@ export const SedesAdmin=(mount,deps={})=>{
     });
     const btnInfo=el('button',{className:'btn btn--icon',title:'Ver informacion','aria-label':'Ver informacion'},['\u24D8']);
     btnInfo.addEventListener('click',()=>{ const info=auditInfoData(s); showInfoModal('Informacion del registro',[`Evento: ${info.action}`,`Usuario: ${info.user}`,`Fecha: ${info.date}`]); });
-    box.append(btnEdit,btnToggle,btnInfo); return box;
+    box.append(btnEdit,btnQr,btnToggle,btnInfo); return box;
   }
   function startEdit(tr,s){
     const cur={
@@ -321,7 +365,8 @@ export const SedesAdmin=(mount,deps={})=>{
       dependenciaCodigo:s.dependenciaCodigo||'',
       zonaCodigo:s.zonaCodigo||'',
       numeroOperarios:s.numeroOperarios ?? '',
-      jornada:s.jornada||'lun_vie'
+      jornada:s.jornada||'lun_vie',
+      qrEnabled:s.qrEnabled===true
     };
     const tds=tr.querySelectorAll('td');
     tds[0].replaceChildren(el('input',{className:'input',value:cur.codigo,style:'max-width:140px'}));
@@ -334,7 +379,11 @@ export const SedesAdmin=(mount,deps={})=>{
       el('option',{value:'lun_sab',selected:cur.jornada==='lun_sab'},['Lunes a sabado']),
       el('option',{value:'lun_dom',selected:cur.jornada==='lun_dom'},['Lunes a domingo'])
     ]));
-    tds[6].replaceChildren(statusBadge(s.estado));
+    tds[6].replaceChildren(el('select',{className:'select'},[
+      el('option',{value:'false',selected:cur.qrEnabled!==true},['Inactivo']),
+      el('option',{value:'true',selected:cur.qrEnabled===true},['Activo'])
+    ]));
+    tds[7].replaceChildren(statusBadge(s.estado));
     const box=el('div',{className:'row-actions'},[]);
     const btnSave=el('button',{className:'btn btn--primary'},['Guardar']);
     const btnCancel=el('button',{className:'btn'},['Cancelar']);
@@ -345,6 +394,7 @@ export const SedesAdmin=(mount,deps={})=>{
       const newZoneCode=resolveCode(zoneList, tds[3].querySelector('input').value);
       const newOpsRaw=tds[4].querySelector('input').value.trim();
       const newJornada=tds[5].querySelector('select').value;
+      const newQrEnabled=tds[6].querySelector('select').value==='true';
       if(!newCode||!newName) return alert('Completa codigo y nombre.');
       if(!newDepCode||!newZoneCode) return alert('Selecciona dependencia y zona.');
       const newOps=Number(newOpsRaw);
@@ -368,13 +418,14 @@ export const SedesAdmin=(mount,deps={})=>{
           zonaCodigo:newZoneCode,
           zonaNombre:newZone?.nombre||null,
           numeroOperarios:newOps,
-          jornada:newJornada||'lun_vie'
+          jornada:newJornada||'lun_vie',
+          qrEnabled:newQrEnabled
         });
-        await deps.addAuditLog?.({ targetType:'sede', targetId:s.id, action:'update_sede', before:{ codigo:s.codigo, nombre:s.nombre, dependenciaCodigo:s.dependenciaCodigo, zonaCodigo:s.zonaCodigo, numeroOperarios:s.numeroOperarios, jornada:s.jornada||'lun_vie' }, after:{ codigo:newCode, nombre:newName, dependenciaCodigo:newDepCode, zonaCodigo:newZoneCode, numeroOperarios:newOps, jornada:newJornada||'lun_vie' }, note: modal.values.detail||null });
+        await deps.addAuditLog?.({ targetType:'sede', targetId:s.id, action:'update_sede', before:{ codigo:s.codigo, nombre:s.nombre, dependenciaCodigo:s.dependenciaCodigo, zonaCodigo:s.zonaCodigo, numeroOperarios:s.numeroOperarios, jornada:s.jornada||'lun_vie', qrEnabled:s.qrEnabled===true }, after:{ codigo:newCode, nombre:newName, dependenciaCodigo:newDepCode, zonaCodigo:newZoneCode, numeroOperarios:newOps, jornada:newJornada||'lun_vie', qrEnabled:newQrEnabled }, note: modal.values.detail||null });
       }catch(e){ alert('Error: '+(e?.message||e)); }
     });
     btnCancel.addEventListener('click',()=> render());
-    box.append(btnSave,btnCancel); tds[7].replaceChildren(box);
+    box.append(btnSave,btnCancel); tds[8].replaceChildren(box);
   }
   qs('#txtSearch',ui).addEventListener('input',()=>{ paginator.reset(); render(); });
   qs('#selStatus',ui).addEventListener('change',()=>{ paginator.reset(); render(); });

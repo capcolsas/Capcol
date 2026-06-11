@@ -1,6 +1,7 @@
 ﻿
 import crypto from 'node:crypto';
 import express from 'express';
+import QRCode from 'qrcode';
 import { config } from './config.js';
 import { registerEmployeePortalRoutes } from './employee-portal.js';
 import { supabaseAdmin } from './supabase.js';
@@ -20,6 +21,7 @@ const SESSION = {
   AWAITING_ACTION: 'awaiting_action',
   AWAITING_WORKING_SEDE_KEYWORD: 'awaiting_working_sede_keyword',
   AWAITING_WORKING_SEDE_SELECTION: 'awaiting_working_sede_selection',
+  AWAITING_QR_ATTENDANCE_ACTION: 'awaiting_qr_attendance_action',
   AWAITING_UPDATE_ACTION: 'awaiting_update_action',
   AWAITING_TRANSFER_KEYWORD: 'awaiting_transfer_keyword',
   AWAITING_TRANSFER_SELECTION: 'awaiting_transfer_selection',
@@ -48,6 +50,8 @@ const MENU_IDS = {
   ACTION_WORKING: 'action_working',
   ACTION_COMPENSATORY: 'action_compensatory',
   ACTION_NOVELTY: 'action_novelty',
+  QR_ENTRY: 'qr_entry',
+  QR_EXIT: 'qr_exit',
   UPDATE_TRANSFER: 'update_transfer',
   UPDATE_PHONE: 'update_phone',
   NOVELTY_SICKNESS: 'novelty_3',
@@ -66,6 +70,7 @@ app.get('/health', (_req, res) => {
 });
 
 registerEmployeePortalRoutes(app);
+registerAttendanceQrRoutes(app);
 
 app.get(['/cron/close-daily-operation', '/api/cron/close-daily-operation'], async (req, res) => {
   try {
@@ -123,6 +128,153 @@ app.post('/webhooks/whatsapp', async (req, res) => {
   }
 });
 
+function registerAttendanceQrRoutes(appInstance) {
+  appInstance.use([
+    '/attendance-qr/devices',
+    '/api/attendance-qr/devices',
+    '/attendance-qr/scan',
+    '/api/attendance-qr/scan'
+  ], (req, res, next) => {
+    attendanceQrCors(req, res);
+    if (req.method === 'OPTIONS') return res.status(204).end();
+    return next();
+  });
+
+  appInstance.post(['/attendance-qr/devices', '/api/attendance-qr/devices'], async (req, res) => {
+    try {
+      const profile = await requireAdminQrUser(req);
+      const sedeCodigo = String(req.body?.sedeCodigo || '').trim();
+      const deviceName = String(req.body?.deviceName || '').trim();
+      if (!sedeCodigo) return sendQrJson(res, 400, { ok: false, error: 'Selecciona una sede.' });
+      if (!deviceName) return sendQrJson(res, 400, { ok: false, error: 'Escribe el nombre de la tablet.' });
+
+      const sede = await getSedeByCode(sedeCodigo);
+      if (!sede || String(sede.estado || '').trim().toLowerCase() !== 'activo') {
+        return sendQrJson(res, 404, { ok: false, error: 'No encontramos una sede activa con ese codigo.' });
+      }
+
+      const deviceToken = createQrToken();
+      const { data, error } = await supabaseAdmin
+        .from('sede_devices')
+        .insert({
+          sede_id: sede.id || null,
+          sede_codigo: sede.codigo,
+          sede_nombre: sede.nombre || null,
+          device_name: deviceName,
+          token_hash: hashToken(deviceToken),
+          estado: 'activo',
+          created_by_uid: profile.id || null,
+          created_by_email: profile.email || null
+        })
+        .select('id,sede_codigo,sede_nombre,device_name,estado,created_at')
+        .single();
+      if (error) throw error;
+
+      sendQrJson(res, 200, {
+        ok: true,
+        device: mapQrDeviceRow(data),
+        deviceToken
+      });
+    } catch (error) {
+      console.error('Error creando dispositivo QR:', error);
+      sendQrJson(res, qrStatusFromError(error), { ok: false, error: qrMessageFromError(error) });
+    }
+  });
+
+  appInstance.get(['/attendance-qr/image/:token', '/api/attendance-qr/image/:token'], async (req, res) => {
+    try {
+      const token = String(req.params?.token || '').trim();
+      if (!token) return res.status(404).send('QR no encontrado');
+      const tokenRow = await getQrTokenByHash(hashToken(token));
+      if (!tokenRow) return res.status(404).send('QR no encontrado');
+
+      const qrValue = buildQrScanValue(token);
+      const png = await QRCode.toBuffer(qrValue, {
+        type: 'png',
+        errorCorrectionLevel: 'M',
+        margin: 2,
+        width: 512
+      });
+      res.setHeader('Content-Type', 'image/png');
+      res.setHeader('Cache-Control', 'no-store');
+      res.status(200).send(png);
+    } catch (error) {
+      console.error('Error generando imagen QR:', error);
+      res.status(500).send('No se pudo generar el QR');
+    }
+  });
+
+  appInstance.post(['/attendance-qr/scan', '/api/attendance-qr/scan'], async (req, res) => {
+    const ip = getClientIp(req);
+    const userAgent = getUserAgent(req);
+    let auditPayload = { ip, user_agent: userAgent };
+
+    try {
+      const deviceToken = getQrDeviceTokenFromRequest(req);
+      const qrToken = extractQrToken(req.body?.token || req.body?.qrValue || req.body?.value);
+      if (!deviceToken) throw qrError('missing_device_token', 401);
+      if (!qrToken) throw qrError('missing_qr_token', 400);
+
+      const device = await getQrDeviceByToken(deviceToken);
+      if (!device) throw qrError('device_not_found', 401);
+      if (String(device.estado || '').trim().toLowerCase() !== 'activo' || device.revoked_at) throw qrError('device_inactive', 403);
+
+      const tokenRow = await getQrTokenByHash(hashToken(qrToken));
+      if (!tokenRow) throw qrError('qr_not_found', 404);
+
+      auditPayload = {
+        ...auditPayload,
+        qr_token_id: tokenRow.id,
+        device_id: device.id,
+        action: tokenRow.action || null,
+        fecha: tokenRow.fecha || null,
+        employee_id: tokenRow.employee_id || null,
+        documento: tokenRow.documento || null,
+        sede_codigo: tokenRow.sede_codigo || null
+      };
+
+      if (String(device.sede_codigo || '').trim() !== String(tokenRow.sede_codigo || '').trim()) throw qrError('sede_mismatch', 403);
+      if (String(tokenRow.fecha || '').trim() !== currentDate()) throw qrError('wrong_day', 409);
+      if (new Date(tokenRow.expires_at).getTime() <= Date.now()) throw qrError('qr_expired', 409);
+      if (tokenRow.used_at) throw qrError('qr_used', 409);
+
+      const employee = await findEmployeeByDocument(tokenRow.documento);
+      if (!employee || String(employee.estado || '').trim().toLowerCase() !== 'activo') throw qrError('employee_inactive', 403);
+
+      await validateQrActionReady(tokenRow);
+      const claimedToken = await claimQrToken(tokenRow.id, device.id);
+      if (!claimedToken) throw qrError('qr_used', 409);
+
+      const result = tokenRow.action === 'exit'
+        ? await registerQrExit({ tokenRow, device })
+        : await registerQrEntry({ tokenRow, device, employee });
+
+      await touchQrDevice(device.id);
+      await insertQrScanAudit({ ...auditPayload, ok: true, reason: result.status || 'ok' });
+
+      sendQrJson(res, 200, {
+        ok: true,
+        action: tokenRow.action,
+        status: result.status,
+        employee: {
+          documento: tokenRow.documento,
+          nombre: tokenRow.nombre || employee.nombre || null
+        },
+        sede: {
+          codigo: tokenRow.sede_codigo,
+          nombre: tokenRow.sede_nombre || null
+        }
+      });
+    } catch (error) {
+      console.error('Error escaneando QR:', error);
+      await insertQrScanAudit({ ...auditPayload, ok: false, reason: String(error?.message || 'scan_failed') }).catch((auditError) => {
+        console.error('Error guardando auditoria QR:', auditError);
+      });
+      sendQrJson(res, qrStatusFromError(error), { ok: false, error: qrMessageFromError(error), code: String(error?.message || 'scan_failed') });
+    }
+  });
+}
+
 function isValidWhatsAppSignature(req) {
   if (!config.whatsappAppSecret) return true;
   const signature = String(req.headers['x-hub-signature-256'] || '');
@@ -160,6 +312,292 @@ function buildDailyRecordId(date, documento = null, employeeId = null) {
   const employee = String(employeeId || '').trim();
   if (day && employee) return `${day}_${employee}`;
   return `${day}_${crypto.randomUUID()}`;
+}
+
+function hashToken(token) {
+  return crypto.createHash('sha256').update(String(token || ''), 'utf8').digest('hex');
+}
+
+function createQrToken() {
+  return crypto.randomBytes(32).toString('base64url');
+}
+
+function qrExpiresAtIso() {
+  const minutes = Number(config.qrTokenMinutes || 10);
+  return new Date(Date.now() + minutes * 60 * 1000).toISOString();
+}
+
+function buildQrScanValue(token) {
+  return `${config.publicBackendUrl}/api/attendance-qr/token/${encodeURIComponent(token)}`;
+}
+
+function buildQrImageUrl(token) {
+  return `${config.publicBackendUrl}/api/attendance-qr/image/${encodeURIComponent(token)}`;
+}
+
+function extractQrToken(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const marker = '/attendance-qr/token/';
+  const markerIndex = raw.indexOf(marker);
+  if (markerIndex >= 0) return decodeURIComponent(raw.slice(markerIndex + marker.length).split(/[?#]/)[0] || '').trim();
+  return raw.replace(/^qr:/i, '').trim();
+}
+
+function getClientIp(req) {
+  const forwarded = String(req.headers['x-forwarded-for'] || '').split(',').map((part) => part.trim()).filter(Boolean)[0];
+  return forwarded || String(req.socket?.remoteAddress || '').trim() || null;
+}
+
+function getUserAgent(req) {
+  return String(req.headers['user-agent'] || '').trim() || null;
+}
+
+function getQrDeviceTokenFromRequest(req) {
+  const header = String(req.headers['x-qr-device-token'] || '').trim();
+  if (header) return header;
+  return String(req.body?.deviceToken || '').trim();
+}
+
+function attendanceQrCors(req, res) {
+  const origin = String(req.headers.origin || '').trim();
+  if (!origin) return;
+  if (config.employeePortalAllowedOrigins.length && !config.employeePortalAllowedOrigins.includes(origin)) return;
+
+  res.setHeader('Access-Control-Allow-Origin', origin);
+  res.setHeader('Vary', 'Origin');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-QR-Device-Token');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+}
+
+function sendQrJson(res, statusCode, payload) {
+  res.status(statusCode).json(payload);
+}
+
+function qrError(message, statusCode = 400) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
+}
+
+function qrStatusFromError(error) {
+  return Number(error?.statusCode || 500);
+}
+
+function qrMessageFromError(error) {
+  switch (String(error?.message || '').trim()) {
+    case 'missing_auth':
+      return 'Debes iniciar sesion para realizar esta accion.';
+    case 'forbidden':
+      return 'No tienes permiso para administrar tablets QR.';
+    case 'missing_device_token':
+      return 'La tablet no esta activada.';
+    case 'device_not_found':
+      return 'La tablet no esta autorizada.';
+    case 'device_inactive':
+      return 'La tablet esta inactiva o revocada.';
+    case 'missing_qr_token':
+      return 'No se detecto un QR valido.';
+    case 'qr_not_found':
+      return 'QR no encontrado.';
+    case 'sede_mismatch':
+      return 'El QR pertenece a otra sede.';
+    case 'wrong_day':
+      return 'El QR no corresponde al dia actual.';
+    case 'qr_expired':
+      return 'El QR expiro. Solicita uno nuevo por WhatsApp.';
+    case 'qr_used':
+      return 'El QR ya fue usado.';
+    case 'employee_inactive':
+      return 'El empleado no esta activo.';
+    case 'entry_exists':
+      return 'El ingreso de hoy ya esta registrado.';
+    case 'exit_requires_entry':
+      return 'Primero debe existir un ingreso del dia.';
+    case 'exit_exists':
+      return 'La salida de hoy ya esta registrada.';
+    default:
+      return 'No se pudo procesar el QR.';
+  }
+}
+
+function mapQrDeviceRow(row = {}) {
+  return {
+    id: row.id,
+    sedeCodigo: row.sede_codigo || null,
+    sedeNombre: row.sede_nombre || null,
+    deviceName: row.device_name || null,
+    estado: row.estado || 'activo',
+    lastSeenAt: row.last_seen_at || null,
+    createdAt: row.created_at || null
+  };
+}
+
+async function requireAdminQrUser(req) {
+  const auth = String(req.headers.authorization || '').trim();
+  const token = auth.toLowerCase().startsWith('bearer ') ? auth.slice(7).trim() : '';
+  if (!token) throw qrError('missing_auth', 401);
+
+  const { data: userData, error: userError } = await supabaseAdmin.auth.getUser(token);
+  if (userError || !userData?.user?.id) throw qrError('missing_auth', 401);
+
+  const { data: profile, error: profileError } = await supabaseAdmin
+    .from('profiles')
+    .select('id,email,role,estado,supervisor_eligible')
+    .eq('id', userData.user.id)
+    .maybeSingle();
+  if (profileError) throw profileError;
+  const role = String(profile?.role || '').trim().toLowerCase();
+  const status = String(profile?.estado || 'activo').trim().toLowerCase();
+  const isPrivileged = ['superadmin', 'admin'].includes(role) || (role === 'supervisor' && profile?.supervisor_eligible === true);
+  if (status !== 'activo' || !isPrivileged) throw qrError('forbidden', 403);
+  return profile;
+}
+
+async function getSedeByCode(codigo) {
+  const code = String(codigo || '').trim();
+  if (!code) return null;
+  const { data, error } = await supabaseAdmin.from('sedes').select('*').eq('codigo', code).maybeSingle();
+  if (error) throw error;
+  return data || null;
+}
+
+async function getQrTokenByHash(tokenHash) {
+  const { data, error } = await supabaseAdmin
+    .from('attendance_qr_tokens')
+    .select('*')
+    .eq('token_hash', tokenHash)
+    .maybeSingle();
+  if (error) throw error;
+  return data || null;
+}
+
+async function getQrDeviceByToken(deviceToken) {
+  const { data, error } = await supabaseAdmin
+    .from('sede_devices')
+    .select('*')
+    .eq('token_hash', hashToken(deviceToken))
+    .maybeSingle();
+  if (error) throw error;
+  return data || null;
+}
+
+async function touchQrDevice(deviceId) {
+  if (!deviceId) return;
+  const { error } = await supabaseAdmin
+    .from('sede_devices')
+    .update({ last_seen_at: new Date().toISOString() })
+    .eq('id', deviceId);
+  if (error) throw error;
+}
+
+async function claimQrToken(tokenId, deviceId) {
+  const { data, error } = await supabaseAdmin
+    .from('attendance_qr_tokens')
+    .update({
+      used_at: new Date().toISOString(),
+      used_by_device_id: deviceId
+    })
+    .eq('id', tokenId)
+    .is('used_at', null)
+    .select('id')
+    .maybeSingle();
+  if (error) throw error;
+  return data || null;
+}
+
+async function validateQrActionReady(tokenRow) {
+  if (tokenRow.action === 'exit') {
+    const { data: attendanceRow, error: attendanceError } = await supabaseAdmin
+      .from('attendance')
+      .select('id,created_at')
+      .eq('fecha', tokenRow.fecha)
+      .eq('documento', tokenRow.documento)
+      .limit(1)
+      .maybeSingle();
+    if (attendanceError) throw attendanceError;
+    if (!attendanceRow?.id) throw qrError('exit_requires_entry', 409);
+
+    const { data: exitRow, error: exitError } = await supabaseAdmin
+      .from('employee_daily_exits')
+      .select('id')
+      .eq('fecha', tokenRow.fecha)
+      .eq('documento', tokenRow.documento)
+      .limit(1)
+      .maybeSingle();
+    if (exitError) throw exitError;
+    if (exitRow?.id) throw qrError('exit_exists', 409);
+    return attendanceRow;
+  }
+
+  const { data: attendanceRow, error } = await supabaseAdmin
+    .from('attendance')
+    .select('id')
+    .eq('fecha', tokenRow.fecha)
+    .eq('documento', tokenRow.documento)
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  if (attendanceRow?.id) throw qrError('entry_exists', 409);
+  return null;
+}
+
+async function registerQrEntry({ tokenRow, employee }) {
+  const attendanceId = buildDailyRecordId(tokenRow.fecha, tokenRow.documento, tokenRow.employee_id);
+  const { error } = await supabaseAdmin.from('attendance').upsert({
+    id: attendanceId,
+    fecha: tokenRow.fecha,
+    empleado_id: tokenRow.employee_id,
+    documento: tokenRow.documento,
+    nombre: tokenRow.nombre || employee?.nombre || null,
+    sede_codigo: tokenRow.sede_codigo,
+    sede_nombre: tokenRow.sede_nombre || null,
+    asistio: true,
+    novedad: NOVELTIES.WORKING.code
+  }, { onConflict: 'id' });
+  if (error) throw error;
+  await clearDailyOperationalAbsenceArtifacts(attendanceId);
+  await refreshOperationalState(tokenRow.fecha);
+  return { status: 'entry_registered', attendanceId };
+}
+
+async function registerQrExit({ tokenRow, device }) {
+  const attendanceRow = await validateQrActionReady(tokenRow);
+  const exitId = buildDailyRecordId(tokenRow.fecha, tokenRow.documento, tokenRow.employee_id);
+  const { error } = await supabaseAdmin.from('employee_daily_exits').insert({
+    id: exitId,
+    fecha: tokenRow.fecha,
+    employee_id: tokenRow.employee_id,
+    documento: tokenRow.documento,
+    nombre: tokenRow.nombre || null,
+    sede_codigo: tokenRow.sede_codigo,
+    sede_nombre: tokenRow.sede_nombre || null,
+    qr_token_id: tokenRow.id,
+    device_id: device.id,
+    entry_attendance_id: attendanceRow?.id || null
+  });
+  if (error) {
+    if (error.code === '23505') throw qrError('exit_exists', 409);
+    throw error;
+  }
+  return { status: 'exit_registered', exitId };
+}
+
+async function insertQrScanAudit(payload = {}) {
+  const { error } = await supabaseAdmin.from('attendance_qr_scans').insert({
+    qr_token_id: payload.qr_token_id || null,
+    device_id: payload.device_id || null,
+    action: payload.action || null,
+    fecha: payload.fecha || null,
+    employee_id: payload.employee_id || null,
+    documento: payload.documento || null,
+    sede_codigo: payload.sede_codigo || null,
+    ok: payload.ok === true,
+    reason: payload.reason || null,
+    ip: payload.ip || null,
+    user_agent: payload.user_agent || null
+  });
+  if (error) throw error;
 }
 
 async function storeIncomingEvent({ eventType, payload }) {
@@ -241,6 +679,9 @@ async function processIncomingMessage(message) {
       return;
     case SESSION.AWAITING_WORKING_SEDE_SELECTION:
       await handleWorkingSedeSelection(phone, session, parsed);
+      return;
+    case SESSION.AWAITING_QR_ATTENDANCE_ACTION:
+      await handleQrAttendanceAction(phone, session, parsed);
       return;
     case SESSION.AWAITING_NOVELTY:
       await handleNoveltySelection(phone, session, parsed);
@@ -396,6 +837,10 @@ async function handleActionSelection(phone, session, parsed) {
         session_data: { employee: sessionEmployee(employee), pendingNovelty: NOVELTIES.WORKING }
       });
       await sendText(phone, 'Escribe una palabra clave del nombre de la sede en la que te encuentras:');
+      return;
+    }
+    if (await isQrEnabledForSede(employee.sede_codigo)) {
+      await promptQrAttendanceAction(phone, employee, null);
       return;
     }
     await registerNovelty(phone, employee, NOVELTIES.WORKING, null);
@@ -628,7 +1073,109 @@ async function handleWorkingSedeSelection(phone, session, parsed) {
     return;
   }
 
+  if (novelty?.code === NOVELTIES.WORKING.code && await isQrEnabledForSede(selected.codigo)) {
+    await promptQrAttendanceAction(phone, employee, selected);
+    return;
+  }
+
   await registerNovelty(phone, employee, novelty, selected);
+}
+
+async function isQrEnabledForSede(sedeCodigo) {
+  const sede = await getSedeByCode(sedeCodigo);
+  return sede?.qr_enabled === true;
+}
+
+async function promptQrAttendanceAction(phone, employee, selectedSede = null) {
+  const freshEmployee = await reloadEmployeeForAttendance(employee);
+  const sedeCodigo = selectedSede?.codigo || freshEmployee?.sede_codigo || null;
+  const sedeNombre = selectedSede?.nombre || freshEmployee?.sede_nombre || null;
+  if (!sedeCodigo) {
+    throw new Error(`attendance_missing_sede:${freshEmployee?.id || 'no_id'}:${freshEmployee?.documento || 'no_doc'}`);
+  }
+
+  await storeSession(phone, {
+    employee_id: freshEmployee.id,
+    documento: freshEmployee.documento,
+    session_state: SESSION.AWAITING_QR_ATTENDANCE_ACTION,
+    session_data: {
+      employee: sessionEmployee(freshEmployee),
+      selectedSede: selectedSede ? {
+        id: selectedSede.id || null,
+        codigo: sedeCodigo,
+        nombre: sedeNombre,
+        zona_codigo: selectedSede.zona_codigo || freshEmployee.zona_codigo || null,
+        zona_nombre: selectedSede.zona_nombre || freshEmployee.zona_nombre || null
+      } : null
+    }
+  });
+
+  await sendButtons(phone, `La sede ${sedeNombre || sedeCodigo} usa registro por QR.\n\nQue deseas registrar?`, [
+    { id: MENU_IDS.QR_ENTRY, title: 'Ingreso' },
+    { id: MENU_IDS.QR_EXIT, title: 'Salida' }
+  ]);
+}
+
+async function handleQrAttendanceAction(phone, session, parsed) {
+  const employee = await loadEmployeeFromSession(session);
+  if (!employee) {
+    await sendText(phone, NO_REGISTERED_MESSAGE);
+    await resetSession(phone, session, {});
+    return;
+  }
+
+  const normalizedId = normalizeKey(parsed.id);
+  const normalizedValue = normalizeKey(parsed.value);
+  let action = null;
+  if (normalizedId === normalizeKey(MENU_IDS.QR_ENTRY) || normalizedValue === 'ingreso') action = 'entry';
+  if (normalizedId === normalizeKey(MENU_IDS.QR_EXIT) || normalizedValue === 'salida') action = 'exit';
+  if (!action) {
+    await sendText(phone, 'Selecciona una opcion valida: Ingreso o Salida.');
+    return;
+  }
+
+  const selectedSede = session?.session_data?.selectedSede || null;
+  await sendAttendanceQr(phone, employee, action, selectedSede);
+}
+
+async function sendAttendanceQr(phone, employee, action, selectedSede = null) {
+  const freshEmployee = await reloadEmployeeForAttendance(employee);
+  const documento = normalizeDocument(freshEmployee?.documento);
+  const sedeCodigo = selectedSede?.codigo || freshEmployee?.sede_codigo || null;
+  const sedeNombre = selectedSede?.nombre || freshEmployee?.sede_nombre || null;
+  if (!documento || !freshEmployee?.id) throw new Error('missing_employee_identity');
+  if (!sedeCodigo) throw new Error(`attendance_missing_sede:${freshEmployee?.id || 'no_id'}:${documento || 'no_doc'}`);
+
+  const token = createQrToken();
+  const date = currentDate();
+  const { data, error } = await supabaseAdmin.from('attendance_qr_tokens').insert({
+    token_hash: hashToken(token),
+    action,
+    fecha: date,
+    employee_id: freshEmployee.id,
+    documento,
+    nombre: freshEmployee.nombre || null,
+    sede_codigo: sedeCodigo,
+    sede_nombre: sedeNombre || null,
+    phone_number: phone,
+    expires_at: qrExpiresAtIso()
+  }).select('id,expires_at').single();
+  if (error) throw error;
+
+  await storeSession(phone, {
+    employee_id: freshEmployee.id,
+    documento: freshEmployee.documento,
+    session_state: SESSION.COMPLETED,
+    session_data: {
+      employee: sessionEmployee(freshEmployee),
+      lastQrTokenId: data.id,
+      lastQrAction: action
+    }
+  });
+
+  const actionLabel = action === 'exit' ? 'salida' : 'ingreso';
+  const caption = `QR temporal para registrar ${actionLabel}.\nEmpleado: ${freshEmployee.nombre || documento}\nSede: ${sedeNombre || sedeCodigo}\nVence en ${Number(config.qrTokenMinutes || 10)} minutos.`;
+  await sendQrImage(phone, token, caption);
 }
 
 async function handleNoveltySelection(phone, session, parsed) {
@@ -2435,6 +2982,22 @@ async function sendList(to, body, buttonText, sections) {
       }
     }
   });
+}
+
+async function sendQrImage(to, token, caption) {
+  const imageUrl = buildQrImageUrl(token);
+  try {
+    await sendWhatsAppMessage(to, {
+      type: 'image',
+      image: {
+        link: imageUrl,
+        caption
+      }
+    });
+  } catch (error) {
+    console.error('No se pudo enviar QR como imagen, enviando enlace:', error);
+    await sendText(to, `${caption}\n\nAbre este enlace para mostrar el QR:\n${imageUrl}`);
+  }
 }
 
 async function sendWhatsAppMessage(to, payload) {

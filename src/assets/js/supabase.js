@@ -1,5 +1,5 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_ANON_KEY, SUPABASE_PROFILES_TABLE, SUPABASE_URL } from './config.js';
+import { EMPLOYEE_PORTAL_API_BASE, SUPABASE_ANON_KEY, SUPABASE_PROFILES_TABLE, SUPABASE_URL } from './config.js';
 
 function assertSupabaseConfig() {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
@@ -262,7 +262,8 @@ function mapSedeRow(row = {}) {
     zonaCodigo: row.zona_codigo || null,
     zonaNombre: row.zona_nombre || null,
     numeroOperarios: typeof row.numero_operarios === 'number' ? row.numero_operarios : null,
-    jornada: row.jornada || 'lun_vie'
+    jornada: row.jornada || 'lun_vie',
+    qrEnabled: row.qr_enabled === true
   };
 }
 
@@ -2312,7 +2313,7 @@ export async function getNextSedeCode(prefix = 'SED', width = 4) {
   return getNextPrefixedCode('sedes', prefix, width);
 }
 
-export async function createSede({ codigo, nombre, dependenciaCodigo, dependenciaNombre, zonaCodigo, zonaNombre, numeroOperarios, jornada }) {
+export async function createSede({ codigo, nombre, dependenciaCodigo, dependenciaNombre, zonaCodigo, zonaNombre, numeroOperarios, jornada, qrEnabled = false }) {
   const audit = await getCurrentAuditFields();
   const { data, error } = await supabase
     .from('sedes')
@@ -2325,6 +2326,7 @@ export async function createSede({ codigo, nombre, dependenciaCodigo, dependenci
       zona_nombre: zonaNombre || null,
       numero_operarios: typeof numeroOperarios === 'number' ? numeroOperarios : null,
       jornada: jornada || 'lun_vie',
+      qr_enabled: qrEnabled === true,
       estado: 'activo',
       ...audit
     })
@@ -2355,7 +2357,7 @@ export async function createSedesBulk(rows = []) {
   return { created };
 }
 
-export async function updateSede(id, { codigo, nombre, dependenciaCodigo, dependenciaNombre, zonaCodigo, zonaNombre, numeroOperarios, jornada }) {
+export async function updateSede(id, { codigo, nombre, dependenciaCodigo, dependenciaNombre, zonaCodigo, zonaNombre, numeroOperarios, jornada, qrEnabled }) {
   const patch = {};
   if (typeof codigo === 'string') patch.codigo = codigo;
   if (typeof nombre === 'string') patch.nombre = nombre;
@@ -2365,6 +2367,7 @@ export async function updateSede(id, { codigo, nombre, dependenciaCodigo, depend
   if (typeof zonaNombre === 'string') patch.zona_nombre = zonaNombre;
   if (typeof numeroOperarios === 'number') patch.numero_operarios = numeroOperarios;
   if (typeof jornada === 'string') patch.jornada = jornada;
+  if (typeof qrEnabled === 'boolean') patch.qr_enabled = qrEnabled;
   const { error } = await supabase.from('sedes').update(patch).eq('id', id);
   if (error) throw error;
   await notifyTableReload('sedes');
@@ -2374,6 +2377,51 @@ export async function setSedeStatus(id, estado) {
   const { error } = await supabase.from('sedes').update({ estado }).eq('id', id);
   if (error) throw error;
   await notifyTableReload('sedes');
+}
+
+function backendApiBase() {
+  return String(EMPLOYEE_PORTAL_API_BASE || '').replace(/\/+$/, '');
+}
+
+async function getAccessToken() {
+  const { data, error } = await supabase.auth.getSession();
+  if (error) throw error;
+  const token = String(data?.session?.access_token || '').trim();
+  if (!token) throw new Error('Debes iniciar sesion nuevamente.');
+  return token;
+}
+
+async function backendJson(path, { method = 'GET', body = null, headers = {} } = {}) {
+  const base = backendApiBase();
+  if (!base) throw new Error('Configura EMPLOYEE_PORTAL_API_BASE para usar el backend.');
+  const response = await fetch(`${base}${path}`, {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      ...headers
+    },
+    body: body ? JSON.stringify(body) : null
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload?.ok === false) throw new Error(payload?.error || `Error backend ${response.status}`);
+  return payload;
+}
+
+export async function createQrDevice({ sedeCodigo, deviceName }) {
+  const token = await getAccessToken();
+  return backendJson('/api/attendance-qr/devices', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: { sedeCodigo, deviceName }
+  });
+}
+
+export async function scanAttendanceQr({ qrValue, deviceToken }) {
+  return backendJson('/api/attendance-qr/scan', {
+    method: 'POST',
+    headers: { 'X-QR-Device-Token': deviceToken },
+    body: { qrValue }
+  });
 }
 
 export async function findSedeByCode(codigo) {
