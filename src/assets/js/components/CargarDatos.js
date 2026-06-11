@@ -153,8 +153,10 @@ export const CargarDatos = (mount, deps = {}) => {
   qs('.tabs', ui)?.classList.add('hidden');
   tabCreate.classList.add('hidden');
   tabList.classList.remove('hidden');
-  const btnOpenCreate = el('button', { id: 'incOpenCreate', className: 'btn btn--primary right', type: 'button' }, [portalMode ? 'Nueva incapacidad' : 'Crear incapacidad']);
-  qs('#incTabList .form-row', ui)?.append(btnOpenCreate);
+  const btnOpenCreate = portalMode
+    ? null
+    : el('button', { id: 'incOpenCreate', className: 'btn btn--primary right', type: 'button' }, ['Crear incapacidad']);
+  if (btnOpenCreate) qs('#incTabList .form-row', ui)?.append(btnOpenCreate);
 
   function setTab(which) {
     const create = which === 'create';
@@ -174,7 +176,7 @@ export const CargarDatos = (mount, deps = {}) => {
   queryBtn?.addEventListener('click', runQuery);
   saveBtn?.addEventListener('click', onSave);
   resetBtn?.addEventListener('click', resetForm);
-  btnOpenCreate.addEventListener('click', () => openIncapacityModal());
+  btnOpenCreate?.addEventListener('click', () => openIncapacityModal());
   initSorting();
 
   if (!portalMode && typeof deps.streamEmployees === 'function') {
