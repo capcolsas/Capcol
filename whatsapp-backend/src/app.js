@@ -527,12 +527,20 @@ async function claimQrToken(tokenId, deviceId) {
 }
 
 async function validateQrActionReady(tokenRow) {
-  if (tokenRow.action === 'exit') {
+  return validateQrActionAvailability({
+    action: tokenRow.action,
+    fecha: tokenRow.fecha,
+    documento: tokenRow.documento
+  });
+}
+
+async function validateQrActionAvailability({ action, fecha, documento }) {
+  if (action === 'exit') {
     const { data: attendanceRow, error: attendanceError } = await supabaseAdmin
       .from('attendance')
       .select('id,created_at')
-      .eq('fecha', tokenRow.fecha)
-      .eq('documento', tokenRow.documento)
+      .eq('fecha', fecha)
+      .eq('documento', documento)
       .limit(1)
       .maybeSingle();
     if (attendanceError) throw attendanceError;
@@ -541,8 +549,8 @@ async function validateQrActionReady(tokenRow) {
     const { data: exitRow, error: exitError } = await supabaseAdmin
       .from('employee_daily_exits')
       .select('id')
-      .eq('fecha', tokenRow.fecha)
-      .eq('documento', tokenRow.documento)
+      .eq('fecha', fecha)
+      .eq('documento', documento)
       .limit(1)
       .maybeSingle();
     if (exitError) throw exitError;
@@ -553,8 +561,8 @@ async function validateQrActionReady(tokenRow) {
   const { data: attendanceRow, error } = await supabaseAdmin
     .from('attendance')
     .select('id')
-    .eq('fecha', tokenRow.fecha)
-    .eq('documento', tokenRow.documento)
+    .eq('fecha', fecha)
+    .eq('documento', documento)
     .limit(1)
     .maybeSingle();
   if (error) throw error;
@@ -1297,13 +1305,49 @@ async function handleQrAttendanceAction(phone, session, parsed) {
   }
 
   const selectedSede = session?.session_data?.selectedSede || null;
+  const freshEmployee = await reloadEmployeeForAttendance(employee);
+  const documento = normalizeDocument(freshEmployee?.documento);
+  try {
+    await validateQrActionAvailability({
+      action,
+      fecha: currentDate(),
+      documento
+    });
+  } catch (error) {
+    if (String(error?.message || '') === 'entry_exists') {
+      await storeSession(phone, {
+        employee_id: freshEmployee.id,
+        documento: freshEmployee.documento,
+        session_state: SESSION.COMPLETED,
+        session_data: { employee: sessionEmployee(freshEmployee) }
+      });
+      await sendText(phone, 'Ya tienes un ingreso registrado para hoy. Si necesitas marcar salida, escribe "Hola" y selecciona Salida.');
+      return;
+    }
+    if (String(error?.message || '') === 'exit_requires_entry') {
+      await sendText(phone, 'No encontramos un ingreso registrado para hoy. Primero debes registrar Ingreso.');
+      return;
+    }
+    if (String(error?.message || '') === 'exit_exists') {
+      await storeSession(phone, {
+        employee_id: freshEmployee.id,
+        documento: freshEmployee.documento,
+        session_state: SESSION.COMPLETED,
+        session_data: { employee: sessionEmployee(freshEmployee) }
+      });
+      await sendText(phone, 'Ya tienes una salida registrada para hoy. No es necesario generar otro QR.');
+      return;
+    }
+    throw error;
+  }
+
   await storeSession(phone, {
-    employee_id: employee.id,
-    documento: employee.documento,
+    employee_id: freshEmployee.id,
+    documento: freshEmployee.documento,
     session_state: SESSION.AWAITING_QR_LOCATION,
     session_data: {
       ...(session.session_data || {}),
-      employee: sessionEmployee(employee),
+      employee: sessionEmployee(freshEmployee),
       selectedSede,
       pendingQrAction: action
     }
