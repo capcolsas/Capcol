@@ -93,7 +93,7 @@ export const QrTabletScanner = (mount, deps = {}) => {
       return;
     }
     detector = detector || new window.BarcodeDetector({ formats: ['qr_code'] });
-    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false });
     const video = qs('#qrVideo', ui);
     video.srcObject = stream;
     await video.play();
@@ -143,7 +143,8 @@ export const QrTabletScanner = (mount, deps = {}) => {
       const result = await deps.scanAttendanceQr?.({ qrValue: value, deviceToken });
       const action = result?.action === 'exit' ? 'Salida' : 'Ingreso';
       const name = result?.employee?.nombre || result?.employee?.documento || 'Empleado';
-      setMessage(`${action} registrado: ${name}.`, 'ok');
+      const phone = result?.employee?.phoneNumber ? ` Telefono origen: ${result.employee.phoneNumber}.` : '';
+      setMessage(`${action} registrado: ${name}.${phone}`, 'ok');
     } catch (error) {
       setMessage(error?.message || 'No se pudo validar el QR.', 'error');
     }

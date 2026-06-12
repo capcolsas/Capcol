@@ -22,6 +22,7 @@ const SESSION = {
   AWAITING_WORKING_SEDE_KEYWORD: 'awaiting_working_sede_keyword',
   AWAITING_WORKING_SEDE_SELECTION: 'awaiting_working_sede_selection',
   AWAITING_QR_ATTENDANCE_ACTION: 'awaiting_qr_attendance_action',
+  AWAITING_QR_LOCATION: 'awaiting_qr_location',
   AWAITING_UPDATE_ACTION: 'awaiting_update_action',
   AWAITING_TRANSFER_KEYWORD: 'awaiting_transfer_keyword',
   AWAITING_TRANSFER_SELECTION: 'awaiting_transfer_selection',
@@ -258,7 +259,8 @@ function registerAttendanceQrRoutes(appInstance) {
         status: result.status,
         employee: {
           documento: tokenRow.documento,
-          nombre: tokenRow.nombre || employee.nombre || null
+          nombre: tokenRow.nombre || employee.nombre || null,
+          phoneNumber: tokenRow.phone_number || null
         },
         sede: {
           codigo: tokenRow.sede_codigo,
@@ -639,7 +641,7 @@ async function processIncomingMessage(message) {
   const session = await getSession(phone);
   const parsed = parseInboundAction(message);
 
-  if (!parsed.value && !parsed.id) {
+  if (!parsed.value && !parsed.id && !parsed.location) {
     await sendText(phone, 'No entendí tu respuesta. Por favor selecciona una opción del menú.');
     return;
   }
@@ -682,6 +684,9 @@ async function processIncomingMessage(message) {
       return;
     case SESSION.AWAITING_QR_ATTENDANCE_ACTION:
       await handleQrAttendanceAction(phone, session, parsed);
+      return;
+    case SESSION.AWAITING_QR_LOCATION:
+      await handleQrLocationInput(phone, session, parsed);
       return;
     case SESSION.AWAITING_NOVELTY:
       await handleNoveltySelection(phone, session, parsed);
@@ -1135,10 +1140,103 @@ async function handleQrAttendanceAction(phone, session, parsed) {
   }
 
   const selectedSede = session?.session_data?.selectedSede || null;
-  await sendAttendanceQr(phone, employee, action, selectedSede);
+  await storeSession(phone, {
+    employee_id: employee.id,
+    documento: employee.documento,
+    session_state: SESSION.AWAITING_QR_LOCATION,
+    session_data: {
+      ...(session.session_data || {}),
+      employee: sessionEmployee(employee),
+      selectedSede,
+      pendingQrAction: action
+    }
+  });
+
+  await sendText(phone, 'Para generar el QR comparte tu ubicacion actual desde WhatsApp. Debes estar a maximo 500 metros de la sede.');
 }
 
-async function sendAttendanceQr(phone, employee, action, selectedSede = null) {
+async function handleQrLocationInput(phone, session, parsed) {
+  const employee = await loadEmployeeFromSession(session);
+  if (!employee) {
+    await sendText(phone, NO_REGISTERED_MESSAGE);
+    await resetSession(phone, session, {});
+    return;
+  }
+
+  const location = parsed.location || null;
+  if (!location) {
+    await sendText(phone, 'Por favor comparte tu ubicacion actual usando la opcion Ubicacion de WhatsApp para generar el QR.');
+    return;
+  }
+
+  const action = String(session?.session_data?.pendingQrAction || '').trim();
+  if (!['entry', 'exit'].includes(action)) {
+    await resetSession(phone, session, {});
+    await sendText(phone, 'No encontramos la accion QR pendiente. Escribe "Hola" para iniciar de nuevo.');
+    return;
+  }
+
+  const selectedSede = session?.session_data?.selectedSede || null;
+  const sedeCodigo = selectedSede?.codigo || employee?.sede_codigo || null;
+  const sede = await getSedeByCode(sedeCodigo);
+  const validation = validateQrLocationForSede(location, sede);
+  if (!validation.ok) {
+    await sendText(phone, validation.message);
+    return;
+  }
+
+  await sendAttendanceQr(phone, employee, action, selectedSede, {
+    latitude: location.latitude,
+    longitude: location.longitude,
+    distanceMeters: validation.distanceMeters
+  });
+}
+
+function validateQrLocationForSede(location, sede) {
+  const sedeLat = Number(sede?.qr_latitude);
+  const sedeLng = Number(sede?.qr_longitude);
+  const userLat = Number(location?.latitude);
+  const userLng = Number(location?.longitude);
+  const radius = Number(sede?.qr_radius_meters || 500);
+
+  if (!Number.isFinite(sedeLat) || !Number.isFinite(sedeLng)) {
+    return {
+      ok: false,
+      message: 'Esta sede tiene QR activo pero no tiene latitud/longitud configurada. Comunicate con el supervisor.'
+    };
+  }
+  if (!Number.isFinite(userLat) || !Number.isFinite(userLng)) {
+    return {
+      ok: false,
+      message: 'No pudimos leer tu ubicacion. Por favor comparte tu ubicacion actual desde WhatsApp.'
+    };
+  }
+
+  const distanceMeters = Math.round(distanceBetweenMeters(userLat, userLng, sedeLat, sedeLng));
+  if (distanceMeters > radius) {
+    return {
+      ok: false,
+      distanceMeters,
+      message: `Tu ubicacion esta a ${distanceMeters} metros de la sede. El maximo permitido es ${radius} metros. Comparte tu ubicacion actual cuando estes en la sede.`
+    };
+  }
+
+  return { ok: true, distanceMeters };
+}
+
+function distanceBetweenMeters(latA, lngA, latB, lngB) {
+  const earthRadiusMeters = 6371000;
+  const toRadians = (value) => Number(value) * Math.PI / 180;
+  const deltaLat = toRadians(latB - latA);
+  const deltaLng = toRadians(lngB - lngA);
+  const startLat = toRadians(latA);
+  const endLat = toRadians(latB);
+  const a = Math.sin(deltaLat / 2) ** 2
+    + Math.cos(startLat) * Math.cos(endLat) * Math.sin(deltaLng / 2) ** 2;
+  return earthRadiusMeters * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+async function sendAttendanceQr(phone, employee, action, selectedSede = null, locationProof = null) {
   const freshEmployee = await reloadEmployeeForAttendance(employee);
   const documento = normalizeDocument(freshEmployee?.documento);
   const sedeCodigo = selectedSede?.codigo || freshEmployee?.sede_codigo || null;
@@ -1158,6 +1256,10 @@ async function sendAttendanceQr(phone, employee, action, selectedSede = null) {
     sede_codigo: sedeCodigo,
     sede_nombre: sedeNombre || null,
     phone_number: phone,
+    request_latitude: typeof locationProof?.latitude === 'number' ? locationProof.latitude : null,
+    request_longitude: typeof locationProof?.longitude === 'number' ? locationProof.longitude : null,
+    request_distance_meters: Number.isFinite(Number(locationProof?.distanceMeters)) ? Number(locationProof.distanceMeters) : null,
+    location_verified_at: new Date().toISOString(),
     expires_at: qrExpiresAtIso()
   }).select('id,expires_at').single();
   if (error) throw error;
@@ -1174,7 +1276,8 @@ async function sendAttendanceQr(phone, employee, action, selectedSede = null) {
   });
 
   const actionLabel = action === 'exit' ? 'salida' : 'ingreso';
-  const caption = `QR temporal para registrar ${actionLabel}.\nEmpleado: ${freshEmployee.nombre || documento}\nSede: ${sedeNombre || sedeCodigo}\nVence en ${Number(config.qrTokenMinutes || 10)} minutos.`;
+  const distanceText = Number.isFinite(Number(locationProof?.distanceMeters)) ? `\nUbicacion validada: ${Number(locationProof.distanceMeters)} m de la sede.` : '';
+  const caption = `QR temporal para registrar ${actionLabel}.\nEmpleado: ${freshEmployee.nombre || documento}\nSede: ${sedeNombre || sedeCodigo}${distanceText}\nVence en ${Number(config.qrTokenMinutes || 10)} minutos.`;
   await sendQrImage(phone, token, caption);
 }
 
@@ -2829,7 +2932,22 @@ function parseInboundAction(message) {
   return {
     id: String(buttonReply?.id || listReply?.id || '').trim(),
     title: String(buttonReply?.title || listReply?.title || '').trim(),
-    value: String(buttonReply?.title || listReply?.title || textValue || '').trim()
+    value: String(buttonReply?.title || listReply?.title || textValue || '').trim(),
+    location: extractMessageLocation(message)
+  };
+}
+
+function extractMessageLocation(payload) {
+  const location = payload?.location || null;
+  if (!location) return null;
+  const latitude = Number(location.latitude);
+  const longitude = Number(location.longitude);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+  return {
+    latitude,
+    longitude,
+    name: location.name || null,
+    address: location.address || null
   };
 }
 

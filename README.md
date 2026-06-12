@@ -33,7 +33,8 @@ Plataforma de gestion operativa y administrativa para el seguimiento de servicio
 ## Registro QR por sede
 - Migracion requerida: `supabase/schema_operations_phase16_qr_attendance.sql`.
 - Cada sede puede activar o desactivar `qr_enabled`.
-- Si una sede tiene QR activo, el flujo WhatsApp `Soy yo -> Trabajando` solicita `Ingreso` o `Salida` y envia un QR temporal.
+- Si una sede tiene QR activo, el flujo WhatsApp `Soy yo -> Trabajando` solicita `Ingreso` o `Salida`, pide ubicacion actual y envia un QR temporal solo si el operario esta dentro del radio permitido.
+- El radio QR por sede queda en `qr_radius_meters`; por defecto son 500 metros.
 - El ingreso por QR registra en `attendance`; la salida registra en `employee_daily_exits`.
 - La tablet usa `app.html#/lector-qr` y debe activarse con un token de dispositivo generado desde `Sedes`.
 - Variables opcionales del backend:

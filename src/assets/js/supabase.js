@@ -263,7 +263,10 @@ function mapSedeRow(row = {}) {
     zonaNombre: row.zona_nombre || null,
     numeroOperarios: typeof row.numero_operarios === 'number' ? row.numero_operarios : null,
     jornada: row.jornada || 'lun_vie',
-    qrEnabled: row.qr_enabled === true
+    qrEnabled: row.qr_enabled === true,
+    qrLatitude: row.qr_latitude == null ? null : Number(row.qr_latitude),
+    qrLongitude: row.qr_longitude == null ? null : Number(row.qr_longitude),
+    qrRadiusMeters: row.qr_radius_meters == null ? 500 : Number(row.qr_radius_meters)
   };
 }
 
@@ -2313,7 +2316,7 @@ export async function getNextSedeCode(prefix = 'SED', width = 4) {
   return getNextPrefixedCode('sedes', prefix, width);
 }
 
-export async function createSede({ codigo, nombre, dependenciaCodigo, dependenciaNombre, zonaCodigo, zonaNombre, numeroOperarios, jornada, qrEnabled = false }) {
+export async function createSede({ codigo, nombre, dependenciaCodigo, dependenciaNombre, zonaCodigo, zonaNombre, numeroOperarios, jornada, qrEnabled = false, qrLatitude = null, qrLongitude = null, qrRadiusMeters = 500 }) {
   const audit = await getCurrentAuditFields();
   const { data, error } = await supabase
     .from('sedes')
@@ -2327,6 +2330,9 @@ export async function createSede({ codigo, nombre, dependenciaCodigo, dependenci
       numero_operarios: typeof numeroOperarios === 'number' ? numeroOperarios : null,
       jornada: jornada || 'lun_vie',
       qr_enabled: qrEnabled === true,
+      qr_latitude: typeof qrLatitude === 'number' && Number.isFinite(qrLatitude) ? qrLatitude : null,
+      qr_longitude: typeof qrLongitude === 'number' && Number.isFinite(qrLongitude) ? qrLongitude : null,
+      qr_radius_meters: typeof qrRadiusMeters === 'number' && Number.isFinite(qrRadiusMeters) ? qrRadiusMeters : 500,
       estado: 'activo',
       ...audit
     })
@@ -2357,7 +2363,7 @@ export async function createSedesBulk(rows = []) {
   return { created };
 }
 
-export async function updateSede(id, { codigo, nombre, dependenciaCodigo, dependenciaNombre, zonaCodigo, zonaNombre, numeroOperarios, jornada, qrEnabled }) {
+export async function updateSede(id, { codigo, nombre, dependenciaCodigo, dependenciaNombre, zonaCodigo, zonaNombre, numeroOperarios, jornada, qrEnabled, qrLatitude, qrLongitude, qrRadiusMeters }) {
   const patch = {};
   if (typeof codigo === 'string') patch.codigo = codigo;
   if (typeof nombre === 'string') patch.nombre = nombre;
@@ -2368,6 +2374,9 @@ export async function updateSede(id, { codigo, nombre, dependenciaCodigo, depend
   if (typeof numeroOperarios === 'number') patch.numero_operarios = numeroOperarios;
   if (typeof jornada === 'string') patch.jornada = jornada;
   if (typeof qrEnabled === 'boolean') patch.qr_enabled = qrEnabled;
+  if (qrLatitude !== undefined) patch.qr_latitude = typeof qrLatitude === 'number' && Number.isFinite(qrLatitude) ? qrLatitude : null;
+  if (qrLongitude !== undefined) patch.qr_longitude = typeof qrLongitude === 'number' && Number.isFinite(qrLongitude) ? qrLongitude : null;
+  if (typeof qrRadiusMeters === 'number' && Number.isFinite(qrRadiusMeters)) patch.qr_radius_meters = qrRadiusMeters;
   const { error } = await supabase.from('sedes').update(patch).eq('id', id);
   if (error) throw error;
   await notifyTableReload('sedes');

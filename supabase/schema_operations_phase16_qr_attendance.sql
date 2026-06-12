@@ -1,6 +1,11 @@
 alter table public.sedes
   add column if not exists qr_enabled boolean not null default false;
 
+alter table public.sedes
+  add column if not exists qr_latitude double precision,
+  add column if not exists qr_longitude double precision,
+  add column if not exists qr_radius_meters integer not null default 500;
+
 create table if not exists public.sede_devices (
   id uuid primary key default gen_random_uuid(),
   sede_id uuid references public.sedes(id) on delete cascade,
@@ -34,6 +39,10 @@ create table if not exists public.attendance_qr_tokens (
   sede_codigo text not null,
   sede_nombre text,
   phone_number text,
+  request_latitude double precision,
+  request_longitude double precision,
+  request_distance_meters integer,
+  location_verified_at timestamptz,
   expires_at timestamptz not null,
   used_at timestamptz,
   used_by_device_id uuid references public.sede_devices(id) on delete set null,
