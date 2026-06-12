@@ -118,6 +118,7 @@ app.post('/webhooks/whatsapp', async (req, res) => {
         await markIncomingProcessed(incomingId, 'processed', null);
       } catch (error) {
         console.error('Error procesando mensaje WhatsApp:', error);
+        await notifyProcessingError(message, error);
         await markIncomingProcessed(incomingId, 'failed', error.message || 'processing_failed');
       }
     }
@@ -632,6 +633,34 @@ async function markIncomingProcessed(id, status, reason) {
     process_reason: reason,
     processed_at: new Date().toISOString()
   }).eq('id', id);
+}
+
+async function notifyProcessingError(message, error) {
+  if (error?.userNotified === true) return;
+  const phone = normalizePhone(message?.from);
+  if (!phone) return;
+  try {
+    await sendText(phone, userMessageForProcessingError(error));
+  } catch (notifyError) {
+    console.error('No se pudo notificar error al usuario WhatsApp:', notifyError);
+  }
+}
+
+function userMessageForProcessingError(error) {
+  const raw = `${error?.message || ''} ${error?.details || ''} ${error?.hint || ''}`.toLowerCase();
+  if (raw.includes('request_latitude') || raw.includes('qr_latitude') || raw.includes('location_verified_at')) {
+    return 'No pudimos generar el QR porque falta actualizar la base de datos con la migracion de ubicacion QR. Comunicate con el supervisor.';
+  }
+  if (raw.includes('attendance_qr_tokens')) {
+    return 'No pudimos generar el QR por una novedad en la configuracion QR. Comunicate con el supervisor.';
+  }
+  if (raw.includes('send_failed')) {
+    return 'Validamos tu solicitud, pero no pudimos enviar el QR por WhatsApp. Intenta nuevamente en unos minutos.';
+  }
+  if (raw.includes('attendance_missing_sede')) {
+    return 'No pudimos generar el QR porque tu registro no tiene sede asignada. Comunicate con el supervisor.';
+  }
+  return 'No pudimos procesar tu solicitud en este momento. Intenta nuevamente o comunicate con el supervisor.';
 }
 
 async function processIncomingMessage(message) {
@@ -1185,11 +1214,18 @@ async function handleQrLocationInput(phone, session, parsed) {
     return;
   }
 
-  await sendAttendanceQr(phone, employee, action, selectedSede, {
-    latitude: location.latitude,
-    longitude: location.longitude,
-    distanceMeters: validation.distanceMeters
-  });
+  try {
+    await sendAttendanceQr(phone, employee, action, selectedSede, {
+      latitude: location.latitude,
+      longitude: location.longitude,
+      distanceMeters: validation.distanceMeters
+    });
+  } catch (error) {
+    console.error('Error generando QR despues de validar ubicacion:', error);
+    await sendText(phone, userMessageForProcessingError(error));
+    error.userNotified = true;
+    throw error;
+  }
 }
 
 function validateQrLocationForSede(location, sede) {
