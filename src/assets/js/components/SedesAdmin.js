@@ -2,6 +2,7 @@ import { el, qs } from '../utils/dom.js';
 import { showInfoModal } from '../utils/infoModal.js';
 import { showActionModal } from '../utils/actionModal.js';
 import { createTablePagination } from '../utils/pagination.js';
+import { can, PERMS } from '../permissions.js';
 export const SedesAdmin=(mount,deps={})=>{
   const ui=el('section',{className:'main-card'},[
     el('h2',{},['Sedes']),
@@ -356,8 +357,10 @@ export const SedesAdmin=(mount,deps={})=>{
     const box=el('div',{className:'row-actions'},[]);
     const btnEdit=el('button',{className:'btn btn--icon',title:'Editar'},['\u270E']);
     btnEdit.addEventListener('click',()=>{ const tr=tbody.querySelector(`tr[data-id="${s.id}"]`); if(tr) startEdit(tr,s); });
-    const btnQr=el('button',{className:'btn btn--icon',title:'Registrar tablet QR','aria-label':'Registrar tablet QR'},['QR']);
-    btnQr.disabled=s.qrEnabled!==true;
+    const canManageQrDevices=can(PERMS.MANAGE_QR_DEVICES);
+    const qrDisabledReason=s.qrEnabled!==true?'Activa QR en la sede para registrar tablets':'No tienes permiso para administrar tablets QR';
+    const btnQr=el('button',{className:'btn btn--icon',title:canManageQrDevices && s.qrEnabled===true?'Registrar tablet QR':qrDisabledReason,'aria-label':'Registrar tablet QR'},['QR']);
+    btnQr.disabled=s.qrEnabled!==true || !canManageQrDevices;
     btnQr.addEventListener('click',async()=>{
       const modal=await showActionModal({
         title:'Registrar tablet QR',

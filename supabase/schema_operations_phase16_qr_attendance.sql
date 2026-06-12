@@ -99,6 +99,28 @@ create table if not exists public.attendance_qr_scans (
 create index if not exists idx_attendance_qr_scans_created_at
   on public.attendance_qr_scans(created_at desc);
 
+do $$
+declare
+  tbl text;
+begin
+  foreach tbl in array array[
+    'attendance_qr_tokens',
+    'employee_daily_exits',
+    'employee_daily_status'
+  ]
+  loop
+    if not exists (
+      select 1
+      from pg_publication_tables
+      where pubname = 'supabase_realtime'
+        and schemaname = 'public'
+        and tablename = tbl
+    ) then
+      execute format('alter publication supabase_realtime add table public.%I', tbl);
+    end if;
+  end loop;
+end $$;
+
 alter table public.sede_devices enable row level security;
 alter table public.attendance_qr_tokens enable row level security;
 alter table public.employee_daily_exits enable row level security;
@@ -124,12 +146,32 @@ to authenticated
 using (public.is_admin_like())
 with check (public.is_admin_like());
 
+create or replace function public.can_view_qr_registry()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1
+    from public.profiles p
+    where p.id = auth.uid()
+      and p.estado = 'activo'
+      and (
+        p.role in ('superadmin', 'admin', 'editor')
+        or (p.role = 'supervisor' and p.supervisor_eligible = true)
+      )
+  );
+$$;
+
 drop policy if exists "attendance_qr_tokens_admin_read" on public.attendance_qr_tokens;
-create policy "attendance_qr_tokens_admin_read"
+drop policy if exists "attendance_qr_tokens_registry_read" on public.attendance_qr_tokens;
+create policy "attendance_qr_tokens_registry_read"
 on public.attendance_qr_tokens
 for select
 to authenticated
-using (public.is_admin_like());
+using (public.can_view_qr_registry());
 
 drop policy if exists "employee_daily_exits_read_authenticated" on public.employee_daily_exits;
 create policy "employee_daily_exits_read_authenticated"

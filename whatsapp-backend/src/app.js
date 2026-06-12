@@ -187,13 +187,13 @@ function registerAttendanceQrRoutes(appInstance) {
 
   appInstance.get(['/attendance-qr/daily', '/api/attendance-qr/daily'], async (req, res) => {
     try {
-      await requireAdminQrUser(req);
+      await requireQrRegistryUser(req);
       const date = String(req.query?.date || currentDate()).trim();
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
         return sendQrJson(res, 400, { ok: false, error: 'Fecha invalida.' });
       }
-      const rows = await listDailyQrRecords(date);
-      sendQrJson(res, 200, { ok: true, date, rows });
+      const summary = await listDailyQrRecords(date);
+      sendQrJson(res, 200, { ok: true, date, ...summary });
     } catch (error) {
       console.error('Error consultando registro diario QR:', error);
       sendQrJson(res, qrStatusFromError(error), { ok: false, error: qrMessageFromError(error) });
@@ -454,6 +454,18 @@ function mapQrDeviceRow(row = {}) {
 }
 
 async function requireAdminQrUser(req) {
+  return requireQrUser(req, ({ role, profile }) => (
+    ['superadmin', 'admin'].includes(role) || (role === 'supervisor' && profile?.supervisor_eligible === true)
+  ));
+}
+
+async function requireQrRegistryUser(req) {
+  return requireQrUser(req, ({ role, profile }) => (
+    ['superadmin', 'admin', 'editor'].includes(role) || (role === 'supervisor' && profile?.supervisor_eligible === true)
+  ));
+}
+
+async function requireQrUser(req, canAccess) {
   const auth = String(req.headers.authorization || '').trim();
   const token = auth.toLowerCase().startsWith('bearer ') ? auth.slice(7).trim() : '';
   if (!token) throw qrError('missing_auth', 401);
@@ -469,7 +481,7 @@ async function requireAdminQrUser(req) {
   if (profileError) throw profileError;
   const role = String(profile?.role || '').trim().toLowerCase();
   const status = String(profile?.estado || 'activo').trim().toLowerCase();
-  const isPrivileged = ['superadmin', 'admin'].includes(role) || (role === 'supervisor' && profile?.supervisor_eligible === true);
+  const isPrivileged = typeof canAccess === 'function' ? canAccess({ role, profile }) : false;
   if (status !== 'activo' || !isPrivileged) throw qrError('forbidden', 403);
   return profile;
 }
@@ -632,7 +644,8 @@ async function listDailyQrRecords(date) {
   const day = String(date || '').trim();
   const [
     { data: tokenRows, error: tokenError },
-    { data: exitRows, error: exitError }
+    { data: exitRows, error: exitError },
+    { data: sedeRows, error: sedeError }
   ] = await Promise.all([
     supabaseAdmin
       .from('attendance_qr_tokens')
@@ -644,16 +657,40 @@ async function listDailyQrRecords(date) {
       .from('employee_daily_exits')
       .select('*')
       .eq('fecha', day)
-      .order('exit_at', { ascending: true })
+      .order('exit_at', { ascending: true }),
+    supabaseAdmin
+      .from('sedes')
+      .select('codigo,nombre,dependencia_codigo,dependencia_nombre,zona_codigo,zona_nombre,qr_enabled,estado')
+      .eq('qr_enabled', true)
   ]);
   if (tokenError) throw tokenError;
   if (exitError) throw exitError;
+  if (sedeError) throw sedeError;
 
   const tokens = Array.isArray(tokenRows) ? tokenRows : [];
   const exits = Array.isArray(exitRows) ? exitRows : [];
+  const qrSedes = (Array.isArray(sedeRows) ? sedeRows : [])
+    .filter((row) => String(row?.estado || 'activo').trim().toLowerCase() === 'activo');
+  const qrSedesByCode = new Map(qrSedes.map((row) => [String(row.codigo || '').trim(), row]));
+  const qrSedeCodes = [...qrSedesByCode.keys()].filter(Boolean);
+  let pendingStatusRows = [];
+  if (qrSedeCodes.length) {
+    const { data: statusRows, error: statusError } = await supabaseAdmin
+      .from('employee_daily_status')
+      .select('employee_id,documento,nombre,sede_codigo,sede_nombre_snapshot,zona_codigo_snapshot,zona_nombre_snapshot,dependencia_codigo_snapshot,dependencia_nombre_snapshot,tipo_personal,servicio_programado')
+      .eq('fecha', day)
+      .eq('tipo_personal', 'empleado')
+      .eq('servicio_programado', true)
+      .in('sede_codigo', qrSedeCodes)
+      .order('sede_nombre_snapshot', { ascending: true })
+      .order('nombre', { ascending: true });
+    if (statusError) throw statusError;
+    pendingStatusRows = Array.isArray(statusRows) ? statusRows : [];
+  }
   const employeeIds = [...new Set([
     ...tokens.map((row) => row?.employee_id).filter(Boolean),
-    ...exits.map((row) => row?.employee_id).filter(Boolean)
+    ...exits.map((row) => row?.employee_id).filter(Boolean),
+    ...pendingStatusRows.map((row) => row?.employee_id).filter(Boolean)
   ])];
 
   const employeesById = new Map();
@@ -699,6 +736,15 @@ async function listDailyQrRecords(date) {
     row.entryPhone = tokenRow.phone_number || null;
     row.entryDistanceMeters = tokenRow.request_distance_meters == null ? null : Number(tokenRow.request_distance_meters);
   });
+  const entryKeys = new Set(
+    tokens
+      .filter((row) => row?.action === 'entry')
+      .flatMap((row) => [
+        row?.employee_id ? `id:${String(row.employee_id).trim()}` : '',
+        row?.documento ? `doc:${String(row.documento).trim()}` : ''
+      ])
+      .filter(Boolean)
+  );
 
   exits.forEach((exitRow) => {
     const row = ensureRow(exitRow);
@@ -717,7 +763,7 @@ async function listDailyQrRecords(date) {
     row.exitDistanceMeters = tokenRow.request_distance_meters == null ? null : Number(tokenRow.request_distance_meters);
   });
 
-  return [...rowMap.values()]
+  const rows = [...rowMap.values()]
     .map((row) => {
       const entryPhoneDifferent = isDifferentQrPhone(row.entryPhone, row.employeePhone);
       const exitPhoneDifferent = isDifferentQrPhone(row.exitPhone, row.employeePhone);
@@ -730,6 +776,31 @@ async function listDailyQrRecords(date) {
       };
     })
     .sort((a, b) => String(a.sedeNombre || '').localeCompare(String(b.sedeNombre || '')) || String(a.nombre || '').localeCompare(String(b.nombre || '')));
+  const pendingRows = pendingStatusRows
+    .filter((row) => {
+      const employeeId = String(row?.employee_id || '').trim();
+      const documento = String(row?.documento || '').trim();
+      return !(employeeId && entryKeys.has(`id:${employeeId}`)) && !(documento && entryKeys.has(`doc:${documento}`));
+    })
+    .map((row) => {
+      const sede = qrSedesByCode.get(String(row?.sede_codigo || '').trim()) || {};
+      const employee = employeesById.get(String(row?.employee_id || '')) || {};
+      return {
+        employeeId: row.employee_id || null,
+        documento: row.documento || employee.documento || null,
+        nombre: row.nombre || employee.nombre || null,
+        telefono: employee.telefono || null,
+        sedeCodigo: row.sede_codigo || sede.codigo || null,
+        sedeNombre: row.sede_nombre_snapshot || sede.nombre || null,
+        dependenciaCodigo: row.dependencia_codigo_snapshot || sede.dependencia_codigo || null,
+        dependenciaNombre: row.dependencia_nombre_snapshot || sede.dependencia_nombre || null,
+        zonaCodigo: row.zona_codigo_snapshot || sede.zona_codigo || null,
+        zonaNombre: row.zona_nombre_snapshot || sede.zona_nombre || null
+      };
+    })
+    .sort((a, b) => String(a.sedeNombre || '').localeCompare(String(b.sedeNombre || '')) || String(a.nombre || '').localeCompare(String(b.nombre || '')));
+
+  return { rows, pendingRows };
 }
 
 function isDifferentQrPhone(qrPhone, employeePhone) {

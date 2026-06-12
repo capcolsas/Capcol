@@ -2440,26 +2440,29 @@ export async function listDailyQrRecords(date) {
   const payload = await backendJson(`/api/attendance-qr/daily${query}`, {
     headers: { Authorization: `Bearer ${token}` }
   });
-  return payload?.rows || [];
+  return {
+    rows: payload?.rows || [],
+    pendingRows: payload?.pendingRows || []
+  };
 }
 
 export function streamDailyQrRecords(date, onData, onError = null, onStatus = null) {
   const day = String(date || '').trim();
   if (!day) {
-    onData([]);
+    onData({ rows: [], pendingRows: [] });
     return () => {};
   }
   let active = true;
   const emit = async () => {
     try {
-      const rows = await listDailyQrRecords(day);
+      const summary = await listDailyQrRecords(day);
       if (!active) return;
-      onData(rows || []);
+      onData(summary || { rows: [], pendingRows: [] });
     } catch (error) {
       if (!active) return;
       console.error('No se pudo cargar registro diario QR:', error);
       onError?.(error, 'LOAD_ERROR');
-      onData([]);
+      onData({ rows: [], pendingRows: [] });
     }
   };
   const onTokenChange = (payload) => {
@@ -2470,11 +2473,18 @@ export function streamDailyQrRecords(date, onData, onError = null, onStatus = nu
     if (!shouldRefreshForDay(payload, day, 'fecha')) return;
     emit();
   };
+  const onStatusChange = (payload) => {
+    if (!shouldRefreshForDay(payload, day, 'fecha')) return;
+    emit();
+  };
   const onEmployeeChange = () => emit();
+  const onSedeChange = () => emit();
   emit();
   const unTokens = registerTableReloader('attendance_qr_tokens', emit);
   const unExits = registerTableReloader('employee_daily_exits', emit);
+  const unDailyStatus = registerTableReloader('employee_daily_status', emit);
   const unEmployees = registerTableReloader('employees', emit);
+  const unSedes = registerTableReloader('sedes', emit);
   const tokenRealtime = subscribeToRealtime(
     supabase.channel(nextRealtimeChannelName(`attendance-qr-tokens-${day}`)).on('postgres_changes', { event: '*', schema: 'public', table: 'attendance_qr_tokens' }, onTokenChange),
     { label: `attendance_qr_tokens:${day}`, onError, onStatus }
@@ -2487,17 +2497,31 @@ export function streamDailyQrRecords(date, onData, onError = null, onStatus = nu
     supabase.channel(nextRealtimeChannelName(`employees-qr-daily-${day}`)).on('postgres_changes', { event: '*', schema: 'public', table: 'employees' }, onEmployeeChange),
     { label: `employees:qr_daily:${day}`, onError, onStatus }
   );
+  const dailyStatusRealtime = subscribeToRealtime(
+    supabase.channel(nextRealtimeChannelName(`employee-daily-status-qr-${day}`)).on('postgres_changes', { event: '*', schema: 'public', table: 'employee_daily_status' }, onStatusChange),
+    { label: `employee_daily_status:qr_daily:${day}`, onError, onStatus }
+  );
+  const sedesRealtime = subscribeToRealtime(
+    supabase.channel(nextRealtimeChannelName(`sedes-qr-daily-${day}`)).on('postgres_changes', { event: '*', schema: 'public', table: 'sedes' }, onSedeChange),
+    { label: `sedes:qr_daily:${day}`, onError, onStatus }
+  );
   return () => {
     active = false;
     unTokens();
     unExits();
+    unDailyStatus();
     unEmployees();
+    unSedes();
     tokenRealtime.cancel();
     exitRealtime.cancel();
     employeeRealtime.cancel();
+    dailyStatusRealtime.cancel();
+    sedesRealtime.cancel();
     supabase.removeChannel(tokenRealtime.subscription);
     supabase.removeChannel(exitRealtime.subscription);
     supabase.removeChannel(employeeRealtime.subscription);
+    supabase.removeChannel(dailyStatusRealtime.subscription);
+    supabase.removeChannel(sedesRealtime.subscription);
   };
 }
 

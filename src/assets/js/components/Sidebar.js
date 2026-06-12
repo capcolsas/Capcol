@@ -41,7 +41,7 @@ export const Sidebar = () => {
     if (can(PERMS.VIEW_ZONES)) adminLinks.push(navLink('Zonas', '/zones'));
     if (can(PERMS.VIEW_DEPENDENCIES)) adminLinks.push(navLink('Dependencias', '/dependencies'));
     if (can(PERMS.VIEW_SEDES)) adminLinks.push(navLink('Sedes', '/sedes'));
-    if (can(PERMS.IMPORT_DATA)) adminLinks.push(navLink('Lector QR', '/lector-qr'));
+    if (can(PERMS.VIEW_QR_SCANNER)) adminLinks.push(navLink('Lector QR', '/lector-qr'));
     if (can(PERMS.VIEW_CARGOS)) adminLinks.push(navLink('Cargos', '/cargos'));
     if (can(PERMS.VIEW_NOVEDADES)) adminLinks.push(navLink('Novedades', '/novedades'));
     if (adminLinks.length) sections.push(section('Administracion', adminLinks, 'administracion'));
@@ -56,7 +56,7 @@ export const Sidebar = () => {
 
     const opLinks = [];
     if (can(PERMS.IMPORT_DATA)) opLinks.push(navLink('Registro Diario', '/registros-vivo'));
-    if (can(PERMS.IMPORT_DATA)) opLinks.push(navLink('Registro QR', '/registro-qr'));
+    if (can(PERMS.VIEW_QR_DAILY_REGISTRY)) opLinks.push(navLink('Registro QR', '/registro-qr'));
     if (can(PERMS.IMPORT_DATA)) opLinks.push(navLink('Registro Sede', '/registro-sede'));
     if (can(PERMS.VIEW_IMPORT_HISTORY)) opLinks.push(navLink('Historial', '/import-history'));
     if (opLinks.length) sections.push(section('Operacion', opLinks, 'operacion'));

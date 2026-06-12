@@ -30,6 +30,9 @@ export const PERMS = {
   VIEW_NOVEDADES: 'viewNovedades',
   EDIT_NOVEDADES: 'editNovedades',
   IMPORT_DATA: 'importData',
+  VIEW_QR_SCANNER: 'viewQrScanner',
+  VIEW_QR_DAILY_REGISTRY: 'viewQrDailyRegistry',
+  MANAGE_QR_DEVICES: 'manageQrDevices',
   VIEW_IMPORT_HISTORY: 'viewImportHistory',
   RUN_PAYROLL: 'runPayroll',
   MANAGE_ABSENTEEISM: 'manageAbsenteeism',
@@ -68,12 +71,16 @@ export function permsForRole(role) {
         [PERMS.VIEW_CARGOS]: true,
         [PERMS.EDIT_CARGOS]: true,
         [PERMS.VIEW_NOVEDADES]: true,
-        [PERMS.EDIT_NOVEDADES]: true
+        [PERMS.EDIT_NOVEDADES]: true,
+        [PERMS.VIEW_QR_SCANNER]: true,
+        [PERMS.VIEW_QR_DAILY_REGISTRY]: true,
+        [PERMS.MANAGE_QR_DEVICES]: true
       };
     case ROLES.EDITOR:
       return {
         ...none,
         [PERMS.IMPORT_DATA]: true,
+        [PERMS.VIEW_QR_DAILY_REGISTRY]: true,
         [PERMS.VIEW_IMPORT_HISTORY]: true,
         [PERMS.RUN_PAYROLL]: true,
         [PERMS.MANAGE_ABSENTEEISM]: true
@@ -94,6 +101,9 @@ export function permsForRole(role) {
         [PERMS.EDIT_EMPLOYEES]: true,
         [PERMS.VIEW_SUPERVISORS]: true,
         [PERMS.EDIT_SUPERVISORS]: true,
+        [PERMS.VIEW_QR_SCANNER]: true,
+        [PERMS.VIEW_QR_DAILY_REGISTRY]: true,
+        [PERMS.MANAGE_QR_DEVICES]: true,
         [PERMS.UPLOAD_DATA]: true
       };
     case ROLES.EMPLEADO:
