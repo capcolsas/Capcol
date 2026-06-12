@@ -37,6 +37,7 @@ Plataforma de gestion operativa y administrativa para el seguimiento de servicio
 - El radio QR por sede queda en `qr_radius_meters`; por defecto son 500 metros.
 - El ingreso por QR registra en `attendance`; la salida registra en `employee_daily_exits`.
 - La tablet usa `app.html#/lector-qr` y debe activarse con un token de dispositivo generado desde `Sedes`.
+- El seguimiento diario QR se consulta en `app.html#/registro-qr`, incluyendo hora de ingreso, hora de salida y alerta por celular diferente.
 - Variables opcionales del backend:
   - `WHATSAPP_BACKEND_PUBLIC_URL` o `PUBLIC_BACKEND_URL`
   - `ATTENDANCE_QR_TOKEN_MINUTES`

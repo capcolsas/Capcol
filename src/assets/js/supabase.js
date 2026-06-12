@@ -2433,6 +2433,16 @@ export async function scanAttendanceQr({ qrValue, deviceToken }) {
   });
 }
 
+export async function listDailyQrRecords(date) {
+  const token = await getAccessToken();
+  const day = String(date || '').trim();
+  const query = day ? `?date=${encodeURIComponent(day)}` : '';
+  const payload = await backendJson(`/api/attendance-qr/daily${query}`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  return payload?.rows || [];
+}
+
 export async function findSedeByCode(codigo) {
   if (!codigo) return null;
   const { data, error } = await supabase.from('sedes').select('*').eq('codigo', codigo).maybeSingle();

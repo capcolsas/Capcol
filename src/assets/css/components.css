@@ -501,6 +501,7 @@
 .badge--off{color:#c43d34;border-color:#c43d3433;background:#c43d3412}
 .text-success{color:#187a46}
 .text-danger{color:#c43d34}
+.table-row-warning{background:#c43d3408}
 .row-actions{display:inline-flex;gap:.36rem;flex-wrap:nowrap;align-items:center;white-space:nowrap}
 .row-actions .btn{padding:.4rem .62rem;font-size:.82rem;line-height:1}
 .row-actions .btn--icon{padding:0}

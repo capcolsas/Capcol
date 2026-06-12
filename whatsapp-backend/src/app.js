@@ -134,6 +134,8 @@ function registerAttendanceQrRoutes(appInstance) {
   appInstance.use([
     '/attendance-qr/devices',
     '/api/attendance-qr/devices',
+    '/attendance-qr/daily',
+    '/api/attendance-qr/daily',
     '/attendance-qr/scan',
     '/api/attendance-qr/scan'
   ], (req, res, next) => {
@@ -179,6 +181,21 @@ function registerAttendanceQrRoutes(appInstance) {
       });
     } catch (error) {
       console.error('Error creando dispositivo QR:', error);
+      sendQrJson(res, qrStatusFromError(error), { ok: false, error: qrMessageFromError(error) });
+    }
+  });
+
+  appInstance.get(['/attendance-qr/daily', '/api/attendance-qr/daily'], async (req, res) => {
+    try {
+      await requireAdminQrUser(req);
+      const date = String(req.query?.date || currentDate()).trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        return sendQrJson(res, 400, { ok: false, error: 'Fecha invalida.' });
+      }
+      const rows = await listDailyQrRecords(date);
+      sendQrJson(res, 200, { ok: true, date, rows });
+    } catch (error) {
+      console.error('Error consultando registro diario QR:', error);
       sendQrJson(res, qrStatusFromError(error), { ok: false, error: qrMessageFromError(error) });
     }
   });
@@ -601,6 +618,117 @@ async function insertQrScanAudit(payload = {}) {
     user_agent: payload.user_agent || null
   });
   if (error) throw error;
+}
+
+async function listDailyQrRecords(date) {
+  const day = String(date || '').trim();
+  const [
+    { data: tokenRows, error: tokenError },
+    { data: exitRows, error: exitError }
+  ] = await Promise.all([
+    supabaseAdmin
+      .from('attendance_qr_tokens')
+      .select('*')
+      .eq('fecha', day)
+      .not('used_at', 'is', null)
+      .order('used_at', { ascending: true }),
+    supabaseAdmin
+      .from('employee_daily_exits')
+      .select('*')
+      .eq('fecha', day)
+      .order('exit_at', { ascending: true })
+  ]);
+  if (tokenError) throw tokenError;
+  if (exitError) throw exitError;
+
+  const tokens = Array.isArray(tokenRows) ? tokenRows : [];
+  const exits = Array.isArray(exitRows) ? exitRows : [];
+  const employeeIds = [...new Set([
+    ...tokens.map((row) => row?.employee_id).filter(Boolean),
+    ...exits.map((row) => row?.employee_id).filter(Boolean)
+  ])];
+
+  const employeesById = new Map();
+  if (employeeIds.length) {
+    const { data: employees, error: employeesError } = await supabaseAdmin
+      .from('employees')
+      .select('id,documento,nombre,telefono,sede_codigo,sede_nombre')
+      .in('id', employeeIds);
+    if (employeesError) throw employeesError;
+    (employees || []).forEach((employee) => employeesById.set(String(employee.id), employee));
+  }
+
+  const tokenById = new Map(tokens.map((row) => [String(row.id), row]));
+  const rowMap = new Map();
+  const keyFor = (row = {}) => String(row?.employee_id || row?.documento || '').trim();
+  const ensureRow = (source = {}) => {
+    const key = keyFor(source);
+    if (!key) return null;
+    if (!rowMap.has(key)) {
+      const employee = employeesById.get(String(source.employee_id || '')) || {};
+      rowMap.set(key, {
+        employeeId: source.employee_id || null,
+        documento: source.documento || employee.documento || null,
+        nombre: source.nombre || employee.nombre || null,
+        sedeCodigo: source.sede_codigo || employee.sede_codigo || null,
+        sedeNombre: source.sede_nombre || employee.sede_nombre || null,
+        employeePhone: employee.telefono || null,
+        entryAt: null,
+        entryPhone: null,
+        entryDistanceMeters: null,
+        exitAt: null,
+        exitPhone: null,
+        exitDistanceMeters: null
+      });
+    }
+    return rowMap.get(key);
+  };
+
+  tokens.filter((row) => row?.action === 'entry').forEach((tokenRow) => {
+    const row = ensureRow(tokenRow);
+    if (!row) return;
+    row.entryAt = tokenRow.used_at || null;
+    row.entryPhone = tokenRow.phone_number || null;
+    row.entryDistanceMeters = tokenRow.request_distance_meters == null ? null : Number(tokenRow.request_distance_meters);
+  });
+
+  exits.forEach((exitRow) => {
+    const row = ensureRow(exitRow);
+    if (!row) return;
+    const exitToken = tokenById.get(String(exitRow.qr_token_id || '')) || null;
+    row.exitAt = exitRow.exit_at || null;
+    row.exitPhone = exitToken?.phone_number || null;
+    row.exitDistanceMeters = exitToken?.request_distance_meters == null ? null : Number(exitToken.request_distance_meters);
+  });
+
+  tokens.filter((row) => row?.action === 'exit' && !rowMap.has(keyFor(row))).forEach((tokenRow) => {
+    const row = ensureRow(tokenRow);
+    if (!row) return;
+    row.exitAt = tokenRow.used_at || null;
+    row.exitPhone = tokenRow.phone_number || null;
+    row.exitDistanceMeters = tokenRow.request_distance_meters == null ? null : Number(tokenRow.request_distance_meters);
+  });
+
+  return [...rowMap.values()]
+    .map((row) => {
+      const entryPhoneDifferent = isDifferentQrPhone(row.entryPhone, row.employeePhone);
+      const exitPhoneDifferent = isDifferentQrPhone(row.exitPhone, row.employeePhone);
+      return {
+        ...row,
+        entryPhoneDifferent,
+        exitPhoneDifferent,
+        phoneDifferent: entryPhoneDifferent || exitPhoneDifferent,
+        alert: entryPhoneDifferent || exitPhoneDifferent ? 'Celular diferente' : null
+      };
+    })
+    .sort((a, b) => String(a.sedeNombre || '').localeCompare(String(b.sedeNombre || '')) || String(a.nombre || '').localeCompare(String(b.nombre || '')));
+}
+
+function isDifferentQrPhone(qrPhone, employeePhone) {
+  const qr = normalizePhone(qrPhone);
+  const expected = normalizePhone(employeePhone);
+  if (!qr || !expected) return false;
+  return qr !== expected;
 }
 
 async function storeIncomingEvent({ eventType, payload }) {

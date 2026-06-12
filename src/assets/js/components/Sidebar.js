@@ -57,6 +57,7 @@ export const Sidebar = () => {
     if (can(PERMS.IMPORT_DATA)) opLinks.push(navLink('Registro Diario', '/registros-vivo'));
     if (can(PERMS.IMPORT_DATA)) opLinks.push(navLink('Registro Sede', '/registro-sede'));
     if (can(PERMS.IMPORT_DATA)) opLinks.push(navLink('Lector QR', '/lector-qr'));
+    if (can(PERMS.IMPORT_DATA)) opLinks.push(navLink('Registro QR', '/registro-qr'));
     if (can(PERMS.VIEW_IMPORT_HISTORY)) opLinks.push(navLink('Historial', '/import-history'));
     if (can(PERMS.RUN_PAYROLL)) opLinks.push(navLink('Nomina', '/payroll'));
     if (can(PERMS.MANAGE_ABSENTEEISM)) opLinks.push(navLink('Ausentismo', '/absenteeism'));
@@ -180,6 +181,7 @@ function getNavIconLabel(route) {
     '/registros-vivo': 'WA',
     '/registro-sede': 'RS',
     '/lector-qr': 'QR',
+    '/registro-qr': 'RQ',
     '/import-history': 'HI',
     '/payroll': 'NO',
     '/absenteeism': 'AU',
