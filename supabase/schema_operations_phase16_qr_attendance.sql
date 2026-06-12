@@ -55,6 +55,12 @@ create index if not exists idx_attendance_qr_tokens_employee_fecha
 create index if not exists idx_attendance_qr_tokens_expires_at
   on public.attendance_qr_tokens(expires_at);
 
+alter table public.attendance_qr_tokens
+  add column if not exists request_latitude double precision,
+  add column if not exists request_longitude double precision,
+  add column if not exists request_distance_meters integer,
+  add column if not exists location_verified_at timestamptz;
+
 create table if not exists public.employee_daily_exits (
   id text primary key,
   fecha text not null,
