@@ -2443,6 +2443,64 @@ export async function listDailyQrRecords(date) {
   return payload?.rows || [];
 }
 
+export function streamDailyQrRecords(date, onData, onError = null, onStatus = null) {
+  const day = String(date || '').trim();
+  if (!day) {
+    onData([]);
+    return () => {};
+  }
+  let active = true;
+  const emit = async () => {
+    try {
+      const rows = await listDailyQrRecords(day);
+      if (!active) return;
+      onData(rows || []);
+    } catch (error) {
+      if (!active) return;
+      console.error('No se pudo cargar registro diario QR:', error);
+      onError?.(error, 'LOAD_ERROR');
+      onData([]);
+    }
+  };
+  const onTokenChange = (payload) => {
+    if (!shouldRefreshForDay(payload, day, 'fecha')) return;
+    emit();
+  };
+  const onExitChange = (payload) => {
+    if (!shouldRefreshForDay(payload, day, 'fecha')) return;
+    emit();
+  };
+  const onEmployeeChange = () => emit();
+  emit();
+  const unTokens = registerTableReloader('attendance_qr_tokens', emit);
+  const unExits = registerTableReloader('employee_daily_exits', emit);
+  const unEmployees = registerTableReloader('employees', emit);
+  const tokenRealtime = subscribeToRealtime(
+    supabase.channel(nextRealtimeChannelName(`attendance-qr-tokens-${day}`)).on('postgres_changes', { event: '*', schema: 'public', table: 'attendance_qr_tokens' }, onTokenChange),
+    { label: `attendance_qr_tokens:${day}`, onError, onStatus }
+  );
+  const exitRealtime = subscribeToRealtime(
+    supabase.channel(nextRealtimeChannelName(`employee-daily-exits-${day}`)).on('postgres_changes', { event: '*', schema: 'public', table: 'employee_daily_exits' }, onExitChange),
+    { label: `employee_daily_exits:${day}`, onError, onStatus }
+  );
+  const employeeRealtime = subscribeToRealtime(
+    supabase.channel(nextRealtimeChannelName(`employees-qr-daily-${day}`)).on('postgres_changes', { event: '*', schema: 'public', table: 'employees' }, onEmployeeChange),
+    { label: `employees:qr_daily:${day}`, onError, onStatus }
+  );
+  return () => {
+    active = false;
+    unTokens();
+    unExits();
+    unEmployees();
+    tokenRealtime.cancel();
+    exitRealtime.cancel();
+    employeeRealtime.cancel();
+    supabase.removeChannel(tokenRealtime.subscription);
+    supabase.removeChannel(exitRealtime.subscription);
+    supabase.removeChannel(employeeRealtime.subscription);
+  };
+}
+
 export async function findSedeByCode(codigo) {
   if (!codigo) return null;
   const { data, error } = await supabase.from('sedes').select('*').eq('codigo', codigo).maybeSingle();

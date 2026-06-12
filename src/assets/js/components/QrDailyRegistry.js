@@ -3,6 +3,7 @@ import { el, qs } from '../utils/dom.js';
 export const QrDailyRegistry = (mount, deps = {}) => {
   let rows = [];
   let selectedDate = todayBogota();
+  let unsubscribe = null;
 
   const ui = el('section', { className: 'main-card' }, [
     el('div', { className: 'wa-header__top' }, [
@@ -122,24 +123,43 @@ export const QrDailyRegistry = (mount, deps = {}) => {
     renderStats();
   }
 
-  async function loadRows() {
+  function subscribeRows() {
     selectedDate = String(qs('#qrDailyDate', ui)?.value || todayBogota()).trim();
     qs('#qrDailyDateLabel', ui).textContent = selectedDate;
-    qs('#qrDailyMsg', ui).textContent = 'Consultando registros QR...';
-    try {
-      rows = await deps.listDailyQrRecords?.(selectedDate) || [];
-      renderRows();
-      qs('#qrDailyMsg', ui).textContent = `Registros cargados: ${rows.length}`;
-    } catch (error) {
+    qs('#qrDailyMsg', ui).textContent = 'Conectando registro QR en vivo...';
+    try { unsubscribe?.(); } catch (_) {}
+    unsubscribe = null;
+    if (typeof deps.streamDailyQrRecords !== 'function') {
       rows = [];
       renderRows();
-      qs('#qrDailyMsg', ui).textContent = `Error consultando registro QR: ${error?.message || error}`;
+      qs('#qrDailyMsg', ui).textContent = 'No esta disponible la suscripcion del registro QR.';
+      return;
     }
+    unsubscribe = deps.streamDailyQrRecords(
+      selectedDate,
+      (nextRows = []) => {
+        rows = nextRows || [];
+        renderRows();
+        qs('#qrDailyMsg', ui).textContent = `Registro QR en vivo. Registros: ${rows.length}`;
+      },
+      (error) => {
+        rows = [];
+        renderRows();
+        qs('#qrDailyMsg', ui).textContent = `Error consultando registro QR: ${error?.message || error}`;
+      },
+      (status) => {
+        if (status === 'SUBSCRIBED') qs('#qrDailyMsg', ui).textContent = `Registro QR en vivo. Registros: ${rows.length}`;
+      }
+    ) || null;
   }
 
-  qs('#btnLoadQrDaily', ui)?.addEventListener('click', loadRows);
-  qs('#qrDailyDate', ui)?.addEventListener('change', loadRows);
+  qs('#btnLoadQrDaily', ui)?.addEventListener('click', subscribeRows);
+  qs('#qrDailyDate', ui)?.addEventListener('change', subscribeRows);
 
   mount.replaceChildren(ui);
-  loadRows();
+  subscribeRows();
+  return () => {
+    try { unsubscribe?.(); } catch (_) {}
+    unsubscribe = null;
+  };
 };
