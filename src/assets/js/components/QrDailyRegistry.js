@@ -13,13 +13,7 @@ export const QrDailyRegistry = (mount, deps = {}) => {
         el('strong', { id: 'qrDailyDateLabel', className: 'wa-date-pill__value' }, [selectedDate])
       ])
     ]),
-    el('div', { className: 'form-row mt-2' }, [
-      el('div', {}, [
-        el('label', { className: 'label' }, ['Fecha']),
-        el('input', { id: 'qrDailyDate', className: 'input', type: 'date', value: selectedDate })
-      ]),
-      el('button', { id: 'btnLoadQrDaily', className: 'btn btn--primary', type: 'button' }, ['Consultar'])
-    ]),
+    el('p', { className: 'text-muted mt-2' }, ['Vista operativa en vivo del dia actual.']),
     el('section', { className: 'wa-stats wa-stats--nov mt-2' }, [
       statCard('Registros QR', 'qrTotal', '0'),
       statCard('Con salida', 'qrWithExit', '0'),
@@ -124,7 +118,7 @@ export const QrDailyRegistry = (mount, deps = {}) => {
   }
 
   function subscribeRows() {
-    selectedDate = String(qs('#qrDailyDate', ui)?.value || todayBogota()).trim();
+    selectedDate = todayBogota();
     qs('#qrDailyDateLabel', ui).textContent = selectedDate;
     qs('#qrDailyMsg', ui).textContent = 'Conectando registro QR en vivo...';
     try { unsubscribe?.(); } catch (_) {}
@@ -152,9 +146,6 @@ export const QrDailyRegistry = (mount, deps = {}) => {
       }
     ) || null;
   }
-
-  qs('#btnLoadQrDaily', ui)?.addEventListener('click', subscribeRows);
-  qs('#qrDailyDate', ui)?.addEventListener('change', subscribeRows);
 
   mount.replaceChildren(ui);
   subscribeRows();
