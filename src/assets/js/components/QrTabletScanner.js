@@ -1,8 +1,8 @@
 import { el, qs } from '../utils/dom.js';
 
 const DEVICE_TOKEN_KEY = 'rocky_qr_device_token';
-const IDLE_PAUSE_MS = 10 * 60 * 1000;
-const AFTER_SCAN_PAUSE_MS = 5 * 60 * 1000;
+const IDLE_PAUSE_MS = 3 * 60 * 1000;
+const AFTER_SCAN_PAUSE_MS = 3 * 60 * 1000;
 
 export const QrTabletScanner = (mount, deps = {}) => {
   let stream = null;

@@ -599,6 +599,7 @@
 .wa-summary-group{display:grid;gap:.18rem}
 .wa-summary-group__title{font-weight:600;line-height:1}
 .wa-stats--nov{grid-template-columns:repeat(3,minmax(0,1fr))}
+.wa-stats--qr-registry{grid-template-columns:repeat(5,minmax(0,1fr))}
 .wa-live-table{table-layout:fixed;min-width:980px}
 .wa-live-table th,.wa-live-table td{vertical-align:top}
 
@@ -925,6 +926,7 @@ html[data-theme="dark"] .report-card.is-active{
   .wa-header{grid-template-columns:1fr}
   .wa-stats{grid-template-columns:repeat(3,minmax(0,1fr))}
   .wa-stats--summary{grid-template-columns:1fr}
+  .wa-stats--qr-registry{grid-template-columns:repeat(5,minmax(0,1fr))}
   .wa-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
   .wa-summary-groups{grid-template-columns:1fr}
   .wa-kpis--three{grid-template-columns:repeat(3,minmax(0,1fr))}

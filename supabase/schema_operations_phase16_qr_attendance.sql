@@ -28,6 +28,28 @@ create index if not exists idx_sede_devices_sede_codigo
 create index if not exists idx_sede_devices_estado
   on public.sede_devices(estado);
 
+create table if not exists public.sede_device_sites (
+  id uuid primary key default gen_random_uuid(),
+  device_id uuid not null references public.sede_devices(id) on delete cascade,
+  sede_id uuid references public.sedes(id) on delete cascade,
+  sede_codigo text not null,
+  sede_nombre text,
+  created_at timestamptz not null default now(),
+  unique(device_id, sede_codigo)
+);
+
+create index if not exists idx_sede_device_sites_device_id
+  on public.sede_device_sites(device_id);
+
+create index if not exists idx_sede_device_sites_sede_codigo
+  on public.sede_device_sites(sede_codigo);
+
+insert into public.sede_device_sites(device_id, sede_id, sede_codigo, sede_nombre)
+select d.id, d.sede_id, d.sede_codigo, d.sede_nombre
+from public.sede_devices d
+where d.sede_codigo is not null
+on conflict (device_id, sede_codigo) do nothing;
+
 create table if not exists public.attendance_qr_tokens (
   id uuid primary key default gen_random_uuid(),
   token_hash text not null unique,
@@ -122,6 +144,7 @@ begin
 end $$;
 
 alter table public.sede_devices enable row level security;
+alter table public.sede_device_sites enable row level security;
 alter table public.attendance_qr_tokens enable row level security;
 alter table public.employee_daily_exits enable row level security;
 alter table public.attendance_qr_scans enable row level security;
@@ -141,6 +164,21 @@ using (true);
 drop policy if exists "sede_devices_write_admin" on public.sede_devices;
 create policy "sede_devices_write_admin"
 on public.sede_devices
+for all
+to authenticated
+using (public.is_admin_like())
+with check (public.is_admin_like());
+
+drop policy if exists "sede_device_sites_read_authenticated" on public.sede_device_sites;
+create policy "sede_device_sites_read_authenticated"
+on public.sede_device_sites
+for select
+to authenticated
+using (true);
+
+drop policy if exists "sede_device_sites_write_admin" on public.sede_device_sites;
+create policy "sede_device_sites_write_admin"
+on public.sede_device_sites
 for all
 to authenticated
 using (public.is_admin_like())

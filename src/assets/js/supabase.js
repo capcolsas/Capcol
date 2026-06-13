@@ -2416,12 +2416,12 @@ async function backendJson(path, { method = 'GET', body = null, headers = {} } =
   return payload;
 }
 
-export async function createQrDevice({ sedeCodigo, deviceName }) {
+export async function createQrDevice({ sedeCodigo, sedeCodigos = [], deviceName }) {
   const token = await getAccessToken();
   return backendJson('/api/attendance-qr/devices', {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}` },
-    body: { sedeCodigo, deviceName }
+    body: { sedeCodigo, sedeCodigos, deviceName }
   });
 }
 

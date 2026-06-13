@@ -147,23 +147,26 @@ function registerAttendanceQrRoutes(appInstance) {
   appInstance.post(['/attendance-qr/devices', '/api/attendance-qr/devices'], async (req, res) => {
     try {
       const profile = await requireAdminQrUser(req);
-      const sedeCodigo = String(req.body?.sedeCodigo || '').trim();
+      const requestedSedeCodigo = String(req.body?.sedeCodigo || '').trim();
+      const selectedSedeCodigos = normalizeSedeCodeList(req.body?.sedeCodigos);
+      const sedeCodigos = selectedSedeCodigos.length ? selectedSedeCodigos : normalizeSedeCodeList(null, requestedSedeCodigo);
       const deviceName = String(req.body?.deviceName || '').trim();
-      if (!sedeCodigo) return sendQrJson(res, 400, { ok: false, error: 'Selecciona una sede.' });
+      if (!sedeCodigos.length) return sendQrJson(res, 400, { ok: false, error: 'Selecciona al menos una sede.' });
       if (!deviceName) return sendQrJson(res, 400, { ok: false, error: 'Escribe el nombre de la tablet.' });
 
-      const sede = await getSedeByCode(sedeCodigo);
-      if (!sede || String(sede.estado || '').trim().toLowerCase() !== 'activo') {
-        return sendQrJson(res, 404, { ok: false, error: 'No encontramos una sede activa con ese codigo.' });
+      const sedes = await getActiveQrSedesByCodes(sedeCodigos);
+      if (sedes.length !== sedeCodigos.length) {
+        return sendQrJson(res, 404, { ok: false, error: 'Todas las sedes seleccionadas deben estar activas y con QR activo.' });
       }
+      const primarySede = sedes.find((row) => String(row.codigo || '').trim() === requestedSedeCodigo) || sedes[0];
 
       const deviceToken = createQrToken();
       const { data, error } = await supabaseAdmin
         .from('sede_devices')
         .insert({
-          sede_id: sede.id || null,
-          sede_codigo: sede.codigo,
-          sede_nombre: sede.nombre || null,
+          sede_id: primarySede.id || null,
+          sede_codigo: primarySede.codigo,
+          sede_nombre: primarySede.nombre || null,
           device_name: deviceName,
           token_hash: hashToken(deviceToken),
           estado: 'activo',
@@ -173,6 +176,12 @@ function registerAttendanceQrRoutes(appInstance) {
         .select('id,sede_codigo,sede_nombre,device_name,estado,created_at')
         .single();
       if (error) throw error;
+      try {
+        await insertQrDeviceSites(data.id, sedes);
+      } catch (linkError) {
+        try { await supabaseAdmin.from('sede_devices').delete().eq('id', data.id); } catch (_) {}
+        throw linkError;
+      }
 
       sendQrJson(res, 200, {
         ok: true,
@@ -252,7 +261,7 @@ function registerAttendanceQrRoutes(appInstance) {
         sede_codigo: tokenRow.sede_codigo || null
       };
 
-      if (String(device.sede_codigo || '').trim() !== String(tokenRow.sede_codigo || '').trim()) throw qrError('sede_mismatch', 403);
+      if (!(await qrDeviceAllowsSede(device, tokenRow.sede_codigo))) throw qrError('sede_mismatch', 403);
       if (String(tokenRow.fecha || '').trim() !== currentDate()) throw qrError('wrong_day', 409);
       if (new Date(tokenRow.expires_at).getTime() <= Date.now()) throw qrError('qr_expired', 409);
       if (tokenRow.used_at) throw qrError('qr_used', 409);
@@ -492,6 +501,56 @@ async function getSedeByCode(codigo) {
   const { data, error } = await supabaseAdmin.from('sedes').select('*').eq('codigo', code).maybeSingle();
   if (error) throw error;
   return data || null;
+}
+
+function normalizeSedeCodeList(value, fallback = '') {
+  const list = Array.isArray(value) ? value : [value];
+  if (fallback) list.unshift(fallback);
+  return [...new Set(list.map((item) => String(item || '').trim()).filter(Boolean))];
+}
+
+async function getActiveQrSedesByCodes(codes = []) {
+  const normalized = normalizeSedeCodeList(codes);
+  if (!normalized.length) return [];
+  const { data, error } = await supabaseAdmin
+    .from('sedes')
+    .select('id,codigo,nombre,qr_enabled,estado')
+    .in('codigo', normalized);
+  if (error) throw error;
+  const byCode = new Map((data || [])
+    .filter((row) => row?.qr_enabled === true && String(row?.estado || '').trim().toLowerCase() === 'activo')
+    .map((row) => [String(row.codigo || '').trim(), row]));
+  return normalized.map((code) => byCode.get(code)).filter(Boolean);
+}
+
+async function insertQrDeviceSites(deviceId, sedes = []) {
+  if (!deviceId || !sedes.length) return;
+  const rows = sedes.map((sede) => ({
+    device_id: deviceId,
+    sede_id: sede.id || null,
+    sede_codigo: sede.codigo,
+    sede_nombre: sede.nombre || null
+  }));
+  const { error } = await supabaseAdmin
+    .from('sede_device_sites')
+    .upsert(rows, { onConflict: 'device_id,sede_codigo' });
+  if (error) throw error;
+}
+
+async function qrDeviceAllowsSede(device = {}, sedeCodigo = '') {
+  const code = String(sedeCodigo || '').trim();
+  if (!device?.id || !code) return false;
+  const fallbackAllowed = String(device.sede_codigo || '').trim() === code;
+  const { data, error } = await supabaseAdmin
+    .from('sede_device_sites')
+    .select('sede_codigo')
+    .eq('device_id', device.id);
+  if (error) {
+    console.error('Error consultando sedes autorizadas de tablet QR:', error);
+    return fallbackAllowed;
+  }
+  if (!Array.isArray(data) || !data.length) return fallbackAllowed;
+  return data.some((row) => String(row?.sede_codigo || '').trim() === code);
 }
 
 async function getQrTokenByHash(tokenHash) {

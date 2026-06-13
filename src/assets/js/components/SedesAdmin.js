@@ -353,134 +353,165 @@ export const SedesAdmin=(mount,deps={})=>{
       date: hasMod ? formatDate(s.lastModifiedAt) : formatDate(s.createdAt)
     };
   }
+  function activeQrSedeOptions(){
+    return [...snapshot]
+      .filter((row)=> row?.qrEnabled===true && String(row?.estado||'activo').trim().toLowerCase()==='activo' && String(row?.codigo||'').trim())
+      .sort((a,b)=> String(a.nombre||a.codigo||'').localeCompare(String(b.nombre||b.codigo||'')))
+      .map((row)=> ({ value:String(row.codigo||'').trim(), label:`${row.nombre||row.codigo||'-'} (${row.codigo||'-'})` }));
+  }
+  async function openMoreOptionsModal(s){
+    const target=s.estado==='activo'?'inactivo':'activo';
+    const modal=await showActionModal({
+      title:'Mas opciones',
+      message:`Sede: ${s.nombre||'-'}`,
+      confirmText:'Continuar',
+      fields:[{
+        id:'action',
+        label:'Accion',
+        type:'select',
+        required:true,
+        options:[
+          { value:'', label:'Seleccione...' },
+          { value:'edit', label:'Editar' },
+          { value:'toggle', label:target==='inactivo'?'Desactivar':'Activar' }
+        ]
+      }]
+    });
+    if(!modal.confirmed) return;
+    if(modal.values.action==='edit') return openEditSedeModal(s);
+    if(modal.values.action==='toggle') return openToggleSedeModal(s);
+  }
+  async function openRegisterQrDeviceModal(s){
+    const canManageQrDevices=can(PERMS.MANAGE_QR_DEVICES);
+    if(s.qrEnabled!==true) return alert('Activa QR en la sede para registrar tablets.');
+    if(!canManageQrDevices) return alert('No tienes permiso para administrar tablets QR.');
+    const sedeOptions=activeQrSedeOptions();
+    const modal=await showActionModal({
+      title:'Registrar tablet QR',
+      message:`Sede: ${s.nombre||s.codigo||'-'}`,
+      confirmText:'Generar token',
+      fields:[
+        { id:'deviceName', label:'Nombre de la tablet', type:'text', required:true, placeholder:'Ej: Tablet recepcion principal' },
+        { id:'sedeCodigos', label:'Sedes autorizadas', type:'checkboxes', required:true, value:[s.codigo], options:sedeOptions }
+      ]
+    });
+    if(!modal.confirmed) return;
+    const sedeCodigos=Array.isArray(modal.values.sedeCodigos) ? modal.values.sedeCodigos : [modal.values.sedeCodigos].filter(Boolean);
+    if(!sedeCodigos.length) return alert('Selecciona al menos una sede.');
+    const sedeLabels=sedeCodigos.map((codigo)=>{
+      const sede=snapshot.find((row)=> String(row?.codigo||'').trim()===String(codigo||'').trim());
+      return sede ? `${sede.nombre||sede.codigo||'-'} (${sede.codigo||'-'})` : String(codigo||'').trim();
+    });
+    try{
+      const result=await deps.createQrDevice?.({ sedeCodigo:s.codigo, sedeCodigos, deviceName:modal.values.deviceName });
+      const token=String(result?.deviceToken||'').trim();
+      showInfoModal('Tablet QR registrada',[
+        `Sedes: ${sedeLabels.join(', ')}`,
+        `Tablet: ${modal.values.deviceName}`,
+        'Abre Lector QR en la tablet y pega este token de dispositivo:',
+        token
+      ]);
+      await deps.addAuditLog?.({ targetType:'sede', targetId:s.id, action:'create_qr_device', after:{ sedeCodigo:s.codigo, sedeCodigos, deviceName:modal.values.deviceName } });
+    }catch(e){ alert('Error: '+(e?.message||e)); }
+  }
+  async function openToggleSedeModal(s){
+    const target=s.estado==='activo'?'inactivo':'activo';
+    const modal=await showActionModal({
+      title:`${target==='inactivo'?'Desactivar':'Activar'} sede`,
+      message:`Sede: ${s.nombre||'-'}`,
+      confirmText:target==='inactivo'?'Desactivar':'Activar',
+      fields:[{ id:'detail', label:'Detalle', type:'textarea', required:true, placeholder:'Escribe el motivo o detalle de esta accion' }]
+    });
+    if(!modal.confirmed) return;
+    try{ await deps.setSedeStatus?.(s.id,target); await deps.addAuditLog?.({ targetType:'sede', targetId:s.id, action: target==='activo'?'activate_sede':'deactivate_sede', before:{estado:s.estado}, after:{estado:target}, note: modal.values.detail||null }); }catch(e){ alert('Error: '+(e?.message||e)); }
+  }
+  async function openEditSedeModal(s){
+    const modal=await showActionModal({
+      title:'Editar sede',
+      message:`Sede: ${s.nombre||'-'}`,
+      confirmText:'Guardar cambios',
+      fields:[
+        { id:'codigo', label:'Codigo', type:'text', required:true, value:s.codigo||'' },
+        { id:'nombre', label:'Nombre', type:'text', required:true, value:s.nombre||'' },
+        { id:'dependencia', label:'Dependencia', type:'datalist', required:true, placeholder:'Selecciona o escribe dependencia', value:labelByCode(depList,s.dependenciaCodigo||''), options:catalogOptions(depList) },
+        { id:'zona', label:'Zona', type:'datalist', required:true, placeholder:'Selecciona o escribe zona', value:labelByCode(zoneList,s.zonaCodigo||''), options:catalogOptions(zoneList) },
+        { id:'numeroOperarios', label:'Nro de operarios', type:'number', required:true, min:'0', step:'1', value:String(s.numeroOperarios ?? '') },
+        {
+          id:'jornada',
+          label:'Jornada',
+          type:'select',
+          value:s.jornada||'lun_vie',
+          options:[
+            { value:'lun_vie', label:'Lunes a viernes' },
+            { value:'lun_sab', label:'Lunes a sabado' },
+            { value:'lun_dom', label:'Lunes a domingo' }
+          ]
+        },
+        {
+          id:'qrEnabled',
+          label:'QR',
+          type:'select',
+          value:s.qrEnabled===true?'true':'false',
+          options:[
+            { value:'false', label:'Inactivo' },
+            { value:'true', label:'Activo' }
+          ]
+        },
+        { id:'qrLatitude', label:'Latitud QR', type:'number', step:'0.000001', value:s.qrLatitude ?? '', placeholder:'Ej: 6.244203' },
+        { id:'qrLongitude', label:'Longitud QR', type:'number', step:'0.000001', value:s.qrLongitude ?? '', placeholder:'Ej: -75.581212' },
+        { id:'qrRadiusMeters', label:'Radio QR (m)', type:'number', min:'1', step:'1', value:String(s.qrRadiusMeters || 500) },
+        { id:'detail', label:'Detalle de la modificacion', type:'textarea', required:true, placeholder:'Describe brevemente el cambio realizado' }
+      ]
+    });
+    if(!modal.confirmed) return;
+    const newCode=String(modal.values.codigo||'').trim();
+    const newName=String(modal.values.nombre||'').trim();
+    const newDepCode=resolveCode(depList, modal.values.dependencia);
+    const newZoneCode=resolveCode(zoneList, modal.values.zona);
+    const newOpsRaw=String(modal.values.numeroOperarios||'').trim();
+    const newJornada=String(modal.values.jornada||'lun_vie').trim() || 'lun_vie';
+    const newQrEnabled=String(modal.values.qrEnabled||'false')==='true';
+    const newQrLatitude=parseOptionalNumber(modal.values.qrLatitude);
+    const newQrLongitude=parseOptionalNumber(modal.values.qrLongitude);
+    const newQrRadiusMeters=parsePositiveInteger(modal.values.qrRadiusMeters,500);
+    if(!newCode||!newName) return alert('Completa codigo y nombre.');
+    if(!newDepCode||!newZoneCode) return alert('Selecciona dependencia y zona.');
+    const newOps=Number(newOpsRaw);
+    if(!Number.isFinite(newOps) || newOps<0 || !Number.isInteger(newOps)) return alert('Ingresa un numero entero de operarios valido.');
+    if(newQrEnabled && (!Number.isFinite(newQrLatitude) || !Number.isFinite(newQrLongitude))) return alert('Para activar QR debes configurar latitud y longitud.');
+    try{
+      if(newCode!==s.codigo){ const dup=await deps.findSedeByCode?.(newCode); if(dup && dup.id!==s.id) return alert('Ya existe una sede con ese codigo.'); }
+      const newDep=depList.find(d=>d.codigo===newDepCode);
+      const newZone=zoneList.find(z=>z.codigo===newZoneCode);
+      await deps.updateSede?.(s.id,{
+        codigo:newCode,
+        nombre:newName,
+        dependenciaCodigo:newDepCode,
+        dependenciaNombre:newDep?.nombre||null,
+        zonaCodigo:newZoneCode,
+        zonaNombre:newZone?.nombre||null,
+        numeroOperarios:newOps,
+        jornada:newJornada,
+        qrEnabled:newQrEnabled,
+        qrLatitude:newQrLatitude,
+        qrLongitude:newQrLongitude,
+        qrRadiusMeters:newQrRadiusMeters
+      });
+      await deps.addAuditLog?.({ targetType:'sede', targetId:s.id, action:'update_sede', before:{ codigo:s.codigo, nombre:s.nombre, dependenciaCodigo:s.dependenciaCodigo, zonaCodigo:s.zonaCodigo, numeroOperarios:s.numeroOperarios, jornada:s.jornada||'lun_vie', qrEnabled:s.qrEnabled===true, qrLatitude:s.qrLatitude, qrLongitude:s.qrLongitude, qrRadiusMeters:s.qrRadiusMeters }, after:{ codigo:newCode, nombre:newName, dependenciaCodigo:newDepCode, zonaCodigo:newZoneCode, numeroOperarios:newOps, jornada:newJornada, qrEnabled:newQrEnabled, qrLatitude:newQrLatitude, qrLongitude:newQrLongitude, qrRadiusMeters:newQrRadiusMeters }, note: modal.values.detail||null });
+    }catch(e){ alert('Error: '+(e?.message||e)); }
+  }
   function actionsCell(s){
     const box=el('div',{className:'row-actions'},[]);
-    const btnEdit=el('button',{className:'btn btn--icon',title:'Editar'},['\u270E']);
-    btnEdit.addEventListener('click',()=>{ const tr=tbody.querySelector(`tr[data-id="${s.id}"]`); if(tr) startEdit(tr,s); });
     const canManageQrDevices=can(PERMS.MANAGE_QR_DEVICES);
     const qrDisabledReason=s.qrEnabled!==true?'Activa QR en la sede para registrar tablets':'No tienes permiso para administrar tablets QR';
-    const btnQr=el('button',{className:'btn btn--icon',title:canManageQrDevices && s.qrEnabled===true?'Registrar tablet QR':qrDisabledReason,'aria-label':'Registrar tablet QR'},['QR']);
-    btnQr.disabled=s.qrEnabled!==true || !canManageQrDevices;
-    btnQr.addEventListener('click',async()=>{
-      const modal=await showActionModal({
-        title:'Registrar tablet QR',
-        message:`Sede: ${s.nombre||s.codigo||'-'}`,
-        confirmText:'Generar token',
-        fields:[{ id:'deviceName', label:'Nombre de la tablet', type:'text', required:true, placeholder:'Ej: Tablet recepcion principal' }]
-      });
-      if(!modal.confirmed) return;
-      try{
-        const result=await deps.createQrDevice?.({ sedeCodigo:s.codigo, deviceName:modal.values.deviceName });
-        const token=String(result?.deviceToken||'').trim();
-        showInfoModal('Tablet QR registrada',[
-          `Sede: ${s.nombre||s.codigo||'-'}`,
-          `Tablet: ${modal.values.deviceName}`,
-          'Abre Lector QR en la tablet y pega este token de dispositivo:',
-          token
-        ]);
-        await deps.addAuditLog?.({ targetType:'sede', targetId:s.id, action:'create_qr_device', after:{ sedeCodigo:s.codigo, deviceName:modal.values.deviceName } });
-      }catch(e){ alert('Error: '+(e?.message||e)); }
-    });
-    const btnToggle=el('button',{className:'btn btn--icon '+(s.estado==='activo'?'btn--danger':'' ),title:s.estado==='activo'?'Desactivar':'Activar','aria-label':s.estado==='activo'?'Desactivar':'Activar'},[ s.estado==='activo'?'\u23FB':'\u21BA' ]);
-    btnToggle.addEventListener('click',async()=>{
-      const target=s.estado==='activo'?'inactivo':'activo';
-      const modal=await showActionModal({
-        title:`${target==='inactivo'?'Desactivar':'Activar'} sede`,
-        message:`Sede: ${s.nombre||'-'}`,
-        confirmText:target==='inactivo'?'Desactivar':'Activar',
-        fields:[{ id:'detail', label:'Detalle', type:'textarea', required:true, placeholder:'Escribe el motivo o detalle de esta accion' }]
-      });
-      if(!modal.confirmed) return;
-      try{ await deps.setSedeStatus?.(s.id,target); await deps.addAuditLog?.({ targetType:'sede', targetId:s.id, action: target==='activo'?'activate_sede':'deactivate_sede', before:{estado:s.estado}, after:{estado:target}, note: modal.values.detail||null }); }catch(e){ alert('Error: '+(e?.message||e)); }
-    });
-    const btnInfo=el('button',{className:'btn btn--icon',title:'Ver informacion','aria-label':'Ver informacion'},['\u24D8']);
+    const btnInfo=el('button',{className:'btn btn--icon',type:'button',title:'Ver informacion','aria-label':'Ver informacion'},['\u24D8']);
     btnInfo.addEventListener('click',()=>{ const info=auditInfoData(s); showInfoModal('Informacion del registro',[`Evento: ${info.action}`,`Usuario: ${info.user}`,`Fecha: ${info.date}`]); });
-    box.append(btnEdit,btnQr,btnToggle,btnInfo); return box;
-  }
-  function startEdit(tr,s){
-    const cur={
-      codigo:s.codigo||'',
-      nombre:s.nombre||'',
-      dependenciaCodigo:s.dependenciaCodigo||'',
-      zonaCodigo:s.zonaCodigo||'',
-      numeroOperarios:s.numeroOperarios ?? '',
-      jornada:s.jornada||'lun_vie',
-      qrEnabled:s.qrEnabled===true,
-      qrLatitude:s.qrLatitude ?? '',
-      qrLongitude:s.qrLongitude ?? '',
-      qrRadiusMeters:s.qrRadiusMeters || 500
-    };
-    const tds=tr.querySelectorAll('td');
-    tds[0].replaceChildren(el('input',{className:'input',value:cur.codigo,style:'max-width:140px'}));
-    tds[1].replaceChildren(el('input',{className:'input',value:cur.nombre,style:'max-width:220px'}));
-    tds[2].replaceChildren(el('input',{className:'input',list:'sDepList',value:labelByCode(depList,cur.dependenciaCodigo),style:'max-width:260px'}));
-    tds[3].replaceChildren(el('input',{className:'input',list:'sZoneList',value:labelByCode(zoneList,cur.zonaCodigo),style:'max-width:260px'}));
-    tds[4].replaceChildren(el('input',{className:'input',value:String(cur.numeroOperarios),style:'max-width:120px',type:'number',min:'0',step:'1',inputMode:'numeric'}));
-    tds[5].replaceChildren(el('select',{className:'select'},[
-      el('option',{value:'lun_vie',selected:cur.jornada==='lun_vie'},['Lunes a viernes']),
-      el('option',{value:'lun_sab',selected:cur.jornada==='lun_sab'},['Lunes a sabado']),
-      el('option',{value:'lun_dom',selected:cur.jornada==='lun_dom'},['Lunes a domingo'])
-    ]));
-    tds[6].replaceChildren(el('select',{className:'select'},[
-      el('option',{value:'false',selected:cur.qrEnabled!==true},['Inactivo']),
-      el('option',{value:'true',selected:cur.qrEnabled===true},['Activo'])
-    ]));
-    tds[7].replaceChildren(el('div',{style:'display:grid;gap:6px;min-width:180px;'},[
-      el('input',{className:'input',value:String(cur.qrLatitude),type:'number',step:'0.000001',placeholder:'Latitud'}),
-      el('input',{className:'input',value:String(cur.qrLongitude),type:'number',step:'0.000001',placeholder:'Longitud'}),
-      el('input',{className:'input',value:String(cur.qrRadiusMeters),type:'number',min:'1',step:'1',placeholder:'Radio m'})
-    ]));
-    tds[8].replaceChildren(statusBadge(s.estado));
-    const box=el('div',{className:'row-actions'},[]);
-    const btnSave=el('button',{className:'btn btn--primary'},['Guardar']);
-    const btnCancel=el('button',{className:'btn'},['Cancelar']);
-    btnSave.addEventListener('click',async()=>{
-      const newCode=tds[0].querySelector('input').value.trim();
-      const newName=tds[1].querySelector('input').value.trim();
-      const newDepCode=resolveCode(depList, tds[2].querySelector('input').value);
-      const newZoneCode=resolveCode(zoneList, tds[3].querySelector('input').value);
-      const newOpsRaw=tds[4].querySelector('input').value.trim();
-      const newJornada=tds[5].querySelector('select').value;
-      const newQrEnabled=tds[6].querySelector('select').value==='true';
-      const qrInputs=tds[7].querySelectorAll('input');
-      const newQrLatitude=parseOptionalNumber(qrInputs[0]?.value);
-      const newQrLongitude=parseOptionalNumber(qrInputs[1]?.value);
-      const newQrRadiusMeters=parsePositiveInteger(qrInputs[2]?.value,500);
-      if(!newCode||!newName) return alert('Completa codigo y nombre.');
-      if(!newDepCode||!newZoneCode) return alert('Selecciona dependencia y zona.');
-      const newOps=Number(newOpsRaw);
-      if(!Number.isFinite(newOps) || newOps<0 || !Number.isInteger(newOps)) return alert('Ingresa un numero entero de operarios valido.');
-      if(newQrEnabled && (!Number.isFinite(newQrLatitude) || !Number.isFinite(newQrLongitude))) return alert('Para activar QR debes configurar latitud y longitud.');
-      const modal=await showActionModal({
-        title:'Confirmar modificacion',
-        message:`Sede: ${s.nombre||'-'}`,
-        confirmText:'Guardar cambios',
-        fields:[{ id:'detail', label:'Detalle de la modificacion', type:'textarea', required:true, placeholder:'Describe brevemente el cambio realizado' }]
-      });
-      if(!modal.confirmed) return;
-      try{
-        if(newCode!==s.codigo){ const dup=await deps.findSedeByCode?.(newCode); if(dup && dup.id!==s.id) return alert('Ya existe una sede con ese codigo.'); }
-        const newDep=depList.find(d=>d.codigo===newDepCode);
-        const newZone=zoneList.find(z=>z.codigo===newZoneCode);
-        await deps.updateSede?.(s.id,{
-          codigo:newCode,
-          nombre:newName,
-          dependenciaCodigo:newDepCode,
-          dependenciaNombre:newDep?.nombre||null,
-          zonaCodigo:newZoneCode,
-          zonaNombre:newZone?.nombre||null,
-          numeroOperarios:newOps,
-          jornada:newJornada||'lun_vie',
-          qrEnabled:newQrEnabled,
-          qrLatitude:newQrLatitude,
-          qrLongitude:newQrLongitude,
-          qrRadiusMeters:newQrRadiusMeters
-        });
-        await deps.addAuditLog?.({ targetType:'sede', targetId:s.id, action:'update_sede', before:{ codigo:s.codigo, nombre:s.nombre, dependenciaCodigo:s.dependenciaCodigo, zonaCodigo:s.zonaCodigo, numeroOperarios:s.numeroOperarios, jornada:s.jornada||'lun_vie', qrEnabled:s.qrEnabled===true, qrLatitude:s.qrLatitude, qrLongitude:s.qrLongitude, qrRadiusMeters:s.qrRadiusMeters }, after:{ codigo:newCode, nombre:newName, dependenciaCodigo:newDepCode, zonaCodigo:newZoneCode, numeroOperarios:newOps, jornada:newJornada||'lun_vie', qrEnabled:newQrEnabled, qrLatitude:newQrLatitude, qrLongitude:newQrLongitude, qrRadiusMeters:newQrRadiusMeters }, note: modal.values.detail||null });
-      }catch(e){ alert('Error: '+(e?.message||e)); }
-    });
-    btnCancel.addEventListener('click',()=> render());
-    box.append(btnSave,btnCancel); tds[9].replaceChildren(box);
+    const btnQr=el('button',{className:'btn btn--icon',type:'button',title:canManageQrDevices && s.qrEnabled===true?'Registrar tablet QR':qrDisabledReason,'aria-label':'Registrar tablet QR'},['QR']);
+    btnQr.disabled=s.qrEnabled!==true || !canManageQrDevices;
+    btnQr.addEventListener('click',()=> openRegisterQrDeviceModal(s));
+    const btnMore=el('button',{className:'btn btn--icon',type:'button',title:'Mas opciones','aria-label':'Mas opciones'},['\u22EF']);
+    btnMore.addEventListener('click',()=> openMoreOptionsModal(s));
+    box.append(btnMore,btnQr,btnInfo); return box;
   }
   qs('#txtSearch',ui).addEventListener('input',()=>{ paginator.reset(); render(); });
   qs('#selStatus',ui).addEventListener('change',()=>{ paginator.reset(); render(); });

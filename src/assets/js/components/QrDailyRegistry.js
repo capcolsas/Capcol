@@ -32,7 +32,7 @@ export const QrDailyRegistry = (mount, deps = {}) => {
           ])
         ])
       ]),
-      el('section', { className: 'wa-stats wa-stats--nov mt-2' }, [
+      el('section', { className: 'wa-stats wa-stats--nov wa-stats--qr-registry mt-2' }, [
         statCard('Programados QR', 'qrScheduled', '0'),
         statCard('Ingresos QR', 'qrTotal', '0'),
         statCard('Con salida', 'qrWithExit', '0'),
