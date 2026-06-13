@@ -194,6 +194,41 @@ function registerAttendanceQrRoutes(appInstance) {
     }
   });
 
+  appInstance.patch(['/attendance-qr/devices/:deviceId/status', '/api/attendance-qr/devices/:deviceId/status'], async (req, res) => {
+    try {
+      const profile = await requireAdminQrUser(req);
+      const deviceId = String(req.params?.deviceId || '').trim();
+      const estado = String(req.body?.estado || '').trim().toLowerCase();
+      if (!deviceId) return sendQrJson(res, 400, { ok: false, error: 'Selecciona una tablet.' });
+      if (!['activo', 'inactivo'].includes(estado)) return sendQrJson(res, 400, { ok: false, error: 'Estado de tablet invalido.' });
+
+      const now = new Date().toISOString();
+      const patch = {
+        estado,
+        updated_at: now,
+        last_modified_at: now,
+        last_modified_by_uid: profile.id || null,
+        last_modified_by_email: profile.email || null,
+        revoked_at: estado === 'inactivo' ? now : null,
+        revoked_by_uid: estado === 'inactivo' ? (profile.id || null) : null,
+        revoked_by_email: estado === 'inactivo' ? (profile.email || null) : null
+      };
+      const { data, error } = await supabaseAdmin
+        .from('sede_devices')
+        .update(patch)
+        .eq('id', deviceId)
+        .select('id,sede_codigo,sede_nombre,device_name,estado,last_seen_at,revoked_at,created_at,created_by_email,last_modified_by_email,last_modified_at,revoked_by_email')
+        .maybeSingle();
+      if (error) throw error;
+      if (!data?.id) return sendQrJson(res, 404, { ok: false, error: 'Tablet QR no encontrada.' });
+
+      sendQrJson(res, 200, { ok: true, device: mapQrDeviceRow(data) });
+    } catch (error) {
+      console.error('Error actualizando tablet QR:', error);
+      sendQrJson(res, qrStatusFromError(error), { ok: false, error: qrMessageFromError(error) });
+    }
+  });
+
   appInstance.get(['/attendance-qr/daily', '/api/attendance-qr/daily'], async (req, res) => {
     try {
       await requireQrRegistryUser(req);
@@ -396,7 +431,7 @@ function attendanceQrCors(req, res) {
   res.setHeader('Access-Control-Allow-Origin', origin);
   res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-QR-Device-Token');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, OPTIONS');
 }
 
 function sendQrJson(res, statusCode, payload) {

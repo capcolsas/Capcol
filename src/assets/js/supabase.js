@@ -270,6 +270,31 @@ function mapSedeRow(row = {}) {
   };
 }
 
+function mapQrDeviceRow(row = {}, sites = []) {
+  const assignedSites = (sites || [])
+    .map((site) => ({
+      sedeCodigo: site.sede_codigo || null,
+      sedeNombre: site.sede_nombre || null
+    }))
+    .filter((site) => site.sedeCodigo || site.sedeNombre);
+  const fallbackSite = row.sede_codigo || row.sede_nombre
+    ? [{ sedeCodigo: row.sede_codigo || null, sedeNombre: row.sede_nombre || null }]
+    : [];
+  return {
+    id: row.id,
+    deviceName: row.device_name || null,
+    estado: row.estado || 'activo',
+    lastSeenAt: row.last_seen_at || null,
+    revokedAt: row.revoked_at || null,
+    revokedByEmail: row.revoked_by_email || null,
+    createdAt: row.created_at || null,
+    createdByEmail: row.created_by_email || null,
+    lastModifiedAt: row.last_modified_at || null,
+    lastModifiedByEmail: row.last_modified_by_email || null,
+    sedes: assignedSites.length ? assignedSites : fallbackSite
+  };
+}
+
 function mapCargoRow(row = {}) {
   return {
     ...mapCatalogRow(row),
@@ -2312,6 +2337,40 @@ export function streamSedes(onData, onError = null, onStatus = null) {
   return streamTable('sedes', mapSedeRow, onData, { onError, onStatus });
 }
 
+export async function listQrDevices() {
+  const [devices, sites] = await Promise.all([
+    selectAllRows('sede_devices', { select: 'id,sede_codigo,sede_nombre,device_name,estado,last_seen_at,revoked_at,revoked_by_email,created_at,created_by_email,last_modified_at,last_modified_by_email', order: 'created_at', ascending: false }),
+    selectAllRows('sede_device_sites', { select: 'device_id,sede_codigo,sede_nombre', order: 'sede_nombre', ascending: true })
+  ]);
+  const sitesByDevice = new Map();
+  (sites || []).forEach((site) => {
+    const deviceId = String(site?.device_id || '').trim();
+    if (!deviceId) return;
+    if (!sitesByDevice.has(deviceId)) sitesByDevice.set(deviceId, []);
+    sitesByDevice.get(deviceId).push(site);
+  });
+  return (devices || []).map((row) => mapQrDeviceRow(row, sitesByDevice.get(String(row?.id || '').trim()) || []));
+}
+
+export function streamQrDevices(onData, onError = null, onStatus = null) {
+  let active = true;
+  listQrDevices()
+    .then((devices) => {
+      if (!active) return;
+      onData(devices);
+      onStatus?.('LOADED', null);
+    })
+    .catch((error) => {
+      if (!active) return;
+      console.error('No se pudo cargar tablets QR:', error);
+      onError?.(error, 'LOAD_ERROR');
+      onData([]);
+    });
+  return () => {
+    active = false;
+  };
+}
+
 export async function getNextSedeCode(prefix = 'SED', width = 4) {
   return getNextPrefixedCode('sedes', prefix, width);
 }
@@ -2418,11 +2477,31 @@ async function backendJson(path, { method = 'GET', body = null, headers = {} } =
 
 export async function createQrDevice({ sedeCodigo, sedeCodigos = [], deviceName }) {
   const token = await getAccessToken();
-  return backendJson('/api/attendance-qr/devices', {
+  const result = await backendJson('/api/attendance-qr/devices', {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}` },
     body: { sedeCodigo, sedeCodigos, deviceName }
   });
+  await Promise.all([
+    notifyTableReload('sede_devices'),
+    notifyTableReload('sede_device_sites')
+  ]);
+  return result;
+}
+
+export async function setQrDeviceStatus(deviceId, estado) {
+  const id = String(deviceId || '').trim();
+  const nextStatus = String(estado || '').trim().toLowerCase();
+  if (!id) throw new Error('Selecciona una tablet QR.');
+  if (!['activo', 'inactivo'].includes(nextStatus)) throw new Error('Estado de tablet invalido.');
+  const token = await getAccessToken();
+  const result = await backendJson(`/api/attendance-qr/devices/${encodeURIComponent(id)}/status`, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${token}` },
+    body: { estado: nextStatus }
+  });
+  await notifyTableReload('sede_devices');
+  return result;
 }
 
 export async function scanAttendanceQr({ qrValue, deviceToken }) {

@@ -42,6 +42,7 @@ export const Sidebar = () => {
     if (can(PERMS.VIEW_DEPENDENCIES)) adminLinks.push(navLink('Dependencias', '/dependencies'));
     if (can(PERMS.VIEW_SEDES)) adminLinks.push(navLink('Sedes', '/sedes'));
     if (can(PERMS.VIEW_QR_SCANNER)) adminLinks.push(navLink('Lector QR', '/lector-qr'));
+    if (can(PERMS.MANAGE_QR_DEVICES)) adminLinks.push(navLink('Tablets QR', '/tablets-qr'));
     if (can(PERMS.VIEW_CARGOS)) adminLinks.push(navLink('Cargos', '/cargos'));
     if (can(PERMS.VIEW_NOVEDADES)) adminLinks.push(navLink('Novedades', '/novedades'));
     if (adminLinks.length) sections.push(section('Administracion', adminLinks, 'administracion'));
@@ -181,6 +182,7 @@ function getNavIconLabel(route) {
     '/registros-vivo': 'WA',
     '/registro-sede': 'RS',
     '/lector-qr': 'QR',
+    '/tablets-qr': 'TQ',
     '/registro-qr': 'RQ',
     '/import-history': 'HI',
     '/payroll': 'NO',

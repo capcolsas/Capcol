@@ -28,6 +28,13 @@ create index if not exists idx_sede_devices_sede_codigo
 create index if not exists idx_sede_devices_estado
   on public.sede_devices(estado);
 
+alter table public.sede_devices
+  add column if not exists last_modified_by_uid uuid references public.profiles(id) on delete set null,
+  add column if not exists last_modified_by_email text,
+  add column if not exists last_modified_at timestamptz,
+  add column if not exists revoked_by_uid uuid references public.profiles(id) on delete set null,
+  add column if not exists revoked_by_email text;
+
 create table if not exists public.sede_device_sites (
   id uuid primary key default gen_random_uuid(),
   device_id uuid not null references public.sede_devices(id) on delete cascade,
