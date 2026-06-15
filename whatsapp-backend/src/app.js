@@ -1534,6 +1534,10 @@ async function handleQrLocationInput(phone, session, parsed) {
     await sendText(phone, 'Por favor comparte tu ubicacion actual usando la opcion Ubicacion de WhatsApp para generar el QR.');
     return;
   }
+  if (isNamedLocation(location)) {
+    await sendText(phone, 'Recibimos una ubicacion con nombre o direccion, que puede corresponder a una busqueda. Para generar el QR comparte tu ubicacion actual desde WhatsApp, sin seleccionar una direccion del mapa.');
+    return;
+  }
 
   const action = String(session?.session_data?.pendingQrAction || '').trim();
   if (!['entry', 'exit'].includes(action)) {
@@ -1595,6 +1599,10 @@ function validateQrLocationForSede(location, sede) {
   }
 
   return { ok: true, distanceMeters };
+}
+
+function isNamedLocation(location = {}) {
+  return Boolean(String(location?.name || '').trim() || String(location?.address || '').trim());
 }
 
 function distanceBetweenMeters(latA, lngA, latB, lngB) {

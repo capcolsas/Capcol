@@ -63,11 +63,14 @@
   flex-wrap:wrap;
 }
 
-.qr-tablet-actions .btn{
-  min-height:32px;
-  padding:.34rem .58rem;
-  font-size:.78rem;
+.qr-tablet-topbar .qr-tablet-actions .btn{
+  min-height:26px;
+  padding:.22rem .44rem;
+  border-radius:8px;
+  font-size:.68rem;
+  font-weight:600;
   line-height:1;
+  box-shadow:none;
 }
 
 .qr-tablet-card{
@@ -197,13 +200,14 @@
   }
 
   .qr-tablet-actions{
-    width:100%;
-    justify-content:stretch;
+    width:auto;
+    align-self:flex-end;
+    justify-content:flex-end;
   }
 
   .qr-tablet-actions .btn,
   .qr-tablet-actions a{
-    flex:1 1 auto;
+    flex:0 0 auto;
   }
 
   .qr-tablet-card{
