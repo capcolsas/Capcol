@@ -63,6 +63,13 @@
   flex-wrap:wrap;
 }
 
+.qr-tablet-actions .btn{
+  min-height:32px;
+  padding:.34rem .58rem;
+  font-size:.78rem;
+  line-height:1;
+}
+
 .qr-tablet-card{
   width:min(100%, 560px);
   margin:7vh auto 0;
@@ -119,12 +126,36 @@
 }
 
 .qr-tablet-scanner-host .main-card{
+  display:flex;
+  flex-direction:column;
   border-radius:8px;
   box-shadow:0 18px 40px rgba(15,36,52,.1);
 }
 
 .qr-tablet-scanner-host .main-card h2{
-  font-size:1.9rem;
+  display:none;
+}
+
+.qr-tablet-scanner-host .main-card .wa-header__top{
+  order:1;
+  justify-content:flex-end;
+}
+
+.qr-tablet-scanner-host .main-card > .qr-support-panel{
+  order:20;
+  margin-top:1rem;
+}
+
+.qr-tablet-scanner-host .main-card > .mt-2[style*="display:grid"]{
+  order:2;
+}
+
+.qr-tablet-scanner-host .main-card > .form-row{
+  order:3;
+}
+
+.qr-tablet-scanner-host .main-card > #qrMessage{
+  order:4;
 }
 
 .qr-tablet-scanner-host .qr-scanner-frame{
