@@ -6,6 +6,7 @@ begin
     'editor',
     'consultor',
     'supervisor',
+    'tablet_qr',
     'empleado'
   );
 exception
@@ -151,5 +152,6 @@ values
   ('editor', '{}'::jsonb),
   ('consultor', '{}'::jsonb),
   ('supervisor', '{}'::jsonb),
+  ('tablet_qr', '{"viewQrScanner": true}'::jsonb),
   ('empleado', '{}'::jsonb)
 on conflict (role) do nothing;

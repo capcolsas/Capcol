@@ -1,6 +1,6 @@
 import { el, qs } from '../utils/dom.js';
 import { isSuperAdmin } from '../permissions.js';
-import { ALL_ROLES, ROLES, PERMS, permsForRole } from '../roles.js';
+import { ALL_ROLES, ROLE_LABELS, ROLES, PERMS, permsForRole } from '../roles.js';
 import { getState } from '../state.js';
 import { createTablePagination } from '../utils/pagination.js';
 
@@ -169,7 +169,7 @@ export const PermissionsCenter = (mount, deps = {}) => {
     const roleSel = el(
       'select',
       { className: 'select', style: 'max-width:260px' },
-      ALL_ROLES.map((r) => el('option', { value: r, selected: r === selectedRole }, [r]))
+      ALL_ROLES.map((r) => el('option', { value: r, selected: r === selectedRole }, [ROLE_LABELS[r] || r]))
     );
     roleSel.addEventListener('change', () => {
       selectedRole = roleSel.value;

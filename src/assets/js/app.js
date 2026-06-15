@@ -38,6 +38,7 @@ import { QrDevicesInfo } from './components/QrDevicesInfo.js';
 import { addRoute, startRouter, navigate, refreshRoute } from './router.js';
 import { getState, setState } from './state.js';
 import { can, PERMS, isSuperAdmin } from './permissions.js';
+import { ROLES } from './roles.js';
 const sidebarMount=document.getElementById('app-sidebar');
 const headerMount =document.getElementById('app-header');
 const footerMount =document.getElementById('app-footer');
@@ -111,6 +112,10 @@ const guardWrite=(perm,fn)=> async (...args)=>{
         if(status==='inactivo' || status==='eliminado'){
           try{ sessionStorage.setItem('auth_block_msg', status==='eliminado' ? 'Tu usuario fue eliminado. Contacta al administrador.' : 'Tu usuario esta inactivo. Contacta al administrador.'); }catch{}
           await fb.logout();
+          return;
+        }
+        if(String(profile?.role||'').trim().toLowerCase()===ROLES.TABLET_QR){
+          window.location.replace('qr.html');
           return;
         }
         setState({ user, userProfile: profile });

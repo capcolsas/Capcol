@@ -4,10 +4,21 @@ export const ROLES = {
   EDITOR: 'editor',
   CONSULTOR: 'consultor',
   SUPERVISOR: 'supervisor',
+  TABLET_QR: 'tablet_qr',
   EMPLEADO: 'empleado'
 };
 
-export const ALL_ROLES = [ROLES.SUPERADMIN, ROLES.ADMIN, ROLES.EDITOR, ROLES.CONSULTOR, ROLES.SUPERVISOR, ROLES.EMPLEADO];
+export const ROLE_LABELS = {
+  [ROLES.SUPERADMIN]: 'SuperAdmin',
+  [ROLES.ADMIN]: 'Admin',
+  [ROLES.EDITOR]: 'Editor',
+  [ROLES.CONSULTOR]: 'Consultor',
+  [ROLES.SUPERVISOR]: 'Supervisor',
+  [ROLES.TABLET_QR]: 'Tablet QR',
+  [ROLES.EMPLEADO]: 'Empleado'
+};
+
+export const ALL_ROLES = [ROLES.SUPERADMIN, ROLES.ADMIN, ROLES.EDITOR, ROLES.CONSULTOR, ROLES.SUPERVISOR, ROLES.TABLET_QR, ROLES.EMPLEADO];
 
 export const PERMS = {
   MANAGE_PERMISSIONS: 'managePermissions',
@@ -105,6 +116,11 @@ export function permsForRole(role) {
         [PERMS.VIEW_QR_DAILY_REGISTRY]: true,
         [PERMS.MANAGE_QR_DEVICES]: true,
         [PERMS.UPLOAD_DATA]: true
+      };
+    case ROLES.TABLET_QR:
+      return {
+        ...none,
+        [PERMS.VIEW_QR_SCANNER]: true
       };
     case ROLES.EMPLEADO:
       return {

@@ -1,11 +1,11 @@
 import { el, qs } from '../utils/dom.js';
 import { PERMS, can } from '../permissions.js';
 import { getState } from '../state.js';
+import { ALL_ROLES, ROLE_LABELS } from '../roles.js';
 import { showActionModal } from '../utils/actionModal.js';
 import { showInfoModal } from '../utils/infoModal.js';
 import { createTablePagination } from '../utils/pagination.js';
 
-const ROLES = ['superadmin', 'admin', 'editor', 'consultor', 'supervisor', 'empleado'];
 const STATUS = ['activo', 'inactivo', 'eliminado'];
 
 export const UsersAdmin = (mount, deps = {}) => {
@@ -37,7 +37,7 @@ export const UsersAdmin = (mount, deps = {}) => {
   ]);
 
   const roleFilter = qs('#roleFilter', ui);
-  roleFilter.append(el('option', { value: '' }, ['Todos']), ...ROLES.map((r) => el('option', { value: r }, [r])));
+  roleFilter.append(el('option', { value: '' }, ['Todos']), ...ALL_ROLES.map((r) => el('option', { value: r }, [roleLabel(r)])));
   const statusFilter = qs('#statusFilter', ui);
   statusFilter.append(el('option', { value: '' }, ['Todos']), ...STATUS.map((s) => el('option', { value: s }, [s])));
 
@@ -82,6 +82,10 @@ export const UsersAdmin = (mount, deps = {}) => {
 
   function setMsg(text) {
     msg.textContent = text || ' ';
+  }
+
+  function roleLabel(role) {
+    return ROLE_LABELS[role] || role || '-';
   }
 
   async function handleRoleChange(user, sel) {
@@ -195,7 +199,7 @@ export const UsersAdmin = (mount, deps = {}) => {
     const sel = el(
       'select',
       { className: 'select', disabled: st === 'eliminado' || !canEditUsers },
-      ROLES.map((r) => el('option', { value: r, selected: currentRole === r }, [r]))
+      ALL_ROLES.map((r) => el('option', { value: r, selected: currentRole === r }, [roleLabel(r)]))
     );
     if (canEditUsers) sel.addEventListener('change', () => handleRoleChange(u, sel));
     return sel;
