@@ -1,9 +1,11 @@
 import { el, qs } from '../utils/dom.js';
 
 const DEVICE_TOKEN_KEY = 'rocky_qr_device_token';
+const SCANNER_STATE_KEY = 'rocky_qr_scanner_state';
 const IDLE_PAUSE_MS = 3 * 60 * 1000;
 const AFTER_SCAN_PAUSE_MS = 3 * 60 * 1000;
 const SUPPORT_UNLOCK_MS = 90 * 1000;
+const SCANNER_READY_STATE = 'ready_to_resume';
 
 export const QrTabletScanner = (mount, deps = {}) => {
   let stream = null;
@@ -14,6 +16,7 @@ export const QrTabletScanner = (mount, deps = {}) => {
   let pauseTimer = null;
   let supportUnlockTimer = null;
   let supportUnlocked = false;
+  let wakeLock = null;
 
   const savedToken = getDeviceToken();
   const ui = el('section', { className: 'main-card' }, [
@@ -77,6 +80,27 @@ export const QrTabletScanner = (mount, deps = {}) => {
     qs('#qrPauseOverlay', ui)?.classList.toggle('hidden', !paused);
   }
 
+  function getScannerState() {
+    try {
+      return String(localStorage.getItem(SCANNER_STATE_KEY) || '').trim();
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function setScannerState(value) {
+    try {
+      if (value) localStorage.setItem(SCANNER_STATE_KEY, value);
+      else localStorage.removeItem(SCANNER_STATE_KEY);
+    } catch (_) {}
+  }
+
+  function restorePausedScannerIfNeeded() {
+    if (!savedToken || getScannerState() !== SCANNER_READY_STATE) return;
+    setPausedOverlay(true);
+    setMessage('Lector en pausa. Toca el recuadro para activar la camara.', 'muted');
+  }
+
   function clearPauseTimer() {
     if (!pauseTimer) return;
     clearTimeout(pauseTimer);
@@ -122,11 +146,15 @@ export const QrTabletScanner = (mount, deps = {}) => {
 
   function pauseScanner(reason = 'manual') {
     clearPauseTimer();
+    setScannerState(SCANNER_READY_STATE);
     stopCamera({ silent: true });
     setPausedOverlay(true);
-    setMessage(reason === 'after_scan'
+    const message = reason === 'after_scan'
       ? 'Registro completado. El lector quedo en pausa para ahorrar energia.'
-      : 'Lector en pausa por inactividad. Toca Activar lector para continuar.', 'muted');
+      : reason === 'screen'
+        ? 'La tablet entro en reposo. Toca el recuadro para activar la camara.'
+        : 'Lector en pausa por inactividad. Toca el recuadro para continuar.';
+    setMessage(message, 'muted');
   }
 
   function syncDeviceStatus() {
@@ -149,6 +177,8 @@ export const QrTabletScanner = (mount, deps = {}) => {
     }
     localStorage.setItem(DEVICE_TOKEN_KEY, token);
     syncDeviceStatus();
+    setScannerState(SCANNER_READY_STATE);
+    setPausedOverlay(true);
     setMessage('Tablet activada en este navegador.', 'ok');
   }
 
@@ -159,6 +189,7 @@ export const QrTabletScanner = (mount, deps = {}) => {
     }
     if (!window.confirm('Esta accion desactiva esta tablet hasta pegar nuevamente el token. Continuar?')) return;
     localStorage.removeItem(DEVICE_TOKEN_KEY);
+    setScannerState('');
     const input = qs('#deviceToken', ui);
     if (input) input.value = '';
     syncDeviceStatus();
@@ -177,18 +208,21 @@ export const QrTabletScanner = (mount, deps = {}) => {
     }
     detector = detector || new window.BarcodeDetector({ formats: ['qr_code'] });
     clearPauseTimer();
-    setPausedOverlay(false);
+    setMessage('Activando camara...', 'muted');
     stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false });
     const video = qs('#qrVideo', ui);
     video.srcObject = stream;
     await video.play();
     scanning = true;
+    setScannerState(SCANNER_READY_STATE);
+    setPausedOverlay(false);
+    requestWakeLock();
     setMessage('Camara activa. Acerca el QR al recuadro.', 'muted');
     schedulePause(IDLE_PAUSE_MS, 'idle');
     scanLoop();
   }
 
-  function stopCamera({ silent = false } = {}) {
+  function stopCamera({ silent = false, keepResumeState = false } = {}) {
     clearPauseTimer();
     scanning = false;
     if (stream) {
@@ -197,10 +231,44 @@ export const QrTabletScanner = (mount, deps = {}) => {
     }
     const video = qs('#qrVideo', ui);
     if (video) video.srcObject = null;
+    releaseWakeLock();
     if (!silent) {
+      if (!keepResumeState) setScannerState('');
       setPausedOverlay(false);
       setMessage('Camara detenida.', 'muted');
     }
+  }
+
+  async function requestWakeLock() {
+    if (!('wakeLock' in navigator) || document.visibilityState !== 'visible') return;
+    try {
+      if (wakeLock) return;
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => {
+        wakeLock = null;
+      });
+    } catch (_) {}
+  }
+
+  function releaseWakeLock() {
+    if (!wakeLock) return;
+    const lock = wakeLock;
+    wakeLock = null;
+    lock.release().catch(() => {});
+  }
+
+  function handleVisibilityChange() {
+    if (document.visibilityState === 'hidden' && scanning) {
+      pauseScanner('screen');
+      return;
+    }
+    if (document.visibilityState === 'visible' && scanning) {
+      requestWakeLock();
+    }
+  }
+
+  function handlePageHide() {
+    if (scanning || getScannerState() === SCANNER_READY_STATE) setScannerState(SCANNER_READY_STATE);
   }
 
   async function scanLoop() {
@@ -248,6 +316,8 @@ export const QrTabletScanner = (mount, deps = {}) => {
   qs('#btnStartCamera', ui)?.addEventListener('click', () => startCamera().catch((error) => setMessage(error?.message || 'No se pudo iniciar la camara.', 'error')));
   qs('#btnStopCamera', ui)?.addEventListener('click', () => stopCamera());
   qs('#qrPauseOverlay', ui)?.addEventListener('click', () => startCamera().catch((error) => setMessage(error?.message || 'No se pudo iniciar la camara.', 'error')));
+  document.addEventListener('visibilitychange', handleVisibilityChange);
+  window.addEventListener('pagehide', handlePageHide);
   ui.addEventListener('pointerdown', markActivity);
   ui.addEventListener('keydown', markActivity);
   qs('#btnManualScan', ui)?.addEventListener('click', () => {
@@ -259,10 +329,13 @@ export const QrTabletScanner = (mount, deps = {}) => {
     processQrValue(value);
   });
 
+  restorePausedScannerIfNeeded();
   mount.replaceChildren(ui);
   return () => {
     clearPauseTimer();
     clearSupportTimers();
+    document.removeEventListener('visibilitychange', handleVisibilityChange);
+    window.removeEventListener('pagehide', handlePageHide);
     stopCamera();
   };
 };
