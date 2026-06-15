@@ -3,7 +3,6 @@ import { el, qs } from '../utils/dom.js';
 const DEVICE_TOKEN_KEY = 'rocky_qr_device_token';
 const IDLE_PAUSE_MS = 3 * 60 * 1000;
 const AFTER_SCAN_PAUSE_MS = 3 * 60 * 1000;
-const SUPPORT_HOLD_MS = 2200;
 const SUPPORT_UNLOCK_MS = 90 * 1000;
 
 export const QrTabletScanner = (mount, deps = {}) => {
@@ -13,7 +12,6 @@ export const QrTabletScanner = (mount, deps = {}) => {
   let lastValue = '';
   let lastScanAt = 0;
   let pauseTimer = null;
-  let supportHoldTimer = null;
   let supportUnlockTimer = null;
   let supportUnlocked = false;
 
@@ -24,8 +22,8 @@ export const QrTabletScanner = (mount, deps = {}) => {
       el('span', { id: 'deviceStatus', className: `badge ${savedToken ? 'badge--ok' : 'badge--off'}` }, [savedToken ? 'Tablet activa' : 'Sin activar'])
     ]),
     el('section', { className: 'qr-support-panel mt-2' }, [
-      el('button', { id: 'btnUnlockSupport', className: 'btn qr-support-panel__unlock', type: 'button' }, ['Mantener presionado para soporte']),
-      el('p', { id: 'supportHint', className: 'text-muted qr-support-panel__hint' }, ['Las opciones de activacion estan protegidas para soporte.']),
+      el('button', { id: 'btnUnlockSupport', className: 'btn qr-support-panel__unlock', type: 'button' }, ['Soporte']),
+      el('p', { id: 'supportHint', className: 'text-muted qr-support-panel__hint' }, ['Toca para mostrar las opciones de soporte.']),
       el('div', { id: 'supportControls', className: 'qr-support-panel__controls hidden' }, [
         el('div', { className: 'form-row' }, [
           el('div', {}, [
@@ -86,10 +84,6 @@ export const QrTabletScanner = (mount, deps = {}) => {
   }
 
   function clearSupportTimers() {
-    if (supportHoldTimer) {
-      clearTimeout(supportHoldTimer);
-      supportHoldTimer = null;
-    }
     if (supportUnlockTimer) {
       clearTimeout(supportUnlockTimer);
       supportUnlockTimer = null;
@@ -100,11 +94,11 @@ export const QrTabletScanner = (mount, deps = {}) => {
     supportUnlocked = unlocked === true;
     qs('#supportControls', ui)?.classList.toggle('hidden', !supportUnlocked);
     const btn = qs('#btnUnlockSupport', ui);
-    if (btn) btn.textContent = supportUnlocked ? 'Opciones de soporte activas' : 'Mantener presionado para soporte';
+    if (btn) btn.textContent = supportUnlocked ? 'Ocultar soporte' : 'Soporte';
     const hint = qs('#supportHint', ui);
     if (hint) hint.textContent = message || (supportUnlocked
       ? 'Soporte puede activar o limpiar el token. Se bloqueara automaticamente.'
-      : 'Las opciones de activacion estan protegidas para soporte.');
+      : 'Toca para mostrar las opciones de soporte.');
     if (supportUnlockTimer) clearTimeout(supportUnlockTimer);
     supportUnlockTimer = null;
     if (supportUnlocked) {
@@ -112,23 +106,8 @@ export const QrTabletScanner = (mount, deps = {}) => {
     }
   }
 
-  function startSupportHold() {
-    if (supportUnlocked) return;
-    const hint = qs('#supportHint', ui);
-    if (hint) hint.textContent = 'Sigue presionando para desbloquear soporte...';
-    if (supportHoldTimer) clearTimeout(supportHoldTimer);
-    supportHoldTimer = setTimeout(() => {
-      supportHoldTimer = null;
-      setSupportUnlocked(true);
-    }, SUPPORT_HOLD_MS);
-  }
-
-  function cancelSupportHold() {
-    if (!supportHoldTimer) return;
-    clearTimeout(supportHoldTimer);
-    supportHoldTimer = null;
-    const hint = qs('#supportHint', ui);
-    if (hint && !supportUnlocked) hint.textContent = 'Mantener presionado durante 2 segundos para soporte.';
+  function toggleSupport() {
+    setSupportUnlocked(!supportUnlocked);
   }
 
   function schedulePause(ms, reason) {
@@ -160,7 +139,7 @@ export const QrTabletScanner = (mount, deps = {}) => {
 
   function saveDeviceToken() {
     if (!supportUnlocked) {
-      setMessage('Mantén presionado Soporte para activar la tablet.', 'error');
+      setMessage('Toca Soporte para activar la tablet.', 'error');
       return;
     }
     const token = qs('#deviceToken', ui)?.value?.trim() || '';
@@ -175,7 +154,7 @@ export const QrTabletScanner = (mount, deps = {}) => {
 
   function clearDeviceToken() {
     if (!supportUnlocked) {
-      setMessage('Mantén presionado Soporte para limpiar el token.', 'error');
+      setMessage('Toca Soporte para limpiar el token.', 'error');
       return;
     }
     if (!window.confirm('Esta accion desactiva esta tablet hasta pegar nuevamente el token. Continuar?')) return;
@@ -265,13 +244,7 @@ export const QrTabletScanner = (mount, deps = {}) => {
 
   qs('#btnSaveDevice', ui)?.addEventListener('click', saveDeviceToken);
   qs('#btnClearDevice', ui)?.addEventListener('click', clearDeviceToken);
-  qs('#btnUnlockSupport', ui)?.addEventListener('pointerdown', startSupportHold);
-  qs('#btnUnlockSupport', ui)?.addEventListener('pointerup', cancelSupportHold);
-  qs('#btnUnlockSupport', ui)?.addEventListener('pointerleave', cancelSupportHold);
-  qs('#btnUnlockSupport', ui)?.addEventListener('pointercancel', cancelSupportHold);
-  qs('#btnUnlockSupport', ui)?.addEventListener('click', () => {
-    if (supportUnlocked) setSupportUnlocked(false);
-  });
+  qs('#btnUnlockSupport', ui)?.addEventListener('click', toggleSupport);
   qs('#btnStartCamera', ui)?.addEventListener('click', () => startCamera().catch((error) => setMessage(error?.message || 'No se pudo iniciar la camara.', 'error')));
   qs('#btnStopCamera', ui)?.addEventListener('click', () => stopCamera());
   qs('#qrPauseOverlay', ui)?.addEventListener('click', () => startCamera().catch((error) => setMessage(error?.message || 'No se pudo iniciar la camara.', 'error')));
