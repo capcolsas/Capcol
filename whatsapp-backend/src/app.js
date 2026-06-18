@@ -961,6 +961,9 @@ function userMessageForProcessingError(error) {
   if (raw.includes('attendance_missing_sede')) {
     return 'No pudimos generar el QR porque tu registro no tiene sede asignada. Comunicate con el supervisor.';
   }
+  if (raw.includes('employee_registered_before_transfer')) {
+    return 'El empleado ya se registro hoy en la sede anterior. No se puede iniciar el cambio de sede hoy.';
+  }
   return 'No pudimos procesar tu solicitud en este momento. Intenta nuevamente o comunicate con el supervisor.';
 }
 
@@ -1317,6 +1320,7 @@ async function handleTransferSelection(phone, session, parsed) {
   };
 
   const transferDate = currentDate();
+  await assertNoEmployeeAttendanceTodayBeforeSedeTransfer(employee, transferDate);
   const employeeUpdatePayload = {
     sede_codigo: selected.codigo || null,
     sede_nombre: selected.nombre || null,
@@ -1993,6 +1997,7 @@ async function recomputeDailyMetrics(date) {
     { data: replacements, error: replacementsError },
     sedesRows,
     employeesRows,
+    employeeHistoryRows,
     cargosRows,
     novedadesRows
   ] = await Promise.all([
@@ -2000,6 +2005,7 @@ async function recomputeDailyMetrics(date) {
     supabaseAdmin.from('import_replacements').select('*').eq('fecha', day),
     selectAllRows('sedes'),
     selectAllRows('employees'),
+    selectAllRows('employee_cargo_history', 'id, employee_id, cargo_codigo, cargo_nombre, sede_codigo, sede_nombre, fecha_ingreso, fecha_retiro, created_at'),
     selectAllRows('cargos', 'codigo, alineacion_crud, nombre'),
     selectAllRows('novedades', 'codigo, codigo_novedad, nombre, reemplazo')
   ]);
@@ -2021,10 +2027,11 @@ async function recomputeDailyMetrics(date) {
     fecha: row?.fecha,
     employeeId: row?.empleado_id || row?.employee_id
   }), row]));
+  const historyByEmployeeId = buildEmployeeHistoryByEmployeeId(employeeHistoryRows);
   const fallbackExpected = (employeesRows || []).filter((emp) => {
     if (String(emp?.estado || '').trim().toLowerCase() !== 'activo') return false;
-    const sedeCodigo = String(emp?.sede_codigo || '').trim();
-    if (!sedeCodigo || !activeSedeCodes.has(sedeCodigo)) return false;
+    const employeeId = String(emp?.id || '').trim();
+    if (!isEmployeeAssignedToActiveSedeOnDate(emp, day, activeSedeCodes, historyByEmployeeId.get(employeeId) || [])) return false;
     return !isEmployeeSupernumerarioByCargoMap(emp, cargoMap);
   }).length;
   const planned = scheduledSedes.reduce((sum, sede) => {
@@ -2079,6 +2086,7 @@ async function recomputeSedeStatusSnapshot(date) {
     { data: replacements, error: replacementsError },
     sedesRows,
     employeesRows,
+    employeeHistoryRows,
     cargosRows,
     novedadesRows
   ] = await Promise.all([
@@ -2086,6 +2094,7 @@ async function recomputeSedeStatusSnapshot(date) {
     supabaseAdmin.from('import_replacements').select('*').eq('fecha', day),
     selectAllRows('sedes'),
     selectAllRows('employees'),
+    selectAllRows('employee_cargo_history', 'id, employee_id, cargo_codigo, cargo_nombre, sede_codigo, sede_nombre, fecha_ingreso, fecha_retiro, created_at'),
     selectAllRows('cargos', 'codigo, alineacion_crud, nombre'),
     selectAllRows('novedades', 'codigo, codigo_novedad, nombre, reemplazo')
   ]);
@@ -2111,15 +2120,19 @@ async function recomputeSedeStatusSnapshot(date) {
   const employeeById = new Map();
   const employeeByDoc = new Map();
   const contractedBySede = new Map();
+  const historyByEmployeeId = buildEmployeeHistoryByEmployeeId(employeeHistoryRows);
 
   (employeesRows || []).forEach((emp) => {
     const empId = String(emp?.id || '').trim();
     const doc = String(emp?.documento || '').trim();
     if (empId) employeeById.set(empId, emp);
     if (doc) employeeByDoc.set(doc, emp);
-    if (!isEmployeeAssignedToActiveSedeOnDate(emp, day, activeSedeCodes)) return;
+    const historyRows = historyByEmployeeId.get(empId) || [];
+    if (!isEmployeeAssignedToActiveSedeOnDate(emp, day, activeSedeCodes, historyRows)) return;
     if (isEmployeeSupernumerarioByCargoMap(emp, cargoMap)) return;
-    const sedeCode = String(emp?.sede_codigo || '').trim();
+    const assignment = resolveEmployeeAssignmentHistoryOnDate(emp, day, historyRows);
+    const source = assignment || emp;
+    const sedeCode = String(source?.sede_codigo || source?.sedeCodigo || '').trim();
     if (!contractedBySede.has(sedeCode)) contractedBySede.set(sedeCode, new Set());
     contractedBySede.get(sedeCode).add(doc || empId);
   });
@@ -2131,7 +2144,10 @@ async function recomputeSedeStatusSnapshot(date) {
     if (doc && replacementSuperDocs.has(`${String(row?.fecha || '').trim()}|${doc}`)) return;
     const empId = String(row?.empleado_id || row?.empleadoId || '').trim();
     const employee = (empId && employeeById.get(empId)) || (doc && employeeByDoc.get(doc)) || null;
-    const sedeCode = String(row?.sede_codigo || employee?.sede_codigo || '').trim();
+    const historyRows = employee ? (historyByEmployeeId.get(String(employee?.id || '').trim()) || []) : [];
+    const assignment = employee ? resolveEmployeeAssignmentHistoryOnDate(employee, day, historyRows) : null;
+    const source = assignment || employee;
+    const sedeCode = String(row?.sede_codigo || source?.sede_codigo || source?.sedeCodigo || '').trim();
     if (!sedeCode || !activeSedeCodes.has(sedeCode)) return;
     if (!registeredBySede.has(sedeCode)) registeredBySede.set(sedeCode, new Set());
     registeredBySede.get(sedeCode).add(doc || empId || String(row?.id || '').trim());
@@ -2391,6 +2407,16 @@ function resolveEmployeeAssignmentHistoryOnDate(emp, selectedDate, historyRows =
   return matching[0] || null;
 }
 
+function buildEmployeeHistoryByEmployeeId(rows = []) {
+  return (Array.isArray(rows) ? rows : []).reduce((acc, row) => {
+    const employeeId = String(row?.employee_id || row?.employeeId || '').trim();
+    if (!employeeId) return acc;
+    if (!acc.has(employeeId)) acc.set(employeeId, []);
+    acc.get(employeeId).push(row);
+    return acc;
+  }, new Map());
+}
+
 function isEmployeeAssignedToActiveSedeOnDate(emp, selectedDate, activeSedeCodes = new Set(), historyRows = []) {
   if (!selectedDate) return false;
   const assignment = resolveEmployeeAssignmentHistoryOnDate(emp, selectedDate, historyRows);
@@ -2522,6 +2548,7 @@ async function computeDailySedeClosureSnapshot(date) {
     { data: replacements, error: replacementsError },
     sedesRows,
     employeesRows,
+    employeeHistoryRows,
     cargosRows,
     novedadesRows
   ] = await Promise.all([
@@ -2529,6 +2556,7 @@ async function computeDailySedeClosureSnapshot(date) {
     supabaseAdmin.from('import_replacements').select('*').eq('fecha', day),
     selectAllRows('sedes'),
     selectAllRows('employees'),
+    selectAllRows('employee_cargo_history', 'id, employee_id, cargo_codigo, cargo_nombre, sede_codigo, sede_nombre, fecha_ingreso, fecha_retiro, created_at'),
     selectAllRows('cargos', 'codigo, alineacion_crud, nombre'),
     selectAllRows('novedades', 'codigo, codigo_novedad, nombre, reemplazo')
   ]);
@@ -2553,18 +2581,22 @@ async function computeDailySedeClosureSnapshot(date) {
   const employeeByDoc = new Map();
   const contractedBySede = new Map();
   const supernumerarioDocs = new Set();
+  const historyByEmployeeId = buildEmployeeHistoryByEmployeeId(employeeHistoryRows);
 
   for (const emp of employeesRows || []) {
     const empId = String(emp?.id || '').trim();
     const doc = String(emp?.documento || '').trim();
     if (empId) employeeById.set(empId, emp);
     if (doc) employeeByDoc.set(doc, emp);
-    if (doc && isEmployeeSupernumerarioByCargoMap(emp, cargoMap) && isEmployeeAssignedToActiveSedeOnDate(emp, day, activeSedeCodes)) {
+    const historyRows = historyByEmployeeId.get(empId) || [];
+    if (doc && isEmployeeSupernumerarioByCargoMap(emp, cargoMap) && isEmployeeAssignedToActiveSedeOnDate(emp, day, activeSedeCodes, historyRows)) {
       supernumerarioDocs.add(doc);
     }
-    if (!isEmployeeAssignedToActiveSedeOnDate(emp, day, activeSedeCodes)) continue;
+    if (!isEmployeeAssignedToActiveSedeOnDate(emp, day, activeSedeCodes, historyRows)) continue;
     if (isEmployeeSupernumerarioByCargoMap(emp, cargoMap)) continue;
-    const sedeCode = String(emp?.sede_codigo || emp?.sedeCodigo || '').trim();
+    const assignment = resolveEmployeeAssignmentHistoryOnDate(emp, day, historyRows);
+    const source = assignment || emp;
+    const sedeCode = String(source?.sede_codigo || source?.sedeCodigo || '').trim();
     if (!sedeCode) continue;
     if (!contractedBySede.has(sedeCode)) contractedBySede.set(sedeCode, new Set());
     contractedBySede.get(sedeCode).add(doc || empId);
@@ -2578,7 +2610,10 @@ async function computeDailySedeClosureSnapshot(date) {
     const empId = String(row?.empleado_id || row?.empleadoId || '').trim();
     const employee = (empId && employeeById.get(empId)) || (doc && employeeByDoc.get(doc)) || null;
     if (isEmployeeSupernumerarioByCargoMap(employee, cargoMap)) continue;
-    const sedeCode = String(row?.sede_codigo || row?.sedeCodigo || employee?.sede_codigo || employee?.sedeCodigo || '').trim();
+    const historyRows = employee ? (historyByEmployeeId.get(String(employee?.id || '').trim()) || []) : [];
+    const assignment = employee ? resolveEmployeeAssignmentHistoryOnDate(employee, day, historyRows) : null;
+    const source = assignment || employee;
+    const sedeCode = String(row?.sede_codigo || row?.sedeCodigo || source?.sede_codigo || source?.sedeCodigo || '').trim();
     if (!sedeCode || !activeSedeCodes.has(sedeCode)) continue;
     if (!registeredBySede.has(sedeCode)) registeredBySede.set(sedeCode, new Set());
     registeredBySede.get(sedeCode).add(doc || empId || String(row?.id || '').trim());
@@ -3543,6 +3578,48 @@ function normalizePhone(value) {
 
 function normalizeDocument(value) {
   return String(value || '').replace(/\D+/g, '').trim();
+}
+
+async function assertNoEmployeeAttendanceTodayBeforeSedeTransfer(employee = {}, transferDate) {
+  const day = String(transferDate || '').trim();
+  const employeeId = String(employee?.id || '').trim();
+  const documento = normalizeDocument(employee?.documento);
+  const previousSede = String(employee?.sede_codigo || '').trim();
+  if (!day || !employeeId) return;
+
+  const queries = [
+    supabaseAdmin
+      .from('attendance')
+      .select('id, sede_codigo, sede_nombre')
+      .eq('fecha', day)
+      .eq('empleado_id', employeeId)
+  ];
+  if (documento) {
+    queries.push(
+      supabaseAdmin
+        .from('attendance')
+        .select('id, sede_codigo, sede_nombre')
+        .eq('fecha', day)
+        .eq('documento', documento)
+    );
+  }
+
+  const results = await Promise.all(queries);
+  const rows = [];
+  for (const { data, error } of results) {
+    if (error) throw error;
+    rows.push(...(data || []));
+  }
+
+  const matchingRegistration = rows.find((row) => {
+    const sede = String(row?.sede_codigo || '').trim();
+    return !sede || !previousSede || sede === previousSede;
+  });
+  if (matchingRegistration) {
+    const error = new Error('employee_registered_before_transfer');
+    error.details = matchingRegistration.sede_nombre || matchingRegistration.sede_codigo || previousSede || null;
+    throw error;
+  }
 }
 
 function normalizeKey(value) {

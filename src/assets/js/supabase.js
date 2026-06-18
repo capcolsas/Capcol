@@ -742,6 +742,14 @@ function todayBogotaISO() {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Bogota' }).format(new Date());
 }
 
+function validateEmployeeDateRange(fechaIngreso, fechaRetiro) {
+  const ingreso = toISODate(fechaIngreso);
+  const retiro = toISODate(fechaRetiro);
+  if (ingreso && retiro && ingreso > retiro) {
+    throw new Error('La fecha de ingreso no puede ser posterior a la fecha de retiro.');
+  }
+}
+
 const EMPLOYEE_OPERATIONAL_REFRESH_LOOKBACK_DAYS = 31;
 
 function isEmployeeActiveForDate(emp, selectedDate) {
@@ -889,6 +897,16 @@ function resolveEmployeeAssignmentHistoryOnDate(emp, selectedDate, historyRows =
   return matching[0] || null;
 }
 
+function buildEmployeeHistoryByEmployeeId(rows = []) {
+  return (Array.isArray(rows) ? rows : []).reduce((acc, row) => {
+    const employeeId = String(row?.employeeId || row?.employee_id || '').trim();
+    if (!employeeId) return acc;
+    if (!acc.has(employeeId)) acc.set(employeeId, []);
+    acc.get(employeeId).push(row);
+    return acc;
+  }, new Map());
+}
+
 function isEmployeeAssignedToActiveSedeOnDate(emp, selectedDate, activeSedeCodes = new Set(), historyRows = []) {
   if (!selectedDate) return false;
   const assignment = resolveEmployeeAssignmentHistoryOnDate(emp, selectedDate, historyRows);
@@ -934,8 +952,11 @@ function resolveAttendanceSedeCode(attendanceRow = {}, context = {}) {
     || (documento && context?.employeeByDoc?.get(documento))
     || null;
   if (!employee) return null;
-  if (!isEmployeeAssignedToActiveSedeOnDate(employee, context?.selectedDate, context?.activeSedeCodes || new Set())) return null;
-  return String(employee?.sedeCodigo || employee?.sede_codigo || '').trim() || null;
+  const historyRows = context?.historyByEmployeeId?.get(String(employee?.id || '').trim()) || [];
+  if (!isEmployeeAssignedToActiveSedeOnDate(employee, context?.selectedDate, context?.activeSedeCodes || new Set(), historyRows)) return null;
+  const assignment = resolveEmployeeAssignmentHistoryOnDate(employee, context?.selectedDate, historyRows);
+  const source = assignment || employee;
+  return String(source?.sedeCodigo || source?.sede_codigo || '').trim() || null;
 }
 
 async function computeDailyClosureSnapshot(fecha) {
@@ -1021,11 +1042,12 @@ function computeOperationalAbsenteeism(planeados, contratados, cubiertos) {
 async function computeDailySedeClosureSnapshot(fecha) {
   const day = String(fecha || '').trim();
   if (!day) return [];
-  const [{ data: attendance }, { data: replacements }, sedesRows, employeesRows, cargosRows, novedadesRows] = await Promise.all([
+  const [{ data: attendance }, { data: replacements }, sedesRows, employeesRows, employeeHistoryRows, cargosRows, novedadesRows] = await Promise.all([
     supabase.from('attendance').select('*').eq('fecha', day),
     supabase.from('import_replacements').select('*').eq('fecha', day),
     selectAllRows('sedes', { select: '*' }),
     selectAllRows('employees', { select: '*' }),
+    selectAllRows('employee_cargo_history', { select: 'id, employee_id, cargo_codigo, cargo_nombre, sede_codigo, sede_nombre, fecha_ingreso, fecha_retiro, created_at' }),
     selectAllRows('cargos', { select: 'codigo, alineacion_crud, nombre' }),
     selectAllRows('novedades', { select: 'codigo, codigo_novedad, nombre, reemplazo' })
   ]);
@@ -1051,18 +1073,22 @@ async function computeDailySedeClosureSnapshot(fecha) {
   const employeeByDoc = new Map();
   const contractedBySede = new Map();
   const supernumerarioDocs = new Set();
+  const historyByEmployeeId = buildEmployeeHistoryByEmployeeId(employeeHistoryRows);
   (employeesRows || []).forEach((emp) => {
     const mapped = mapEmployeeRow(emp);
     const empId = String(mapped?.id || '').trim();
     const doc = String(mapped?.documento || '').trim();
     if (empId) employeeById.set(empId, mapped);
     if (doc) employeeByDoc.set(doc, mapped);
-    if (doc && isEmployeeSupernumerario(mapped, cargoMap) && isEmployeeAssignedToActiveSedeOnDate(mapped, day, activeSedeCodes)) {
+    const historyRows = historyByEmployeeId.get(empId) || [];
+    if (doc && isEmployeeSupernumerario(mapped, cargoMap) && isEmployeeAssignedToActiveSedeOnDate(mapped, day, activeSedeCodes, historyRows)) {
       supernumerarioDocs.add(doc);
     }
-    if (!isEmployeeAssignedToActiveSedeOnDate(mapped, day, activeSedeCodes)) return;
+    if (!isEmployeeAssignedToActiveSedeOnDate(mapped, day, activeSedeCodes, historyRows)) return;
     if (isEmployeeSupernumerario(mapped, cargoMap)) return;
-    const sedeCode = String(mapped?.sedeCodigo || '').trim();
+    const assignment = resolveEmployeeAssignmentHistoryOnDate(mapped, day, historyRows);
+    const source = assignment || mapped;
+    const sedeCode = String(source?.sedeCodigo || source?.sede_codigo || '').trim();
     if (!sedeCode) return;
     if (!contractedBySede.has(sedeCode)) contractedBySede.set(sedeCode, new Set());
     contractedBySede.get(sedeCode).add(doc || empId);
@@ -1076,7 +1102,10 @@ async function computeDailySedeClosureSnapshot(fecha) {
     const empId = String(row?.empleadoId || '').trim();
     const employee = (empId && employeeById.get(empId)) || (doc && employeeByDoc.get(doc)) || null;
     if (isEmployeeSupernumerario(employee, cargoMap)) return;
-    const sedeCode = String(row?.sedeCodigo || employee?.sedeCodigo || '').trim();
+    const historyRows = employee ? (historyByEmployeeId.get(String(employee?.id || '').trim()) || []) : [];
+    const assignment = employee ? resolveEmployeeAssignmentHistoryOnDate(employee, day, historyRows) : null;
+    const source = assignment || employee;
+    const sedeCode = String(row?.sedeCodigo || source?.sedeCodigo || source?.sede_codigo || '').trim();
     if (!sedeCode || !activeSedeCodes.has(sedeCode)) return;
     if (!registeredBySede.has(sedeCode)) registeredBySede.set(sedeCode, new Set());
     registeredBySede.get(sedeCode).add(doc || empId || String(row?.id || '').trim());
@@ -1190,6 +1219,215 @@ async function patchActiveEmployeeHistory(employeeId, patch = {}, notifyReload =
   if (notifyReload) {
     await notifyTableReload('employee_cargo_history');
   }
+}
+
+async function patchProgrammedEmployeeHistory(employeeId, fechaIngreso, patch = {}, notifyReload = true) {
+  const empId = String(employeeId || '').trim();
+  const ingreso = toISODate(fechaIngreso);
+  const updates = Object.fromEntries(Object.entries(patch || {}).filter(([, value]) => value !== undefined));
+  if (!empId || !ingreso || !Object.keys(updates).length) return false;
+
+  const { data: rows, error: fetchError } = await supabase
+    .from('employee_cargo_history')
+    .select('id, fecha_ingreso, fecha_retiro')
+    .eq('employee_id', empId)
+    .is('fecha_retiro', null)
+    .order('created_at', { ascending: false })
+    .limit(20);
+  if (fetchError) throw fetchError;
+  const target = (rows || []).find((row) => toISODate(row?.fecha_ingreso) === ingreso) || null;
+  if (!target?.id) return false;
+
+  const { error } = await supabase
+    .from('employee_cargo_history')
+    .update(updates)
+    .eq('id', target.id);
+  if (error) throw error;
+  if (notifyReload) {
+    await notifyTableReload('employee_cargo_history');
+  }
+  return true;
+}
+
+async function getProgrammedEmployeeHistoryContext(historyId) {
+  const id = String(historyId || '').trim();
+  if (!id) throw new Error('No se encontro la programacion.');
+  const { data: target, error: targetError } = await supabase
+    .from('employee_cargo_history')
+    .select('*')
+    .eq('id', id)
+    .maybeSingle();
+  if (targetError) throw targetError;
+  if (!target?.id) throw new Error('No se encontro la programacion.');
+
+  const targetIngreso = toISODate(target.fecha_ingreso);
+  if (!targetIngreso || targetIngreso <= todayBogotaISO() || target.fecha_retiro) {
+    throw new Error('Solo se pueden corregir programaciones futuras que aun no han iniciado.');
+  }
+
+  const employeeId = String(target.employee_id || '').trim();
+  const [{ data: employee, error: employeeError }, { data: historyRows, error: historyError }] = await Promise.all([
+    supabase.from('employees').select('*').eq('id', employeeId).maybeSingle(),
+    supabase
+      .from('employee_cargo_history')
+      .select('*')
+      .eq('employee_id', employeeId)
+      .order('fecha_ingreso', { ascending: true })
+  ]);
+  if (employeeError) throw employeeError;
+  if (historyError) throw historyError;
+  if (!employee?.id) throw new Error('No se encontro el empleado de la programacion.');
+
+  const previous = (historyRows || [])
+    .filter((row) => String(row?.id || '') !== id)
+    .filter((row) => {
+      const ingreso = toISODate(row?.fecha_ingreso);
+      return ingreso && ingreso < targetIngreso;
+    })
+    .sort((left, right) => {
+      const a = toISODate(left?.fecha_ingreso) || '';
+      const b = toISODate(right?.fecha_ingreso) || '';
+      if (a !== b) return b.localeCompare(a);
+      return String(right?.created_at || '').localeCompare(String(left?.created_at || ''));
+    })[0] || null;
+
+  return { target, targetIngreso, employee, previous };
+}
+
+export async function updateProgrammedEmployeeAssignment(historyId, data = {}) {
+  const { target, employee, previous } = await getProgrammedEmployeeHistoryContext(historyId);
+  const nextIngreso = toISODate(data.fechaIngreso || data.fecha_ingreso || target.fecha_ingreso);
+  if (!nextIngreso || nextIngreso <= todayBogotaISO()) {
+    throw new Error('La nueva fecha de inicio debe ser posterior a hoy.');
+  }
+  if (previous) {
+    const previousIngreso = toISODate(previous.fecha_ingreso);
+    const previousRetiro = addDaysToIsoDate(nextIngreso, -1);
+    if (previousIngreso && previousRetiro && previousRetiro < previousIngreso) {
+      throw new Error('La fecha de inicio deja invalido el tramo anterior.');
+    }
+  }
+
+  const cargoCodigo = data.cargoCodigo !== undefined ? String(data.cargoCodigo || '').trim() || null : target.cargo_codigo || null;
+  const cargoNombre = data.cargoNombre !== undefined ? String(data.cargoNombre || '').trim() || null : target.cargo_nombre || null;
+  const sedeCodigo = data.sedeCodigo !== undefined ? String(data.sedeCodigo || '').trim() || null : target.sede_codigo || null;
+  const sedeNombre = data.sedeNombre !== undefined ? String(data.sedeNombre || '').trim() || null : target.sede_nombre || null;
+  const zone = await resolveZoneBySedeCode(sedeCodigo);
+  const audit = await getCurrentAuditFields();
+
+  if (previous) {
+    const { error: previousError } = await supabase
+      .from('employee_cargo_history')
+      .update({ fecha_retiro: addDaysToIsoDate(nextIngreso, -1) })
+      .eq('id', previous.id);
+    if (previousError) throw previousError;
+  }
+
+  const { data: updatedHistory, error: historyError } = await supabase
+    .from('employee_cargo_history')
+    .update({
+      employee_codigo: employee.codigo || null,
+      documento: employee.documento || target.documento || null,
+      cargo_codigo: cargoCodigo,
+      cargo_nombre: cargoNombre,
+      sede_codigo: sedeCodigo,
+      sede_nombre: sedeNombre,
+      fecha_ingreso: nextIngreso,
+      source: 'scheduled_assignment_update'
+    })
+    .eq('id', target.id)
+    .select('*')
+    .single();
+  if (historyError) throw historyError;
+
+  const { data: updatedEmployee, error: employeeError } = await supabase
+    .from('employees')
+    .update({
+      cargo_codigo: cargoCodigo,
+      cargo_nombre: cargoNombre,
+      sede_codigo: sedeCodigo,
+      sede_nombre: sedeNombre,
+      zona_codigo: zone.zonaCodigo || null,
+      zona_nombre: zone.zonaNombre || null,
+      fecha_ingreso: nextIngreso,
+      last_modified_by_uid: audit.created_by_uid,
+      last_modified_by_email: audit.created_by_email,
+      last_modified_at: new Date().toISOString()
+    })
+    .eq('id', employee.id)
+    .select('*')
+    .single();
+  if (employeeError) throw employeeError;
+
+  if (await getCargoCrudAlignmentByCode(updatedEmployee.cargo_codigo, updatedEmployee.cargo_nombre) === 'supervisor') {
+    await upsertSupervisorProfileFromEmployee(mapEmployeeRow(updatedEmployee));
+  }
+
+  await Promise.all([
+    notifyTableReload('employees'),
+    notifyTableReload('employee_cargo_history')
+  ]);
+  return {
+    employee: mapEmployeeRow(updatedEmployee),
+    history: mapCargoHistoryRow(updatedHistory),
+    previous: previous ? mapCargoHistoryRow(previous) : null
+  };
+}
+
+export async function cancelProgrammedEmployeeAssignment(historyId) {
+  const { target, employee, previous } = await getProgrammedEmployeeHistoryContext(historyId);
+  if (!previous?.id) {
+    throw new Error('No hay una asignacion anterior para restaurar.');
+  }
+  const zone = await resolveZoneBySedeCode(previous.sede_codigo);
+  const audit = await getCurrentAuditFields();
+
+  const { error: reopenError } = await supabase
+    .from('employee_cargo_history')
+    .update({ fecha_retiro: null })
+    .eq('id', previous.id);
+  if (reopenError) throw reopenError;
+
+  const { error: deleteError } = await supabase
+    .from('employee_cargo_history')
+    .delete()
+    .eq('id', target.id);
+  if (deleteError) throw deleteError;
+
+  const { data: updatedEmployee, error: employeeError } = await supabase
+    .from('employees')
+    .update({
+      cargo_codigo: previous.cargo_codigo || null,
+      cargo_nombre: previous.cargo_nombre || null,
+      sede_codigo: previous.sede_codigo || null,
+      sede_nombre: previous.sede_nombre || null,
+      zona_codigo: zone.zonaCodigo || null,
+      zona_nombre: zone.zonaNombre || null,
+      fecha_ingreso: previous.fecha_ingreso || null,
+      fecha_retiro: null,
+      estado: 'activo',
+      last_modified_by_uid: audit.created_by_uid,
+      last_modified_by_email: audit.created_by_email,
+      last_modified_at: new Date().toISOString()
+    })
+    .eq('id', employee.id)
+    .select('*')
+    .single();
+  if (employeeError) throw employeeError;
+
+  if (await getCargoCrudAlignmentByCode(updatedEmployee.cargo_codigo, updatedEmployee.cargo_nombre) === 'supervisor') {
+    await upsertSupervisorProfileFromEmployee(mapEmployeeRow(updatedEmployee));
+  }
+
+  await Promise.all([
+    notifyTableReload('employees'),
+    notifyTableReload('employee_cargo_history')
+  ]);
+  return {
+    employee: mapEmployeeRow(updatedEmployee),
+    cancelled: mapCargoHistoryRow(target),
+    restored: mapCargoHistoryRow({ ...previous, fecha_retiro: null })
+  };
 }
 
 async function upsertSupervisorProfileFromEmployee(employee, override = {}) {
@@ -1375,12 +1613,13 @@ async function recomputeDailyMetrics(fecha) {
     }
   }
 
-  const [{ data: attendance }, { data: replacements }, { data: closures }, sedesRows, employeesRows, cargosRows, novedadesRows] = await Promise.all([
+  const [{ data: attendance }, { data: replacements }, { data: closures }, sedesRows, employeesRows, employeeHistoryRows, cargosRows, novedadesRows] = await Promise.all([
     supabase.from('attendance').select('*').eq('fecha', day),
     supabase.from('import_replacements').select('*').eq('fecha', day),
     supabase.from('daily_closures').select('*').eq('fecha', day).maybeSingle(),
     selectAllRows('sedes', { select: '*' }),
     selectAllRows('employees', { select: '*' }),
+    selectAllRows('employee_cargo_history', { select: 'id, employee_id, cargo_codigo, cargo_nombre, sede_codigo, sede_nombre, fecha_ingreso, fecha_retiro, created_at' }),
     selectAllRows('cargos', { select: 'codigo, alineacion_crud, nombre' }),
     selectAllRows('novedades', { select: 'codigo, codigo_novedad, nombre, reemplazo' })
   ]);
@@ -1406,19 +1645,22 @@ async function recomputeDailyMetrics(fecha) {
   const employeeById = new Map();
   const employeeByDoc = new Map();
   const supernumerarioDocs = new Set();
+  const historyByEmployeeId = buildEmployeeHistoryByEmployeeId(employeeHistoryRows);
   (employeesRows || []).forEach((emp) => {
     const mapped = mapEmployeeRow(emp);
     const empId = String(mapped?.id || '').trim();
     const doc = String(mapped?.documento || '').trim();
     if (empId) employeeById.set(empId, mapped);
     if (doc) employeeByDoc.set(doc, mapped);
-    if (doc && isEmployeeSupernumerario(mapped, cargoMap) && isEmployeeAssignedToActiveSedeOnDate(mapped, day, activeSedeCodes)) {
+    const historyRows = historyByEmployeeId.get(empId) || [];
+    if (doc && isEmployeeSupernumerario(mapped, cargoMap) && isEmployeeAssignedToActiveSedeOnDate(mapped, day, activeSedeCodes, historyRows)) {
       supernumerarioDocs.add(doc);
     }
   });
   const fallbackExpected = (employeesRows || []).filter((emp) => {
     if (String(emp?.estado || '').trim().toLowerCase() !== 'activo') return false;
-    if (!isEmployeeAssignedToActiveSedeOnDate(emp, day, activeSedeCodes)) return false;
+    const employeeId = String(emp?.id || '').trim();
+    if (!isEmployeeAssignedToActiveSedeOnDate(emp, day, activeSedeCodes, historyByEmployeeId.get(employeeId) || [])) return false;
     return !isEmployeeSupernumerario(emp, cargoMap);
   }).length;
   const planned = scheduledSedes.reduce((acc, sede) => {
@@ -1480,11 +1722,12 @@ async function recomputeSedeStatusSnapshot(fecha) {
     }
   }
 
-  const [{ data: attendance }, { data: replacements }, sedesRows, employeesRows, cargosRows, novedadesRows] = await Promise.all([
+  const [{ data: attendance }, { data: replacements }, sedesRows, employeesRows, employeeHistoryRows, cargosRows, novedadesRows] = await Promise.all([
     supabase.from('attendance').select('*').eq('fecha', day),
     supabase.from('import_replacements').select('*').eq('fecha', day),
     selectAllRows('sedes', { select: '*' }),
     selectAllRows('employees', { select: '*' }),
+    selectAllRows('employee_cargo_history', { select: 'id, employee_id, cargo_codigo, cargo_nombre, sede_codigo, sede_nombre, fecha_ingreso, fecha_retiro, created_at' }),
     selectAllRows('cargos', { select: 'codigo, alineacion_crud, nombre' }),
     selectAllRows('novedades', { select: 'codigo, codigo_novedad, nombre, reemplazo' })
   ]);
@@ -1505,18 +1748,22 @@ async function recomputeSedeStatusSnapshot(fecha) {
   const employeeByDoc = new Map();
   const contractedBySede = new Map();
   const supernumerarioDocs = new Set();
+  const historyByEmployeeId = buildEmployeeHistoryByEmployeeId(employeeHistoryRows);
 
   (employeesRows || []).forEach((emp) => {
     const empId = String(emp?.id || '').trim();
     const doc = String(emp?.documento || '').trim();
     if (empId) employeeById.set(empId, emp);
     if (doc) employeeByDoc.set(doc, emp);
-    if (doc && isEmployeeSupernumerario(emp, cargoMap) && isEmployeeAssignedToActiveSedeOnDate(emp, day, activeSedeCodes)) {
+    const historyRows = historyByEmployeeId.get(empId) || [];
+    if (doc && isEmployeeSupernumerario(emp, cargoMap) && isEmployeeAssignedToActiveSedeOnDate(emp, day, activeSedeCodes, historyRows)) {
       supernumerarioDocs.add(doc);
     }
-    if (!isEmployeeAssignedToActiveSedeOnDate(emp, day, activeSedeCodes)) return;
+    if (!isEmployeeAssignedToActiveSedeOnDate(emp, day, activeSedeCodes, historyRows)) return;
     if (isEmployeeSupernumerario(emp, cargoMap)) return;
-    const sedeCode = String(emp?.sedeCodigo || emp?.sede_codigo || '').trim();
+    const assignment = resolveEmployeeAssignmentHistoryOnDate(emp, day, historyRows);
+    const source = assignment || emp;
+    const sedeCode = String(source?.sedeCodigo || source?.sede_codigo || '').trim();
     if (!contractedBySede.has(sedeCode)) contractedBySede.set(sedeCode, new Set());
     contractedBySede.get(sedeCode).add(doc || empId);
   });
@@ -1529,7 +1776,10 @@ async function recomputeSedeStatusSnapshot(fecha) {
     if (doc && supernumerarioDocs.has(doc)) return;
     const empId = String(row?.empleadoId || '').trim();
     const employee = (empId && employeeById.get(empId)) || (doc && employeeByDoc.get(doc)) || null;
-    const sedeCode = String(row?.sedeCodigo || employee?.sedeCodigo || employee?.sede_codigo || '').trim();
+    const historyRows = employee ? (historyByEmployeeId.get(String(employee?.id || '').trim()) || []) : [];
+    const assignment = employee ? resolveEmployeeAssignmentHistoryOnDate(employee, day, historyRows) : null;
+    const source = assignment || employee;
+    const sedeCode = String(row?.sedeCodigo || source?.sedeCodigo || source?.sede_codigo || '').trim();
     if (!sedeCode || !activeSedeCodes.has(sedeCode)) return;
     if (!registeredBySede.has(sedeCode)) registeredBySede.set(sedeCode, new Set());
     registeredBySede.get(sedeCode).add(doc || empId || String(row?.id || '').trim());
@@ -1618,6 +1868,47 @@ async function reconcileOperationalSnapshotsForEmployeeChange(before = {}, after
 
 function normalizeDailyDocument(value) {
   return String(value || '').replace(/\D+/g, '').trim();
+}
+
+async function assertNoEmployeeAttendanceTodayBeforeSedeTransfer(currentRow = {}, transferDate, currentSedeCode = null) {
+  const day = String(transferDate || '').trim();
+  const employeeId = String(currentRow?.id || '').trim();
+  const documento = normalizeDailyDocument(currentRow?.documento);
+  const previousSede = String(currentSedeCode || currentRow?.sede_codigo || currentRow?.sedeCodigo || '').trim();
+  if (!day || !employeeId) return;
+
+  const queries = [
+    supabase
+      .from('attendance')
+      .select('id, sede_codigo, sede_nombre')
+      .eq('fecha', day)
+      .eq('empleado_id', employeeId)
+  ];
+  if (documento) {
+    queries.push(
+      supabase
+        .from('attendance')
+        .select('id, sede_codigo, sede_nombre')
+        .eq('fecha', day)
+        .eq('documento', documento)
+    );
+  }
+
+  const results = await Promise.all(queries);
+  const rows = [];
+  for (const { data, error } of results) {
+    if (error) throw error;
+    rows.push(...(data || []));
+  }
+
+  const matchingRegistration = rows.find((row) => {
+    const sede = String(row?.sede_codigo || '').trim();
+    return !sede || !previousSede || sede === previousSede;
+  });
+  if (matchingRegistration) {
+    const sedeLabel = matchingRegistration.sede_nombre || matchingRegistration.sede_codigo || previousSede || 'la sede anterior';
+    throw new Error(`El empleado ya se registro hoy en ${sedeLabel}. No se puede iniciar el cambio de sede hoy.`);
+  }
 }
 
 function buildDailyRecordId(fecha, documento = null, empleadoId = null) {
@@ -2936,6 +3227,8 @@ export async function updateEmployee(id, data = {}) {
   const nextSede = typeof patch.sede_codigo === 'string' ? String(patch.sede_codigo || '').trim() : currentSede;
   const nextCargoCodigo = typeof patch.cargo_codigo === 'string' ? String(patch.cargo_codigo || '').trim() : currentCargoCodigo;
   const nextIngresoPreview = patch.fecha_ingreso !== undefined ? toISODate(patch.fecha_ingreso) : currentIngreso;
+  const nextRetiroPreview = patch.fecha_retiro !== undefined ? toISODate(patch.fecha_retiro) : currentRetiro;
+  validateEmployeeDateRange(nextIngresoPreview, nextRetiroPreview);
   const sedeChangedPreview = nextSede !== currentSede;
   const cargoChangedPreview = nextCargoCodigo !== currentCargoCodigo;
   const assignmentIngresoPreview = toISODate(
@@ -2956,6 +3249,9 @@ export async function updateEmployee(id, data = {}) {
   }
   if (sedeChangedPreview && assignmentIngresoPreview && assignmentIngresoPreview < todayBogotaISO()) {
     throw new Error(`La fecha de inicio en nueva sede no puede ser anterior a hoy (${todayBogotaISO()}).`);
+  }
+  if (sedeChangedPreview && assignmentIngresoPreview === todayBogotaISO()) {
+    await assertNoEmployeeAttendanceTodayBeforeSedeTransfer(currentRow, assignmentIngresoPreview, currentSede);
   }
   if (sedeChangedPreview && !cargoChangedPreview && patch.fecha_ingreso !== undefined && nextIngresoPreview !== currentIngreso) {
     patch.fecha_ingreso = currentRow.fecha_ingreso || null;
@@ -2994,19 +3290,35 @@ export async function updateEmployee(id, data = {}) {
     if (!toISODate(historyIngreso) || !toISODate(historyRetiro)) {
       throw new Error('Debes seleccionar la fecha fin de la asignacion anterior y la fecha inicio de la nueva asignacion.');
     }
-    await closeActiveEmployeeHistory(updated.id, historyRetiro, false);
-    await appendEmployeeCargoHistory({
-      employeeId: updated.id,
-      employeeCodigo: updated.codigo,
-      documento: updated.documento,
-      cargoCodigo: updated.cargo_codigo,
-      cargoNombre: updated.cargo_nombre,
-      sedeCodigo: updated.sede_codigo,
-      sedeNombre: updated.sede_nombre,
-      fechaIngreso: historyIngreso,
-      fechaRetiro: null,
-      source: sedeChanged ? 'sede_change' : (cargoChanged ? 'cargo_change' : 'employee_update')
-    });
+    const historyIngresoIso = toISODate(historyIngreso);
+    const mergedIntoProgrammedHistory = historyIngresoIso > todayBogotaISO()
+      ? await patchProgrammedEmployeeHistory(updated.id, historyIngreso, {
+        employee_codigo: updated.codigo || null,
+        documento: updated.documento || null,
+        cargo_codigo: updated.cargo_codigo || null,
+        cargo_nombre: updated.cargo_nombre || null,
+        sede_codigo: updated.sede_codigo || null,
+        sede_nombre: updated.sede_nombre || null,
+        source: 'scheduled_assignment_update'
+      }, false)
+      : false;
+    if (!mergedIntoProgrammedHistory) {
+      await closeActiveEmployeeHistory(updated.id, historyRetiro, false);
+      await appendEmployeeCargoHistory({
+        employeeId: updated.id,
+        employeeCodigo: updated.codigo,
+        documento: updated.documento,
+        cargoCodigo: updated.cargo_codigo,
+        cargoNombre: updated.cargo_nombre,
+        sedeCodigo: updated.sede_codigo,
+        sedeNombre: updated.sede_nombre,
+        fechaIngreso: historyIngreso,
+        fechaRetiro: null,
+        source: sedeChanged ? 'sede_change' : (cargoChanged ? 'cargo_change' : 'employee_update')
+      });
+    } else {
+      await notifyTableReload('employee_cargo_history');
+    }
   } else {
     await patchActiveEmployeeHistory(updated.id, {
       employee_codigo: updated.codigo || null,
@@ -3054,6 +3366,7 @@ export async function setEmployeeStatus(id, estado, options = null) {
     patch.fecha_ingreso = fechaIngreso || new Date().toISOString();
     patch.fecha_retiro = null;
   }
+  validateEmployeeDateRange(patch.fecha_ingreso !== undefined ? patch.fecha_ingreso : currentRow.fecha_ingreso, patch.fecha_retiro);
   const { data, error } = await supabase.from('employees').update(patch).eq('id', id).select('*').single();
   if (error) throw error;
   const previousEstado = String(currentRow.estado || '').trim().toLowerCase();

@@ -382,6 +382,8 @@ export const EmployeesAdmin=(mount,deps={})=>{
     const newPhone=String(modal.values.telefono||'').trim();
     const newIngreso=String(modal.values.fechaIngreso||'').trim();
     if(!/^\d{4}-\d{2}-\d{2}$/.test(newIngreso)) return alert('Selecciona la fecha de ingreso.');
+    const currentRetiro=toInputDate(e.fechaRetiro);
+    if(currentRetiro && newIngreso>currentRetiro) return alert('La fecha de ingreso no puede ser posterior a la fecha de retiro.');
     try{
       if(newCode!==String(e.codigo||'')){ const dup=await deps.findEmployeeByCode?.(newCode); if(dup && dup.id!==e.id) return alert('Ya existe un empleado con ese codigo.'); }
       if(newDoc!==String(e.documento||'')){ const dupDoc=await deps.findEmployeeByDocument?.(newDoc); if(dupDoc && dupDoc.id!==e.id) return alert('Ya existe un empleado con ese documento.'); }
@@ -485,6 +487,8 @@ export const EmployeesAdmin=(mount,deps={})=>{
     if(!modal.confirmed) return;
     const retiro=String(modal.values.retiroDate||'').trim();
     if(!validInputDate(retiro)) return alert('Fecha invalida. Usa formato AAAA-MM-DD.');
+    const ingreso=toInputDate(e.fechaIngreso);
+    if(ingreso && retiro<ingreso) return alert('La fecha de retiro no puede ser anterior a la fecha de ingreso.');
     try{
       const retiroDate=new Date(`${retiro}T00:00:00`);
       await deps.setEmployeeStatus?.(e.id,'inactivo',{ fechaRetiro:retiroDate });

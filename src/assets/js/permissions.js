@@ -12,6 +12,7 @@ const LEGACY_FALLBACK_BY_NEW = {
   [PERMS.EDIT_SEDES]: 'manageSedes',
   [PERMS.VIEW_EMPLOYEES]: 'manageEmployees',
   [PERMS.EDIT_EMPLOYEES]: 'manageEmployees',
+  [PERMS.MANAGE_EMPLOYEE_SCHEDULES]: 'manageEmployees',
   [PERMS.VIEW_SUPERNUMERARIOS]: 'manageEmployees',
   [PERMS.EDIT_SUPERNUMERARIOS]: 'manageEmployees',
   [PERMS.VIEW_CARGOS]: 'manageEmployees',
