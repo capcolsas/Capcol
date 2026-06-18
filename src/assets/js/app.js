@@ -39,6 +39,8 @@ import { addRoute, startRouter, navigate, refreshRoute } from './router.js';
 import { getState, setState } from './state.js';
 import { can, PERMS, isSuperAdmin } from './permissions.js';
 import { ROLES } from './roles.js';
+import { installBrowserAlertReplacement } from './utils/notifications.js';
+installBrowserAlertReplacement();
 const sidebarMount=document.getElementById('app-sidebar');
 const headerMount =document.getElementById('app-header');
 const footerMount =document.getElementById('app-footer');

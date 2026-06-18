@@ -151,9 +151,8 @@ export const EmployeeNovelties = (mount, deps = {}) => {
       ...history,
       ...audit.filter((row) => !hasMatchingHistoryNovelty(row, history))
     ]
-      .filter((row) => !from || row.date >= from)
-      .filter((row) => !to || row.date <= to)
-      .filter((row) => !type || row.type === type)
+      .filter((row) => isDateVisible(row, from, to))
+      .filter((row) => isTypeVisible(row, type))
       .filter((row) => {
         if (!term) return true;
         return [
@@ -168,6 +167,21 @@ export const EmployeeNovelties = (mount, deps = {}) => {
       });
 
     return sortRows(rows);
+  }
+
+  function isDateVisible(row, from, to) {
+    if (isPendingFutureProgram(row)) return true;
+    return (!from || row.date >= from) && (!to || row.date <= to);
+  }
+
+  function isTypeVisible(row, type) {
+    if (!type) return true;
+    if (type === 'schedule') return row.type === 'schedule' || isPendingFutureProgram(row);
+    return row.type === type;
+  }
+
+  function isPendingFutureProgram(row = {}) {
+    return row.source === 'history' && row.isProgrammed === true;
   }
 
   function normalizeAuditRow(row) {
@@ -331,14 +345,15 @@ export const EmployeeNovelties = (mount, deps = {}) => {
   function actionsCell(row) {
     const btnInfo = el('button', { className: 'btn btn--icon', type: 'button', title: 'Ver informacion', 'aria-label': 'Ver informacion' }, ['\u24D8']);
     btnInfo.addEventListener('click', () => showInfo(row));
-    const actions = [btnInfo];
+    const actions = [];
     if (canManageSchedules && row.source === 'history' && row.isProgrammed && row.previousHistoryItem) {
-      const btnEdit = el('button', { className: 'btn', type: 'button', title: 'Editar programacion' }, ['Editar']);
+      const btnEdit = el('button', { className: 'btn btn--icon', type: 'button', title: 'Editar programacion', 'aria-label': 'Editar programacion' }, ['\u270E']);
       btnEdit.addEventListener('click', () => editProgrammedAssignment(row));
-      const btnCancel = el('button', { className: 'btn btn--danger', type: 'button', title: 'Cancelar programacion' }, ['Cancelar']);
+      const btnCancel = el('button', { className: 'btn btn--icon btn--danger', type: 'button', title: 'Cancelar programacion', 'aria-label': 'Cancelar programacion' }, ['\u2716']);
       btnCancel.addEventListener('click', () => cancelProgrammedAssignment(row));
       actions.push(btnEdit, btnCancel);
     }
+    actions.push(btnInfo);
     return el('div', { className: 'row-actions' }, actions);
   }
 
@@ -592,6 +607,10 @@ function typeBadge(type, label) {
 
 function toInputDate(value) {
   try {
+    if (typeof value === 'string') {
+      const raw = value.trim();
+      if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+    }
     const date = value ? new Date(value) : null;
     if (!date || Number.isNaN(date.getTime())) return '';
     const pad = (n) => String(n).padStart(2, '0');
@@ -608,6 +627,7 @@ function formatDate(value) {
 
 function formatDateTime(value) {
   try {
+    if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value.trim())) return value.trim();
     const date = value ? new Date(value) : null;
     return date && !Number.isNaN(date.getTime()) ? date.toLocaleString() : '-';
   } catch (_) {
