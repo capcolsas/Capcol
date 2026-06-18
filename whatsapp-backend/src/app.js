@@ -3217,7 +3217,30 @@ async function findEmployeeByDocument(document) {
 async function hydrateEmployee(row) {
   const employee = { ...row };
   employee.telefono = normalizePhone(employee.telefono);
+  await applyEmployeeAssignmentForDate(employee, currentDate());
   employee.isSupernumerario = await isEmployeeSupernumerario(employee);
+  return employee;
+}
+
+async function applyEmployeeAssignmentForDate(employee, date) {
+  const employeeId = String(employee?.id || '').trim();
+  const day = String(date || '').trim();
+  if (!employeeId || !day) return employee;
+
+  const { data, error } = await supabaseAdmin
+    .from('employee_cargo_history')
+    .select('id, employee_id, cargo_codigo, cargo_nombre, sede_codigo, sede_nombre, fecha_ingreso, fecha_retiro, created_at')
+    .eq('employee_id', employeeId)
+    .order('fecha_ingreso', { ascending: false })
+    .limit(50);
+  if (error) throw error;
+
+  const assignment = resolveEmployeeAssignmentHistoryOnDate(employee, day, data || []);
+  if (!assignment) return employee;
+  employee.cargo_codigo = assignment.cargo_codigo || employee.cargo_codigo || null;
+  employee.cargo_nombre = assignment.cargo_nombre || employee.cargo_nombre || null;
+  employee.sede_codigo = assignment.sede_codigo || employee.sede_codigo || null;
+  employee.sede_nombre = assignment.sede_nombre || employee.sede_nombre || null;
   return employee;
 }
 
