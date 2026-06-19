@@ -12,6 +12,7 @@ export const QrDailyRegistry = (mount, deps = {}) => {
   let sortDir = -1;
   let pendingSortKey = 'zona';
   let pendingSortDir = 1;
+  let cardFilter = 'all';
 
   const ui = el('div', {}, [
     el('section', { className: 'main-card' }, [
@@ -33,11 +34,11 @@ export const QrDailyRegistry = (mount, deps = {}) => {
         ])
       ]),
       el('section', { className: 'wa-stats wa-stats--nov wa-stats--qr-registry mt-2' }, [
-        statCard('Programados QR', 'qrScheduled', '0'),
-        statCard('Ingresos QR', 'qrTotal', '0'),
-        statCard('Con salida', 'qrWithExit', '0'),
-        statCard('Pendientes ingreso', 'qrPending', '0'),
-        statCard('Alertas celular', 'qrPhoneAlerts', '0')
+        statCard('Programados QR', 'qrScheduled', '0', 'scheduled'),
+        statCard('Ingresos QR', 'qrTotal', '0', 'entries'),
+        statCard('Con salida', 'qrWithExit', '0', 'exits'),
+        statCard('Sin ingreso QR', 'qrPending', '0', 'pending'),
+        statCard('Alertas celular', 'qrPhoneAlerts', '0', 'alerts')
       ]),
       el('div', { className: 'mt-2 table-wrap' }, [
         el('table', { id: 'qrDailyTable', className: 'table wa-live-table' }, [
@@ -63,7 +64,7 @@ export const QrDailyRegistry = (mount, deps = {}) => {
       el('p', { id: 'qrDailyMsg', className: 'text-muted mt-2' }, [' '])
     ]),
     el('section', { className: 'main-card section-block mt-2' }, [
-      el('h3', { className: 'section-title', style: 'margin:0;width:100%;' }, ['Pendientes de ingreso QR']),
+      el('h3', { className: 'section-title', style: 'margin:0;width:100%;' }, ['Sin ingreso QR / novedades']),
       el('div', { style: 'display:flex;justify-content:space-between;gap:.75rem;align-items:center;flex-wrap:wrap;' }, [
         el('span', { id: 'qrPendingSummary', className: 'text-muted', style: 'font-size:.86rem;' }, ['0 empleados pendientes']),
         el('div', { className: 'wa-field', style: 'min-width:220px;' }, [
@@ -73,7 +74,7 @@ export const QrDailyRegistry = (mount, deps = {}) => {
           ])
         ])
       ]),
-      el('div', { id: 'qrPendingEmpty', className: 'text-muted mt-1', style: 'display:none;' }, ['Todos los empleados programados en sedes QR ya registraron ingreso.']),
+      el('div', { id: 'qrPendingEmpty', className: 'text-muted mt-1', style: 'display:none;' }, ['Todos los empleados de sedes QR ya registraron ingreso o no tienen novedades.']),
       el('div', { id: 'qrPendingWrap', className: 'mt-1 table-wrap' }, [
         el('table', { id: 'qrPendingTable', className: 'table wa-live-table' }, [
           el('thead', {}, [
@@ -82,6 +83,7 @@ export const QrDailyRegistry = (mount, deps = {}) => {
               el('th', { 'data-pending-sort': 'nombre', style: 'cursor:pointer' }, ['Nombre']),
               el('th', { 'data-pending-sort': 'telefono', style: 'cursor:pointer' }, ['Telefono']),
               el('th', { 'data-pending-sort': 'sede', style: 'cursor:pointer' }, ['Sede']),
+              el('th', { 'data-pending-sort': 'estado', style: 'cursor:pointer' }, ['Estado / novedad']),
               el('th', { 'data-pending-sort': 'dependencia', style: 'cursor:pointer' }, ['Dependencia']),
               el('th', { 'data-pending-sort': 'zona', style: 'cursor:pointer' }, ['Zona'])
             ])
@@ -95,8 +97,10 @@ export const QrDailyRegistry = (mount, deps = {}) => {
   const recordsPaginator = createTablePagination(ui, { id: 'qrDailyRecords', after: '#qrDailyTable', onChange: render });
   const pendingPaginator = createTablePagination(ui, { id: 'qrDailyPending', after: '#qrPendingTable', onChange: render });
 
-  function statCard(label, id, value) {
-    return el('article', { className: 'wa-stat card' }, [
+  function statCard(label, id, value, filterKey = '') {
+    const attrs = { className: 'wa-stat card', role: 'button', tabindex: '0' };
+    if (filterKey) attrs['data-card-filter'] = filterKey;
+    return el('article', attrs, [
       el('small', { className: 'wa-stat__label' }, [label]),
       el('strong', { id, className: 'wa-stat__value' }, [value])
     ]);
@@ -169,6 +173,7 @@ export const QrDailyRegistry = (mount, deps = {}) => {
       row.telefono,
       row.sedeNombre,
       row.sedeCodigo,
+      pendingStatusText(row),
       row.dependenciaNombre,
       row.zonaNombre
     ].join(' '));
@@ -183,6 +188,7 @@ export const QrDailyRegistry = (mount, deps = {}) => {
 
   function pendingSortValue(row = {}, key) {
     if (key === 'sede') return normalize(row.sedeNombre || row.sedeCodigo);
+    if (key === 'estado') return normalize(pendingStatusText(row));
     if (key === 'dependencia') return normalize(row.dependenciaNombre || row.dependenciaCodigo);
     if (key === 'zona') return normalize(row.zonaNombre || row.zonaCodigo);
     return normalize(row[key]);
@@ -218,7 +224,53 @@ export const QrDailyRegistry = (mount, deps = {}) => {
     qs('#qrWithExit', ui).textContent = String(rows.filter((row) => row.exitAt).length);
     qs('#qrPending', ui).textContent = String(pendingRows.length);
     qs('#qrPhoneAlerts', ui).textContent = String(rows.filter((row) => row.phoneDifferent).length);
-    qs('#qrDailyMsg', ui).textContent = `Registro QR en vivo. Registros filtrados: ${filteredRecords.length}. Pendientes filtrados: ${filteredPending.length}.`;
+    qs('#qrDailyMsg', ui).textContent = `Registro QR en vivo. Registros filtrados: ${filteredRecords.length}. Sin ingreso QR/novedades filtrados: ${filteredPending.length}.`;
+  }
+
+  function applyCardFilter(recordList = [], pendingList = []) {
+    if (cardFilter === 'entries') return { records: recordList.filter((row) => row.entryAt), pending: [] };
+    if (cardFilter === 'exits') return { records: recordList.filter((row) => row.exitAt), pending: [] };
+    if (cardFilter === 'pending') return { records: [], pending: pendingList };
+    if (cardFilter === 'alerts') return { records: recordList.filter((row) => row.phoneDifferent), pending: [] };
+    return { records: recordList, pending: pendingList };
+  }
+
+  function setCardFilter(next) {
+    cardFilter = cardFilter === next ? 'all' : next;
+    recordsPaginator.reset();
+    pendingPaginator.reset();
+    render();
+  }
+
+  function paintCard(cardEl, active) {
+    if (!cardEl) return;
+    cardEl.style.cursor = 'pointer';
+    cardEl.style.outline = active ? '2px solid #0ea5e9' : 'none';
+    cardEl.style.outlineOffset = active ? '2px' : '0';
+    cardEl.style.background = active ? '#eef8ff' : '';
+  }
+
+  function updateCardFilterUI() {
+    ui.querySelectorAll('[data-card-filter]').forEach((card) => {
+      paintCard(card, cardFilter === String(card.getAttribute('data-card-filter') || '').trim());
+    });
+  }
+
+  function pendingStatusText(row = {}) {
+    const novedad = [row.novedadCodigo, row.novedadNombre].filter(Boolean).join(' - ');
+    if (novedad) return novedad;
+    const estado = String(row.estadoDia || '').trim();
+    if (!estado) return row.servicioProgramado === false ? 'No programado' : 'Pendiente ingreso';
+    const labels = {
+      ausente_con_novedad: 'Ausente con novedad',
+      ausente_sin_reemplazo: 'Ausente sin reemplazo',
+      incapacidad: 'Incapacidad',
+      vacaciones: 'Vacaciones',
+      compensatorio: 'Compensatorio',
+      sin_registro: 'Pendiente ingreso',
+      no_programado: 'No programado'
+    };
+    return labels[estado] || estado.replace(/_/g, ' ');
   }
 
   function renderRecords(filteredRecords) {
@@ -242,6 +294,12 @@ export const QrDailyRegistry = (mount, deps = {}) => {
     ])));
   }
 
+  function pendingEmptyText() {
+    if (!['all', 'scheduled', 'pending'].includes(cardFilter)) return 'El filtro actual no incluye empleados sin ingreso QR.';
+    if (pendingZone === 'all') return 'Todos los empleados programados en sedes QR ya registraron ingreso.';
+    return 'No hay pendientes de ingreso QR para la zona seleccionada.';
+  }
+
   function renderPending(filteredPending) {
     const tbody = qs('#qrPendingTbody', ui);
     const pageRows = pendingPaginator.slice(filteredPending);
@@ -250,9 +308,7 @@ export const QrDailyRegistry = (mount, deps = {}) => {
     if (!pageRows.length) {
       tbody.replaceChildren();
       if (empty) {
-        empty.textContent = pendingZone === 'all'
-          ? 'Todos los empleados programados en sedes QR ya registraron ingreso.'
-          : 'No hay pendientes de ingreso QR para la zona seleccionada.';
+        empty.textContent = pendingEmptyText();
         empty.style.display = '';
       }
       if (wrap) wrap.style.display = 'none';
@@ -264,6 +320,7 @@ export const QrDailyRegistry = (mount, deps = {}) => {
         el('td', {}, [row.nombre || '-']),
         el('td', {}, [phone(row.telefono)]),
         el('td', {}, [row.sedeNombre || row.sedeCodigo || '-']),
+        el('td', {}, [pendingStatusText(row)]),
         el('td', {}, [row.dependenciaNombre || row.dependenciaCodigo || '-']),
         el('td', {}, [row.zonaNombre || row.zonaCodigo || '-'])
       ])));
@@ -271,24 +328,26 @@ export const QrDailyRegistry = (mount, deps = {}) => {
     const total = pendingRows.length;
     const visible = filteredPending.length;
     qs('#qrPendingSummary', ui).textContent = pendingZone === 'all'
-      ? `${total} empleado${total === 1 ? '' : 's'} pendiente${total === 1 ? '' : 's'}`
-      : `${visible} de ${total} empleado${total === 1 ? '' : 's'} pendiente${total === 1 ? '' : 's'}`;
+      ? `${total} empleado${total === 1 ? '' : 's'} sin ingreso QR o con novedad`
+      : `${visible} de ${total} empleado${total === 1 ? '' : 's'} sin ingreso QR o con novedad`;
   }
 
   function render() {
     const term = normalize(searchTerm);
     const searchedRecords = term ? rows.filter((row) => recordSearchText(row).includes(term)) : rows;
     const searchedPending = term ? pendingRows.filter((row) => pendingSearchText(row).includes(term)) : pendingRows;
-    updateZoneOptions(searchedPending);
-    const zoneFilteredPending = searchedPending.filter((row) => (
+    const cardFiltered = applyCardFilter(searchedRecords, searchedPending);
+    updateZoneOptions(cardFiltered.pending);
+    const zoneFilteredPending = cardFiltered.pending.filter((row) => (
       pendingZone === 'all' || String(row.zonaNombre || row.zonaCodigo || '').trim() === pendingZone
     ));
-    const sortedRecords = sortRows(searchedRecords, sortKey, sortDir);
+    const sortedRecords = sortRows(cardFiltered.records, sortKey, sortDir);
     const sortedPending = sortRows(zoneFilteredPending, pendingSortKey, pendingSortDir, pendingSortValue);
     renderRecords(sortedRecords);
     renderPending(sortedPending);
     renderStats(sortedRecords, sortedPending);
     updateSortIndicators();
+    updateCardFilterUI();
   }
 
   function updateSortIndicators() {
@@ -368,6 +427,16 @@ export const QrDailyRegistry = (mount, deps = {}) => {
       else { pendingSortKey = key; pendingSortDir = 1; }
       pendingPaginator.reset();
       render();
+    });
+  });
+  ui.querySelectorAll('[data-card-filter]').forEach((card) => {
+    const key = String(card.getAttribute('data-card-filter') || '').trim();
+    if (!key) return;
+    card.addEventListener('click', () => setCardFilter(key));
+    card.addEventListener('keydown', (ev) => {
+      if (ev.key !== 'Enter' && ev.key !== ' ') return;
+      ev.preventDefault();
+      setCardFilter(key);
     });
   });
 

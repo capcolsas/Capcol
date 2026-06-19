@@ -64,17 +64,20 @@ export const Home = async (mount, deps = {}) => {
   bindSectionToggle(chartBlock, chartToggle);
 
   try {
-    const [sedes, employees, historyRows, metrics] = await Promise.all([
+    const [sedes, employees, historyRows, metrics, dailyStatusRows] = await Promise.all([
       streamOnce((ok, fail) => deps.streamSedes?.(ok, fail)),
       streamOnce((ok, fail) => (deps.streamActiveBaseEmployees || deps.streamEmployees)?.(ok, fail)),
       deps.streamEmployeeCargoHistoryAll ? streamOnce((ok, fail) => deps.streamEmployeeCargoHistoryAll?.(ok, fail)) : [],
-      deps.listDailyMetricsRange?.(monthStart, today) || []
+      deps.listDailyMetricsRange?.(monthStart, today) || [],
+      deps.listEmployeeDailyStatusRange?.(today, today) || []
     ]);
 
     const todayMetrics = (metrics || []).find((row) => String(row?.fecha || '').trim() === today) || null;
-    const summary = todayMetrics
-      ? computeOperationalSummaryFromMetrics(sedes, todayMetrics)
-      : computeOperationalSummary(sedes, employees, today, historyRows);
+    const summary = (sedes || []).length && (dailyStatusRows || []).length
+      ? computeOperationalSummaryFromDailyStatus(sedes, dailyStatusRows)
+      : (sedes || []).length && (employees || []).length
+      ? computeOperationalSummary(sedes, employees, today, historyRows)
+      : computeOperationalSummaryFromMetrics(sedes, todayMetrics);
     renderSummary(summaryBlock, summary);
 
     const chartData = buildMonthlySeries(monthStart, today, metrics || []);
@@ -227,6 +230,45 @@ function computeOperationalSummaryFromMetrics(sedes = [], metrics = {}) {
     contracted,
     surplus: Math.max(contracted - planned, 0),
     missing: Number(metrics?.noContracted || Math.max(planned - contracted, 0))
+  };
+}
+
+function computeOperationalSummaryFromDailyStatus(sedes = [], dailyStatusRows = []) {
+  const activeSedes = (sedes || []).filter((row) => String(row?.estado || 'activo').trim().toLowerCase() !== 'inactivo');
+  const plannedBySede = new Map();
+  activeSedes.forEach((row) => {
+    const sedeCode = String(row?.codigo || '').trim();
+    if (!sedeCode) return;
+    plannedBySede.set(sedeCode, parseOperatorCount(row?.numeroOperarios ?? row?.numero_operarios));
+  });
+
+  const contractedBySede = new Map();
+  (dailyStatusRows || []).forEach((row) => {
+    const tipoPersonal = String(row?.tipoPersonal || row?.tipo_personal || '').trim();
+    const isProgrammed = row?.servicioProgramado === true || row?.servicio_programado === true;
+    if (tipoPersonal !== 'empleado' || !isProgrammed) return;
+    const sedeCode = String(row?.sedeCodigo || row?.sede_codigo || '').trim();
+    if (!sedeCode || !plannedBySede.has(sedeCode)) return;
+    contractedBySede.set(sedeCode, Number(contractedBySede.get(sedeCode) || 0) + 1);
+  });
+
+  const planned = Array.from(plannedBySede.values()).reduce((acc, value) => acc + Number(value || 0), 0);
+  const contracted = Array.from(contractedBySede.values()).reduce((acc, value) => acc + Number(value || 0), 0);
+  let surplus = 0;
+  let missing = 0;
+
+  plannedBySede.forEach((plannedCount, sedeCode) => {
+    const contractedCount = Number(contractedBySede.get(sedeCode) || 0);
+    surplus += Math.max(contractedCount - plannedCount, 0);
+    missing += Math.max(plannedCount - contractedCount, 0);
+  });
+
+  return {
+    activeSedes: activeSedes.length,
+    planned,
+    contracted,
+    surplus,
+    missing
   };
 }
 

@@ -2753,14 +2753,20 @@ async function getAccessToken() {
 async function backendJson(path, { method = 'GET', body = null, headers = {} } = {}) {
   const base = backendApiBase();
   if (!base) throw new Error('Configura EMPLOYEE_PORTAL_API_BASE para usar el backend.');
-  const response = await fetch(`${base}${path}`, {
-    method,
-    headers: {
-      'Content-Type': 'application/json',
-      ...headers
-    },
-    body: body ? JSON.stringify(body) : null
-  });
+  let response;
+  try {
+    response = await fetch(`${base}${path}`, {
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        ...headers
+      },
+      body: body ? JSON.stringify(body) : null
+    });
+  } catch (error) {
+    const origin = window.location?.origin || 'este dominio';
+    throw new Error(`No se pudo conectar con el backend (${base}). Revisa que ${origin} este en EMPLOYEE_PORTAL_ALLOWED_ORIGINS y que el backend este disponible.`);
+  }
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || payload?.ok === false) throw new Error(payload?.error || `Error backend ${response.status}`);
   return payload;
@@ -2848,12 +2854,14 @@ export function streamDailyQrRecords(date, onData, onError = null, onStatus = nu
     emit();
   };
   const onEmployeeChange = () => emit();
+  const onIncapacityChange = () => emit();
   const onSedeChange = () => emit();
   emit();
   const unTokens = registerTableReloader('attendance_qr_tokens', emit);
   const unExits = registerTableReloader('employee_daily_exits', emit);
   const unDailyStatus = registerTableReloader('employee_daily_status', emit);
   const unEmployees = registerTableReloader('employees', emit);
+  const unIncapacitados = registerTableReloader('incapacitados', emit);
   const unSedes = registerTableReloader('sedes', emit);
   const tokenRealtime = subscribeToRealtime(
     supabase.channel(nextRealtimeChannelName(`attendance-qr-tokens-${day}`)).on('postgres_changes', { event: '*', schema: 'public', table: 'attendance_qr_tokens' }, onTokenChange),
@@ -2871,6 +2879,10 @@ export function streamDailyQrRecords(date, onData, onError = null, onStatus = nu
     supabase.channel(nextRealtimeChannelName(`employee-daily-status-qr-${day}`)).on('postgres_changes', { event: '*', schema: 'public', table: 'employee_daily_status' }, onStatusChange),
     { label: `employee_daily_status:qr_daily:${day}`, onError, onStatus }
   );
+  const incapacityRealtime = subscribeToRealtime(
+    supabase.channel(nextRealtimeChannelName(`incapacitados-qr-daily-${day}`)).on('postgres_changes', { event: '*', schema: 'public', table: 'incapacitados' }, onIncapacityChange),
+    { label: `incapacitados:qr_daily:${day}`, onError, onStatus }
+  );
   const sedesRealtime = subscribeToRealtime(
     supabase.channel(nextRealtimeChannelName(`sedes-qr-daily-${day}`)).on('postgres_changes', { event: '*', schema: 'public', table: 'sedes' }, onSedeChange),
     { label: `sedes:qr_daily:${day}`, onError, onStatus }
@@ -2881,16 +2893,19 @@ export function streamDailyQrRecords(date, onData, onError = null, onStatus = nu
     unExits();
     unDailyStatus();
     unEmployees();
+    unIncapacitados();
     unSedes();
     tokenRealtime.cancel();
     exitRealtime.cancel();
     employeeRealtime.cancel();
     dailyStatusRealtime.cancel();
+    incapacityRealtime.cancel();
     sedesRealtime.cancel();
     supabase.removeChannel(tokenRealtime.subscription);
     supabase.removeChannel(exitRealtime.subscription);
     supabase.removeChannel(employeeRealtime.subscription);
     supabase.removeChannel(dailyStatusRealtime.subscription);
+    supabase.removeChannel(incapacityRealtime.subscription);
     supabase.removeChannel(sedesRealtime.subscription);
   };
 }
@@ -3291,7 +3306,7 @@ export async function updateEmployee(id, data = {}) {
       throw new Error('Debes seleccionar la fecha fin de la asignacion anterior y la fecha inicio de la nueva asignacion.');
     }
     const historyIngresoIso = toISODate(historyIngreso);
-    const mergedIntoProgrammedHistory = historyIngresoIso > todayBogotaISO()
+    const mergedIntoProgrammedHistory = historyIngresoIso >= todayBogotaISO()
       ? await patchProgrammedEmployeeHistory(updated.id, historyIngreso, {
         employee_codigo: updated.codigo || null,
         documento: updated.documento || null,
@@ -3299,7 +3314,9 @@ export async function updateEmployee(id, data = {}) {
         cargo_nombre: updated.cargo_nombre || null,
         sede_codigo: updated.sede_codigo || null,
         sede_nombre: updated.sede_nombre || null,
-        source: 'scheduled_assignment_update'
+        source: historyIngresoIso > todayBogotaISO()
+          ? 'scheduled_assignment_update'
+          : (sedeChanged ? 'sede_change' : (cargoChanged ? 'cargo_change' : 'employee_update'))
       }, false)
       : false;
     if (!mergedIntoProgrammedHistory) {

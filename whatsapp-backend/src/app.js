@@ -736,6 +736,7 @@ async function insertQrScanAudit(payload = {}) {
 
 async function listDailyQrRecords(date) {
   const day = String(date || '').trim();
+  await refreshEmployeeDailyStatusSnapshot(day);
   const [
     { data: tokenRows, error: tokenError },
     { data: exitRows, error: exitError },
@@ -771,15 +772,14 @@ async function listDailyQrRecords(date) {
   if (qrSedeCodes.length) {
     const { data: statusRows, error: statusError } = await supabaseAdmin
       .from('employee_daily_status')
-      .select('employee_id,documento,nombre,sede_codigo,sede_nombre_snapshot,zona_codigo_snapshot,zona_nombre_snapshot,dependencia_codigo_snapshot,dependencia_nombre_snapshot,tipo_personal,servicio_programado')
+      .select('employee_id,documento,nombre,sede_codigo,sede_nombre_snapshot,zona_codigo_snapshot,zona_nombre_snapshot,dependencia_codigo_snapshot,dependencia_nombre_snapshot,tipo_personal,servicio_programado,estado_dia,novedad_codigo,novedad_nombre,source_attendance_id,source_replacement_id,source_absenteeism_id,source_incapacity_id,origen')
       .eq('fecha', day)
       .eq('tipo_personal', 'empleado')
-      .eq('servicio_programado', true)
       .in('sede_codigo', qrSedeCodes)
       .order('sede_nombre_snapshot', { ascending: true })
       .order('nombre', { ascending: true });
     if (statusError) throw statusError;
-    pendingStatusRows = Array.isArray(statusRows) ? statusRows : [];
+    pendingStatusRows = (Array.isArray(statusRows) ? statusRows : []).filter(shouldShowDailyStatusInQrRegistry);
   }
   const employeeIds = [...new Set([
     ...tokens.map((row) => row?.employee_id).filter(Boolean),
@@ -889,12 +889,31 @@ async function listDailyQrRecords(date) {
         dependenciaCodigo: row.dependencia_codigo_snapshot || sede.dependencia_codigo || null,
         dependenciaNombre: row.dependencia_nombre_snapshot || sede.dependencia_nombre || null,
         zonaCodigo: row.zona_codigo_snapshot || sede.zona_codigo || null,
-        zonaNombre: row.zona_nombre_snapshot || sede.zona_nombre || null
+        zonaNombre: row.zona_nombre_snapshot || sede.zona_nombre || null,
+        estadoDia: row.estado_dia || null,
+        novedadCodigo: row.novedad_codigo || null,
+        novedadNombre: row.novedad_nombre || null,
+        origen: row.origen || null,
+        servicioProgramado: row.servicio_programado === true
       };
     })
     .sort((a, b) => String(a.sedeNombre || '').localeCompare(String(b.sedeNombre || '')) || String(a.nombre || '').localeCompare(String(b.nombre || '')));
 
   return { rows, pendingRows };
+}
+
+function shouldShowDailyStatusInQrRegistry(row = {}) {
+  if (String(row?.tipo_personal || '').trim() !== 'empleado') return false;
+  if (row?.servicio_programado === true) return true;
+  if (row?.source_incapacity_id || row?.source_replacement_id || row?.source_absenteeism_id) return true;
+  if (String(row?.novedad_codigo || row?.novedad_nombre || '').trim()) return true;
+  return [
+    'ausente_con_novedad',
+    'ausente_sin_reemplazo',
+    'incapacidad',
+    'vacaciones',
+    'compensatorio'
+  ].includes(String(row?.estado_dia || '').trim());
 }
 
 function isDifferentQrPhone(qrPhone, employeePhone) {
