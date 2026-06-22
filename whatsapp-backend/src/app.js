@@ -787,25 +787,31 @@ async function listDailyQrRecords(date) {
     qrSedesByCode.has(String(row?.sede_codigo || '').trim())
     && (row?.asistio === true || String(row?.novedad || '').trim())
   ));
+  let statusRows = [];
   let pendingStatusRows = [];
+  let registeredStatusRows = [];
   if (qrSedeCodes.length) {
-    const { data: statusRows, error: statusError } = await supabaseAdmin
+    const { data: dailyStatusRows, error: statusError } = await supabaseAdmin
       .from('employee_daily_status')
-      .select('employee_id,documento,nombre,sede_codigo,sede_nombre_snapshot,zona_codigo_snapshot,zona_nombre_snapshot,dependencia_codigo_snapshot,dependencia_nombre_snapshot,tipo_personal,servicio_programado')
+      .select('employee_id,documento,nombre,sede_codigo,sede_nombre_snapshot,zona_codigo_snapshot,zona_nombre_snapshot,dependencia_codigo_snapshot,dependencia_nombre_snapshot,tipo_personal,servicio_programado,estado_dia,novedad_nombre,source_incapacity_id')
       .eq('fecha', day)
       .eq('tipo_personal', 'empleado')
-      .eq('servicio_programado', true)
       .in('sede_codigo', qrSedeCodes)
       .order('sede_nombre_snapshot', { ascending: true })
       .order('nombre', { ascending: true });
     if (statusError) throw statusError;
-    pendingStatusRows = Array.isArray(statusRows) ? statusRows : [];
+    statusRows = Array.isArray(dailyStatusRows) ? dailyStatusRows : [];
+    pendingStatusRows = statusRows.filter((row) => row?.servicio_programado === true);
+    registeredStatusRows = statusRows.filter((row) => (
+      row?.source_incapacity_id
+      || ['incapacidad', 'vacaciones', 'compensatorio'].includes(String(row?.estado_dia || '').trim().toLowerCase())
+    ));
   }
   const employeeIds = [...new Set([
     ...tokens.map((row) => row?.employee_id).filter(Boolean),
     ...exits.map((row) => row?.employee_id).filter(Boolean),
     ...attendance.map((row) => row?.empleado_id).filter(Boolean),
-    ...pendingStatusRows.map((row) => row?.employee_id).filter(Boolean)
+    ...statusRows.map((row) => row?.employee_id).filter(Boolean)
   ])];
 
   const employeesById = new Map();
@@ -902,21 +908,22 @@ async function listDailyQrRecords(date) {
       ])
       .filter(Boolean)
   );
-  pendingStatusRows.forEach((statusRow) => {
+  registeredStatusRows.forEach((statusRow) => {
     const employeeId = String(statusRow?.employee_id || '').trim();
     const documento = String(statusRow?.documento || '').trim();
     const incapacity = (employeeId && incapacityByKey.get(`id:${employeeId}`)) || (documento && incapacityByKey.get(`doc:${documento}`)) || null;
-    if (!incapacity) return;
+    const statusLabel = String(statusRow?.novedad_nombre || '').trim() || dailyStatusLabel(statusRow?.estado_dia);
+    if (!incapacity && !statusLabel) return;
     const row = ensureRow({
-      employee_id: statusRow.employee_id || incapacity.employee_id || null,
-      documento: statusRow.documento || incapacity.documento || null,
-      nombre: statusRow.nombre || incapacity.nombre || null,
+      employee_id: statusRow.employee_id || incapacity?.employee_id || null,
+      documento: statusRow.documento || incapacity?.documento || null,
+      nombre: statusRow.nombre || incapacity?.nombre || null,
       sede_codigo: statusRow.sede_codigo || null,
       sede_nombre: statusRow.sede_nombre_snapshot || null
     });
     if (!row) return;
-    if (!row.entrySource) row.entrySource = 'incapacity';
-    row.entryLabel = String(incapacity.source || '').trim() || 'Incapacidad';
+    if (!row.entrySource) row.entrySource = incapacity ? 'incapacity' : 'daily_status';
+    if (!row.entryLabel) row.entryLabel = String(incapacity?.source || '').trim() || statusLabel;
   });
 
   exits.forEach((exitRow) => {
@@ -991,6 +998,19 @@ function noveltyLabelByCode(code) {
   if (!target) return '';
   const novelty = Object.values(NOVELTIES).find((item) => String(item?.code || '').trim() === target);
   return String(novelty?.label || '').trim();
+}
+
+function dailyStatusLabel(status) {
+  switch (String(status || '').trim().toLowerCase()) {
+    case 'incapacidad':
+      return 'Incapacidad';
+    case 'vacaciones':
+      return 'Vacaciones';
+    case 'compensatorio':
+      return 'Compensatorio';
+    default:
+      return '';
+  }
 }
 
 async function storeIncomingEvent({ eventType, payload }) {
