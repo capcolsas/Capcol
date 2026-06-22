@@ -174,6 +174,94 @@ function parseOperatorCount(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+const colombiaHolidayCache = new Map();
+
+function makeUtcDate(year, month, day) {
+  return new Date(Date.UTC(year, month - 1, day));
+}
+
+function addUtcDays(date, days) {
+  const next = new Date(date.getTime());
+  next.setUTCDate(next.getUTCDate() + Number(days || 0));
+  return next;
+}
+
+function formatUtcDate(date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function easterSundayUtc(year) {
+  const a = year % 19;
+  const b = Math.floor(year / 100);
+  const c = year % 100;
+  const d = Math.floor(b / 4);
+  const e = b % 4;
+  const f = Math.floor((b + 8) / 25);
+  const g = Math.floor((b - f + 1) / 3);
+  const h = (19 * a + b - d - g + 15) % 30;
+  const i = Math.floor(c / 4);
+  const k = c % 4;
+  const l = (32 + 2 * e + 2 * i - h - k) % 7;
+  const m = Math.floor((a + 11 * h + 22 * l) / 451);
+  const month = Math.floor((h + l - 7 * m + 114) / 31);
+  const day = ((h + l - 7 * m + 114) % 31) + 1;
+  return makeUtcDate(year, month, day);
+}
+
+function moveToFollowingMondayUtc(date) {
+  const isoDow = date.getUTCDay() === 0 ? 7 : date.getUTCDay();
+  if (isoDow === 1) return date;
+  return addUtcDays(date, 8 - isoDow);
+}
+
+function getColombiaHolidaySet(year) {
+  if (colombiaHolidayCache.has(year)) return colombiaHolidayCache.get(year);
+
+  const easter = easterSundayUtc(year);
+  const holidays = new Set([
+    formatUtcDate(makeUtcDate(year, 1, 1)),
+    formatUtcDate(makeUtcDate(year, 5, 1)),
+    formatUtcDate(makeUtcDate(year, 7, 20)),
+    formatUtcDate(makeUtcDate(year, 8, 7)),
+    formatUtcDate(makeUtcDate(year, 12, 8)),
+    formatUtcDate(makeUtcDate(year, 12, 25)),
+    formatUtcDate(moveToFollowingMondayUtc(makeUtcDate(year, 1, 6))),
+    formatUtcDate(moveToFollowingMondayUtc(makeUtcDate(year, 3, 19))),
+    formatUtcDate(moveToFollowingMondayUtc(makeUtcDate(year, 6, 29))),
+    formatUtcDate(moveToFollowingMondayUtc(makeUtcDate(year, 8, 15))),
+    formatUtcDate(moveToFollowingMondayUtc(makeUtcDate(year, 10, 12))),
+    formatUtcDate(moveToFollowingMondayUtc(makeUtcDate(year, 11, 1))),
+    formatUtcDate(moveToFollowingMondayUtc(makeUtcDate(year, 11, 11))),
+    formatUtcDate(addUtcDays(easter, -3)),
+    formatUtcDate(addUtcDays(easter, -2)),
+    formatUtcDate(moveToFollowingMondayUtc(addUtcDays(easter, 39))),
+    formatUtcDate(moveToFollowingMondayUtc(addUtcDays(easter, 60))),
+    formatUtcDate(moveToFollowingMondayUtc(addUtcDays(easter, 68)))
+  ]);
+
+  colombiaHolidayCache.set(year, holidays);
+  return holidays;
+}
+
+function isColombiaHolidayDate(selectedDate) {
+  const iso = toISODate(selectedDate);
+  if (!iso) return false;
+  const year = Number(iso.slice(0, 4));
+  return getColombiaHolidaySet(year).has(iso);
+}
+
+function isSedeScheduledForDate(sede, selectedDate) {
+  const iso = toISODate(selectedDate);
+  if (!iso) return false;
+  const [year, month, day] = iso.split('-').map((n) => Number(n));
+  const weekday = new Date(Date.UTC(year, (month || 1) - 1, day || 1)).getUTCDay();
+  const jornada = String(sede?.jornada || 'lun_vie').trim().toLowerCase();
+  if (jornada === 'lun_dom') return true;
+  if (isColombiaHolidayDate(iso)) return false;
+  if (jornada === 'lun_sab') return weekday >= 1 && weekday <= 6;
+  return weekday >= 1 && weekday <= 5;
+}
+
 function isCurrentEmployee(row = {}, todayISO) {
   const estado = String(row?.estado || 'activo').trim().toLowerCase();
   const ingreso = toISODate(row?.fechaIngreso || row?.fecha_ingreso);
@@ -232,9 +320,10 @@ function computeOperationalSummaryFromMetrics(sedes = [], metrics = {}) {
 
 function computeOperationalSummary(sedes = [], employees = [], todayISO, historyRows = []) {
   const activeSedes = (sedes || []).filter((row) => String(row?.estado || 'activo').trim().toLowerCase() !== 'inactivo');
-  const activeSedeCodes = new Set(activeSedes.map((row) => String(row?.codigo || '').trim()).filter(Boolean));
+  const scheduledSedes = activeSedes.filter((row) => isSedeScheduledForDate(row, todayISO));
+  const scheduledSedeCodes = new Set(scheduledSedes.map((row) => String(row?.codigo || '').trim()).filter(Boolean));
   const plannedBySede = new Map();
-  activeSedes.forEach((row) => {
+  scheduledSedes.forEach((row) => {
     const sedeCode = String(row?.codigo || '').trim();
     if (!sedeCode) return;
     plannedBySede.set(sedeCode, parseOperatorCount(row?.numeroOperarios ?? row?.numero_operarios));
@@ -248,7 +337,7 @@ function computeOperationalSummary(sedes = [], employees = [], todayISO, history
     const assignment = resolveEmployeeAssignmentHistoryOnDate(row, todayISO, historyByEmployeeId.get(employeeId) || []);
     const source = assignment || row;
     const sedeCode = String(source?.sedeCodigo || source?.sede_codigo || '').trim();
-    if (!sedeCode || !activeSedeCodes.has(sedeCode)) return;
+    if (!sedeCode || !scheduledSedeCodes.has(sedeCode)) return;
     contractedBySede.set(sedeCode, Number(contractedBySede.get(sedeCode) || 0) + 1);
   });
 

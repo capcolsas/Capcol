@@ -130,6 +130,13 @@ export const QrDailyRegistry = (mount, deps = {}) => {
     }
   }
 
+  function formatEntry(row = {}) {
+    const hour = formatHour(row.entryAt);
+    const label = String(row.entryLabel || '').trim();
+    if (!label) return hour;
+    return hour === '-' ? label : `${hour} (${label})`;
+  }
+
   function phone(value) {
     return String(value || '').trim() || '-';
   }
@@ -232,7 +239,7 @@ export const QrDailyRegistry = (mount, deps = {}) => {
       el('td', {}, [row.documento || '-']),
       el('td', {}, [row.nombre || '-']),
       el('td', {}, [row.sedeNombre || row.sedeCodigo || '-']),
-      el('td', {}, [formatHour(row.entryAt)]),
+      el('td', {}, [formatEntry(row)]),
       el('td', {}, [formatHour(row.exitAt)]),
       el('td', {}, [phone(row.employeePhone)]),
       el('td', { className: row.entryPhoneDifferent ? 'text-danger' : '' }, [phone(row.entryPhone)]),

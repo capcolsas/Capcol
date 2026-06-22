@@ -739,7 +739,9 @@ async function listDailyQrRecords(date) {
   const [
     { data: tokenRows, error: tokenError },
     { data: exitRows, error: exitError },
-    { data: sedeRows, error: sedeError }
+    { data: sedeRows, error: sedeError },
+    { data: incapacityRows, error: incapacityError },
+    { data: attendanceRows, error: attendanceError }
   ] = await Promise.all([
     supabaseAdmin
       .from('attendance_qr_tokens')
@@ -755,18 +757,34 @@ async function listDailyQrRecords(date) {
     supabaseAdmin
       .from('sedes')
       .select('codigo,nombre,dependencia_codigo,dependencia_nombre,zona_codigo,zona_nombre,qr_enabled,estado')
-      .eq('qr_enabled', true)
+      .eq('qr_enabled', true),
+    supabaseAdmin
+      .from('incapacitados')
+      .select('employee_id,documento')
+      .eq('estado', 'activo')
+      .lte('fecha_inicio', day)
+      .gte('fecha_fin', day),
+    supabaseAdmin
+      .from('attendance')
+      .select('id,empleado_id,documento,nombre,sede_codigo,sede_nombre,asistio,novedad,created_at')
+      .eq('fecha', day)
+      .eq('asistio', true)
   ]);
   if (tokenError) throw tokenError;
   if (exitError) throw exitError;
   if (sedeError) throw sedeError;
+  if (incapacityError) throw incapacityError;
+  if (attendanceError) throw attendanceError;
 
   const tokens = Array.isArray(tokenRows) ? tokenRows : [];
   const exits = Array.isArray(exitRows) ? exitRows : [];
+  const incapacities = Array.isArray(incapacityRows) ? incapacityRows : [];
+  let attendance = Array.isArray(attendanceRows) ? attendanceRows : [];
   const qrSedes = (Array.isArray(sedeRows) ? sedeRows : [])
     .filter((row) => String(row?.estado || 'activo').trim().toLowerCase() === 'activo');
   const qrSedesByCode = new Map(qrSedes.map((row) => [String(row.codigo || '').trim(), row]));
   const qrSedeCodes = [...qrSedesByCode.keys()].filter(Boolean);
+  attendance = attendance.filter((row) => qrSedesByCode.has(String(row?.sede_codigo || '').trim()));
   let pendingStatusRows = [];
   if (qrSedeCodes.length) {
     const { data: statusRows, error: statusError } = await supabaseAdmin
@@ -784,6 +802,7 @@ async function listDailyQrRecords(date) {
   const employeeIds = [...new Set([
     ...tokens.map((row) => row?.employee_id).filter(Boolean),
     ...exits.map((row) => row?.employee_id).filter(Boolean),
+    ...attendance.map((row) => row?.empleado_id).filter(Boolean),
     ...pendingStatusRows.map((row) => row?.employee_id).filter(Boolean)
   ])];
 
@@ -815,6 +834,8 @@ async function listDailyQrRecords(date) {
         entryAt: null,
         entryPhone: null,
         entryDistanceMeters: null,
+        entrySource: null,
+        entryLabel: null,
         exitAt: null,
         exitPhone: null,
         exitDistanceMeters: null
@@ -833,6 +854,37 @@ async function listDailyQrRecords(date) {
   const entryKeys = new Set(
     tokens
       .filter((row) => row?.action === 'entry')
+      .flatMap((row) => [
+        row?.employee_id ? `id:${String(row.employee_id).trim()}` : '',
+        row?.documento ? `doc:${String(row.documento).trim()}` : ''
+      ])
+      .filter(Boolean)
+  );
+  attendance.forEach((attendanceRow) => {
+    const row = ensureRow({
+      employee_id: attendanceRow.empleado_id || null,
+      documento: attendanceRow.documento || null,
+      nombre: attendanceRow.nombre || null,
+      sede_codigo: attendanceRow.sede_codigo || null,
+      sede_nombre: attendanceRow.sede_nombre || null
+    });
+    if (!row) return;
+    if (!row.entryAt) row.entryAt = attendanceRow.created_at || null;
+    if (!row.entrySource) row.entrySource = 'attendance';
+    const noveltyCode = String(attendanceRow.novedad || '').trim();
+    if (noveltyCode === NOVELTIES.COMPENSATORY.code) row.entryLabel = 'Compensatorio';
+    else if (noveltyCode && noveltyCode !== NOVELTIES.WORKING.code) row.entryLabel = `Novedad ${noveltyCode}`;
+  });
+  const attendanceKeys = new Set(
+    attendance
+      .flatMap((row) => [
+        row?.empleado_id ? `id:${String(row.empleado_id).trim()}` : '',
+        row?.documento ? `doc:${String(row.documento).trim()}` : ''
+      ])
+      .filter(Boolean)
+  );
+  const incapacityKeys = new Set(
+    incapacities
       .flatMap((row) => [
         row?.employee_id ? `id:${String(row.employee_id).trim()}` : '',
         row?.documento ? `doc:${String(row.documento).trim()}` : ''
@@ -874,7 +926,10 @@ async function listDailyQrRecords(date) {
     .filter((row) => {
       const employeeId = String(row?.employee_id || '').trim();
       const documento = String(row?.documento || '').trim();
-      return !(employeeId && entryKeys.has(`id:${employeeId}`)) && !(documento && entryKeys.has(`doc:${documento}`));
+      const hasEntry = (employeeId && entryKeys.has(`id:${employeeId}`)) || (documento && entryKeys.has(`doc:${documento}`));
+      const hasAttendance = (employeeId && attendanceKeys.has(`id:${employeeId}`)) || (documento && attendanceKeys.has(`doc:${documento}`));
+      const hasIncapacity = (employeeId && incapacityKeys.has(`id:${employeeId}`)) || (documento && incapacityKeys.has(`doc:${documento}`));
+      return !hasEntry && !hasAttendance && !hasIncapacity;
     })
     .map((row) => {
       const sede = qrSedesByCode.get(String(row?.sede_codigo || '').trim()) || {};
