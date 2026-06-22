@@ -760,7 +760,7 @@ async function listDailyQrRecords(date) {
       .eq('qr_enabled', true),
     supabaseAdmin
       .from('incapacitados')
-      .select('employee_id,documento')
+      .select('employee_id,documento,nombre,source,fecha_inicio,fecha_fin')
       .eq('estado', 'activo')
       .lte('fecha_inicio', day)
       .gte('fecha_fin', day),
@@ -768,7 +768,6 @@ async function listDailyQrRecords(date) {
       .from('attendance')
       .select('id,empleado_id,documento,nombre,sede_codigo,sede_nombre,asistio,novedad,created_at')
       .eq('fecha', day)
-      .eq('asistio', true)
   ]);
   if (tokenError) throw tokenError;
   if (exitError) throw exitError;
@@ -784,7 +783,10 @@ async function listDailyQrRecords(date) {
     .filter((row) => String(row?.estado || 'activo').trim().toLowerCase() === 'activo');
   const qrSedesByCode = new Map(qrSedes.map((row) => [String(row.codigo || '').trim(), row]));
   const qrSedeCodes = [...qrSedesByCode.keys()].filter(Boolean);
-  attendance = attendance.filter((row) => qrSedesByCode.has(String(row?.sede_codigo || '').trim()));
+  attendance = attendance.filter((row) => (
+    qrSedesByCode.has(String(row?.sede_codigo || '').trim())
+    && (row?.asistio === true || String(row?.novedad || '').trim())
+  ));
   let pendingStatusRows = [];
   if (qrSedeCodes.length) {
     const { data: statusRows, error: statusError } = await supabaseAdmin
@@ -872,7 +874,8 @@ async function listDailyQrRecords(date) {
     if (!row.entryAt) row.entryAt = attendanceRow.created_at || null;
     if (!row.entrySource) row.entrySource = 'attendance';
     const noveltyCode = String(attendanceRow.novedad || '').trim();
-    if (noveltyCode === NOVELTIES.COMPENSATORY.code) row.entryLabel = 'Compensatorio';
+    const noveltyLabel = noveltyLabelByCode(noveltyCode);
+    if (noveltyLabel && noveltyCode !== NOVELTIES.WORKING.code) row.entryLabel = noveltyLabel;
     else if (noveltyCode && noveltyCode !== NOVELTIES.WORKING.code) row.entryLabel = `Novedad ${noveltyCode}`;
   });
   const attendanceKeys = new Set(
@@ -883,6 +886,14 @@ async function listDailyQrRecords(date) {
       ])
       .filter(Boolean)
   );
+  const incapacityByKey = new Map();
+  const setIncapacityKey = (key, row) => {
+    if (key && !incapacityByKey.has(key)) incapacityByKey.set(key, row);
+  };
+  incapacities.forEach((row) => {
+    setIncapacityKey(row?.employee_id ? `id:${String(row.employee_id).trim()}` : '', row);
+    setIncapacityKey(row?.documento ? `doc:${String(row.documento).trim()}` : '', row);
+  });
   const incapacityKeys = new Set(
     incapacities
       .flatMap((row) => [
@@ -891,6 +902,22 @@ async function listDailyQrRecords(date) {
       ])
       .filter(Boolean)
   );
+  pendingStatusRows.forEach((statusRow) => {
+    const employeeId = String(statusRow?.employee_id || '').trim();
+    const documento = String(statusRow?.documento || '').trim();
+    const incapacity = (employeeId && incapacityByKey.get(`id:${employeeId}`)) || (documento && incapacityByKey.get(`doc:${documento}`)) || null;
+    if (!incapacity) return;
+    const row = ensureRow({
+      employee_id: statusRow.employee_id || incapacity.employee_id || null,
+      documento: statusRow.documento || incapacity.documento || null,
+      nombre: statusRow.nombre || incapacity.nombre || null,
+      sede_codigo: statusRow.sede_codigo || null,
+      sede_nombre: statusRow.sede_nombre_snapshot || null
+    });
+    if (!row) return;
+    if (!row.entrySource) row.entrySource = 'incapacity';
+    row.entryLabel = String(incapacity.source || '').trim() || 'Incapacidad';
+  });
 
   exits.forEach((exitRow) => {
     const row = ensureRow(exitRow);
@@ -957,6 +984,13 @@ function isDifferentQrPhone(qrPhone, employeePhone) {
   const expected = normalizePhone(employeePhone);
   if (!qr || !expected) return false;
   return qr !== expected;
+}
+
+function noveltyLabelByCode(code) {
+  const target = String(code || '').trim();
+  if (!target) return '';
+  const novelty = Object.values(NOVELTIES).find((item) => String(item?.code || '').trim() === target);
+  return String(novelty?.label || '').trim();
 }
 
 async function storeIncomingEvent({ eventType, payload }) {

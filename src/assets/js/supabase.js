@@ -2839,6 +2839,36 @@ export function streamDailyQrRecords(date, onData, onError = null, onStatus = nu
   let active = true;
   let loading = false;
   let queued = false;
+  let scopeReady = false;
+  let scopedEmployeeIds = new Set();
+  let scopedDocuments = new Set();
+  let scopedSedeCodes = new Set();
+  const updateScope = (summary = {}) => {
+    const rows = [
+      ...(Array.isArray(summary?.rows) ? summary.rows : []),
+      ...(Array.isArray(summary?.pendingRows) ? summary.pendingRows : [])
+    ];
+    scopedEmployeeIds = new Set(rows.map((row) => String(row?.employeeId || row?.employee_id || '').trim()).filter(Boolean));
+    scopedDocuments = new Set(rows.map((row) => String(row?.documento || '').trim()).filter(Boolean));
+    scopedSedeCodes = new Set(rows.map((row) => String(row?.sedeCodigo || row?.sede_codigo || '').trim()).filter(Boolean));
+    scopeReady = true;
+  };
+  const payloadRows = (payload = {}) => [payload?.new || null, payload?.old || null].filter(Boolean);
+  const payloadHasAny = (payload = {}, fields = []) => payloadRows(payload).some((row) => fields.some((field) => String(row?.[field] || '').trim()));
+  const payloadMatchesEmployeeScope = (payload = {}, idFields = ['id', 'employee_id', 'empleado_id'], documentFields = ['documento']) => {
+    if (!scopeReady) return true;
+    return payloadRows(payload).some((row) => (
+      idFields.some((field) => scopedEmployeeIds.has(String(row?.[field] || '').trim()))
+      || documentFields.some((field) => scopedDocuments.has(String(row?.[field] || '').trim()))
+    ));
+  };
+  const payloadMatchesSedeScope = (payload = {}) => {
+    if (!scopeReady) return true;
+    return payloadRows(payload).some((row) => (
+      scopedSedeCodes.has(String(row?.codigo || row?.sede_codigo || '').trim())
+      || row?.qr_enabled === true
+    ));
+  };
   const emit = async () => {
     if (!active) return;
     if (loading) {
@@ -2852,6 +2882,7 @@ export function streamDailyQrRecords(date, onData, onError = null, onStatus = nu
         try {
           const summary = await listDailyQrRecords(day);
           if (!active) return;
+          updateScope(summary || {});
           onData(summary || { rows: [], pendingRows: [] });
         } catch (error) {
           if (!active) return;
@@ -2880,10 +2911,20 @@ export function streamDailyQrRecords(date, onData, onError = null, onStatus = nu
     if (!shouldRefreshForDay(payload, day, 'fecha')) return;
     emit();
   };
-  const onEmployeeChange = () => emit();
-  const onSedeChange = () => emit();
+  const onEmployeeChange = (payload) => {
+    const hasIdentity = payloadHasAny(payload, ['id', 'employee_id', 'empleado_id', 'documento']);
+    if (hasIdentity && !payloadMatchesEmployeeScope(payload)) return;
+    emit();
+  };
+  const onSedeChange = (payload) => {
+    const hasIdentity = payloadHasAny(payload, ['codigo', 'sede_codigo']);
+    if (hasIdentity && !payloadMatchesSedeScope(payload)) return;
+    emit();
+  };
   const onIncapacityChange = (payload) => {
     if (!shouldRefreshForDateRange(payload, day, 'fecha_inicio', 'fecha_fin')) return;
+    const hasIdentity = payloadHasAny(payload, ['employee_id', 'empleado_id', 'documento']);
+    if (hasIdentity && !payloadMatchesEmployeeScope(payload, ['employee_id', 'empleado_id'], ['documento'])) return;
     emit();
   };
   emit();
