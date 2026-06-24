@@ -14,8 +14,8 @@ Esta carpeta contiene la configuracion y los assets privados usados para generar
 ## Archivos configurables por proyecto Rocky
 
 - `config.js`: datos de empresa, logo, pie, firma y firmante.
-- `assets/certificate-header-blank.png`: guia/base para el encabezado, 2550 x 720 px.
-- `assets/certificate-footer-blank.png`: guia/base para el pie, 2550 x 681 px.
+- `assets/certificate-header-blank.png`: guia/base para el encabezado, 2550 x 433 px.
+- `assets/certificate-footer-blank.png`: guia/base para el pie, 2550 x 375 px.
 - `assets/certificate-signature-blank.png`: guia/base para la firma, 360 x 180 px.
 
 La firma real debe permanecer en esta carpeta del backend, nunca en `src/assets/img`, porque esa carpeta es publica en el frontend.

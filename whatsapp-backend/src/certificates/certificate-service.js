@@ -70,8 +70,8 @@ async function buildCertificatePdfWithPdfKit({ employee, cargo, type, verificati
       ? { x: 0, width: pageWidth }
       : { x: left, width: contentWidth };
 
-    drawImageFit(doc, headerImage, headerBox.x, layout.header.top, headerBox.width, layout.header.height, cfg.header?.align || 'center');
-    drawImageFit(doc, footerImage, footerBox.x, pageHeight - layout.footer.bottomOffset, footerBox.width, layout.footer.height, 'center');
+    drawImageFit(doc, headerImage, headerBox.x, layout.header.top, headerBox.width, layout.header.height, cfg.header?.align || 'center', 'stretch');
+    drawImageFit(doc, footerImage, footerBox.x, pageHeight - layout.footer.bottomOffset, footerBox.width, layout.footer.height, 'center', 'stretch');
 
     doc.y = doc.page.margins.top + 20;
     doc.font('Helvetica').fontSize(11).text(`${cfg.city || ''}, ${formatLongDate(new Date(), cfg)}`, {
@@ -172,9 +172,13 @@ function numberOr(value, fallback) {
   return Number.isFinite(number) ? number : fallback;
 }
 
-function drawImageFit(doc, image, x, y, width, height, align = 'center') {
+function drawImageFit(doc, image, x, y, width, height, align = 'center', mode = 'contain') {
   if (!image?.length) return;
   try {
+    if (mode === 'stretch') {
+      doc.image(image, x, y, { width, height });
+      return;
+    }
     doc.image(image, x, y, {
       fit: [width, height],
       align: align === 'right' ? 'right' : align === 'left' ? 'left' : 'center',
