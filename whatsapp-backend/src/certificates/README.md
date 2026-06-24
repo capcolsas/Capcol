@@ -54,8 +54,8 @@ El texto principal queda construido asi:
 ```txt
 EMPRESA, identificada con NIT XXXXX, CERTIFICA que EMPLEADO,
 identificado(a) con documento de identidad No. DOCUMENTO,
-se encuentra vinculado(a) laboralmente con nuestra compania desde FECHA,
-desempenando el cargo de CARGO.
+se encuentra vinculado(a) laboralmente con nuestra compañía desde FECHA,
+desempeñando el cargo de CARGO.
 ```
 
 Si el certificado es con salario, se agrega el parrafo de salario configurado desde el cargo del empleado.

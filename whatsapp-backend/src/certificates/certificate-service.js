@@ -82,20 +82,20 @@ async function buildCertificatePdfWithPdfKit({ employee, cargo, type, verificati
     doc.moveDown(2);
     doc.font('Helvetica').fontSize(12);
     doc.text(
-      `${cfg.companyLegalName || ''}, identificada con NIT ${cfg.companyNit || '-'}, CERTIFICA que ${employee.nombre || 'Empleado'}, identificado(a) con documento de identidad No. ${employee.documento || '-'}, se encuentra vinculado(a) laboralmente con nuestra compania desde el ${formatLongDate(employee.fecha_ingreso, cfg)}, desempenando el cargo de ${employee.cargo_nombre || cargo?.nombre || employee.cargo_codigo || '-'}.`,
+      `${cfg.companyLegalName || ''}, identificada con NIT ${cfg.companyNit || '-'}, CERTIFICA que ${employee.nombre || 'Empleado'}, identificado(a) con documento de identidad No. ${employee.documento || '-'}, se encuentra vinculado(a) laboralmente con nuestra compañía desde el ${formatLongDate(employee.fecha_ingreso, cfg)}, desempeñando el cargo de ${employee.cargo_nombre || cargo?.nombre || employee.cargo_codigo || '-'}.`,
       { width: contentWidth, align: 'justify' }
     );
 
     if (type === 'with_salary') {
       doc.moveDown(1);
-      doc.text(`Actualmente devenga un salario de ${formatCurrency(salary, cfg)}.`, {
+      doc.text(`Actualmente devenga un salario básico de ${formatCurrency(salary, cfg)}.`, {
         width: contentWidth,
         align: 'justify'
       });
     }
 
     doc.moveDown(1);
-    doc.text('La presente certificacion se expide a solicitud del interesado(a), para los fines que estime convenientes.', {
+    doc.text('La presente certificación se expide a solicitud del interesado(a), para los fines que estime convenientes.', {
       width: contentWidth,
       align: 'justify'
     });
