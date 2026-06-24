@@ -63,9 +63,15 @@ async function buildCertificatePdfWithPdfKit({ employee, cargo, type, verificati
     const pageHeight = doc.page.height;
     const contentWidth = pageWidth - doc.page.margins.left - doc.page.margins.right;
     const left = doc.page.margins.left;
+    const headerBox = layout.header.fullWidth
+      ? { x: 0, width: pageWidth }
+      : { x: left, width: contentWidth };
+    const footerBox = layout.footer.fullWidth
+      ? { x: 0, width: pageWidth }
+      : { x: left, width: contentWidth };
 
-    drawImageFit(doc, headerImage, left, layout.header.top, contentWidth, layout.header.height, cfg.header?.align || 'left');
-    drawImageFit(doc, footerImage, left, pageHeight - layout.footer.bottomOffset, contentWidth, layout.footer.height, 'center');
+    drawImageFit(doc, headerImage, headerBox.x, layout.header.top, headerBox.width, layout.header.height, cfg.header?.align || 'center');
+    drawImageFit(doc, footerImage, footerBox.x, pageHeight - layout.footer.bottomOffset, footerBox.width, layout.footer.height, 'center');
 
     doc.y = doc.page.margins.top + 20;
     doc.font('Helvetica').fontSize(11).text(`${cfg.city || ''}, ${formatLongDate(new Date(), cfg)}`, {
@@ -146,11 +152,13 @@ function resolveLayout(cfg) {
     },
     header: {
       top: numberOr(cfg.layout?.header?.top, 18),
-      height: numberOr(cfg.layout?.header?.height, 96)
+      height: numberOr(cfg.layout?.header?.height, 104),
+      fullWidth: cfg.layout?.header?.fullWidth !== false
     },
     footer: {
       bottomOffset: numberOr(cfg.layout?.footer?.bottomOffset, 112),
-      height: numberOr(cfg.layout?.footer?.height, 90)
+      height: numberOr(cfg.layout?.footer?.height, 90),
+      fullWidth: cfg.layout?.footer?.fullWidth !== false
     },
     signature: {
       width: numberOr(cfg.layout?.signature?.width, 180),

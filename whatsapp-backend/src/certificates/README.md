@@ -5,7 +5,7 @@ Esta carpeta contiene la configuracion y los assets privados usados para generar
 ## Guia de diseno
 
 - Formato: carta.
-- Encabezado reservado: maximo 3.4 cm de alto.
+- Encabezado reservado: maximo 3.7 cm de alto, a todo el ancho de la hoja carta.
 - Pie reservado: maximo 3.2 cm de alto.
 - Firma: imagen dentro del cuerpo del certificado, recomendada en PNG transparente.
 - El PDF se genera en memoria y no se almacena.
@@ -14,8 +14,8 @@ Esta carpeta contiene la configuracion y los assets privados usados para generar
 ## Archivos configurables por proyecto Rocky
 
 - `config.js`: datos de empresa, logo, pie, firma y firmante.
-- `assets/certificate-header-blank.png`: guia/base para el encabezado, 1200 x 480 px.
-- `assets/certificate-footer-blank.png`: guia/base para el pie, 1200 x 454 px.
+- `assets/certificate-header-blank.png`: guia/base para el encabezado, 2550 x 720 px.
+- `assets/certificate-footer-blank.png`: guia/base para el pie, 2550 x 681 px.
 - `assets/certificate-signature-blank.png`: guia/base para la firma, 360 x 180 px.
 
 La firma real debe permanecer en esta carpeta del backend, nunca en `src/assets/img`, porque esa carpeta es publica en el frontend.

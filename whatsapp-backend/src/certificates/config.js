@@ -14,11 +14,13 @@ export const certificateTemplateConfig = {
     },
     header: {
       top: 18,
-      height: 96
+      height: 104,
+      fullWidth: true
     },
     footer: {
       bottomOffset: 112,
-      height: 90
+      height: 90,
+      fullWidth: true
     },
     signature: {
       width: 180,
