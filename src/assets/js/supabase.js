@@ -2780,6 +2780,38 @@ async function backendJson(path, { method = 'GET', body = null, headers = {} } =
   return payload;
 }
 
+async function backendBlob(path, { method = 'GET', body = null, headers = {} } = {}) {
+  const base = backendApiBase();
+  if (!base) throw new Error('Configura EMPLOYEE_PORTAL_API_BASE para usar el backend.');
+  const response = await fetch(`${base}${path}`, {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      ...headers
+    },
+    body: body ? JSON.stringify(body) : null
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload?.error || `Error backend ${response.status}`);
+  }
+  const blob = await response.blob();
+  const disposition = String(response.headers.get('content-disposition') || '');
+  const filename = disposition.match(/filename="([^"]+)"/)?.[1] || 'certificado-laboral.pdf';
+  return { blob, filename };
+}
+
+function downloadBrowserBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename || 'archivo.pdf';
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 export async function createQrDevice({ sedeCodigo, sedeCodigos = [], deviceName }) {
   const token = await getAccessToken();
   const result = await backendJson('/api/attendance-qr/devices', {
@@ -2828,6 +2860,19 @@ export async function listDailyQrRecords(date) {
     rows: payload?.rows || [],
     pendingRows: payload?.pendingRows || []
   };
+}
+
+export async function generateEmployeeCertificate(employeeId, type = 'basic') {
+  const id = String(employeeId || '').trim();
+  if (!id) throw new Error('Selecciona un empleado.');
+  const token = await getAccessToken();
+  const result = await backendBlob(`/api/certificates/employees/${encodeURIComponent(id)}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: { type }
+  });
+  downloadBrowserBlob(result.blob, result.filename);
+  return result;
 }
 
 export function streamDailyQrRecords(date, onData, onError = null, onStatus = null) {

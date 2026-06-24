@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <style>
+    @page {
+      size: Letter;
+      margin: 3.2cm 2.6cm 4.6cm 2.6cm;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: Arial, Helvetica, sans-serif;
+      color: #1f2933;
+      font-size: 12pt;
+      line-height: 1.55;
+      margin: 0;
+    }
+
+    .certificate-header {
+      position: fixed;
+      top: -2.4cm;
+      left: 0;
+      right: 0;
+      height: 2.2cm;
+      display: flex;
+      align-items: center;
+      justify-content: {{headerJustify}};
+      overflow: hidden;
+    }
+
+    .certificate-header img {
+      max-width: {{headerLogoMaxWidth}};
+      max-height: {{headerLogoMaxHeight}};
+      object-fit: contain;
+      display: block;
+    }
+
+    .certificate-footer {
+      position: fixed;
+      bottom: -3.8cm;
+      left: 0;
+      right: 0;
+      height: 3.2cm;
+      overflow: hidden;
+      text-align: center;
+      font-size: 8.5pt;
+      line-height: 1.25;
+      color: #333;
+    }
+
+    .certificate-footer img {
+      max-width: {{footerImageMaxWidth}};
+      max-height: {{footerImageMaxHeight}};
+      object-fit: contain;
+      display: block;
+      margin: 0 auto;
+    }
+
+    .city-date {
+      text-align: right;
+      margin-bottom: 44px;
+    }
+
+    .title {
+      text-align: center;
+      font-size: 14pt;
+      font-weight: 700;
+      text-transform: uppercase;
+      margin-bottom: 38px;
+    }
+
+    .content {
+      text-align: justify;
+    }
+
+    .content p {
+      margin: 0 0 18px;
+    }
+
+    .signature {
+      margin-top: 70px;
+    }
+
+    .signature-image-box {
+      width: {{signatureMaxWidth}};
+      height: {{signatureMaxHeight}};
+      display: flex;
+      align-items: flex-end;
+      justify-content: flex-start;
+      margin-bottom: 8px;
+    }
+
+    .signature-image-box img {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+      display: block;
+    }
+
+    .signer-name {
+      font-weight: 700;
+      margin: 0;
+    }
+
+    .signer-title {
+      margin: 0;
+    }
+  </style>
+</head>
+<body>
+  <header class="certificate-header">
+    {{headerLogoTag}}
+  </header>
+
+  <footer class="certificate-footer">
+    {{footerImageTag}}
+    {{footerTextBlock}}
+  </footer>
+
+  <!--
+    Guia de zonas:
+    - Encabezado: 1200 x 312 px recomendado.
+    - Pie: 1200 x 454 px recomendado.
+    - Firma: 360 x 180 px recomendado.
+    Puedes reemplazar esas imagenes por disenos reales manteniendo el mismo tamano.
+  -->
+
+  <main>
+    <div class="city-date">{{city}}, {{issueDate}}</div>
+
+    <div class="title">Certificacion laboral</div>
+
+    <section class="content">
+      <p>
+        {{companyLegalName}} certifica que <strong>{{employeeName}}</strong>,
+        identificado(a) con documento de identidad No.
+        <strong>{{employeeDocument}}</strong>, se encuentra vinculado(a)
+        laboralmente con nuestra compania desde el
+        <strong>{{employeeStartDate}}</strong>, desempenando el cargo de
+        <strong>{{employeeCargo}}</strong>.
+      </p>
+
+      {{salaryBlock}}
+
+      <p>
+        La presente certificacion se expide a solicitud del interesado(a),
+        para los fines que estime convenientes.
+      </p>
+    </section>
+
+    <section class="signature">
+      <div class="signature-image-box">{{signatureImageTag}}</div>
+      <p class="signer-name">{{signerName}}</p>
+      <p class="signer-title">{{signerTitle}}</p>
+    </section>
+  </main>
+</body>
+</html>

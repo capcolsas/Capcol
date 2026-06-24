@@ -10,9 +10,11 @@
     "start": "node src/server.js"
   },
   "dependencies": {
+    "@sparticuz/chromium": "^123.0.1",
     "@supabase/supabase-js": "^2.49.8",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
+    "puppeteer-core": "^22.15.0",
     "qrcode": "^1.5.4"
   }
 }
