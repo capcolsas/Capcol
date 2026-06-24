@@ -7,6 +7,7 @@ create table if not exists public.employee_certificate_audit (
   employee_codigo text,
   documento text,
   nombre text,
+  verification_code text,
   certificate_type text not null check (certificate_type in ('basic', 'with_salary')),
   channel text not null check (channel in ('admin', 'employee_portal')),
   requested_by_profile_id uuid references public.profiles(id) on delete set null,
@@ -17,6 +18,9 @@ create table if not exists public.employee_certificate_audit (
   created_at timestamptz not null default now()
 );
 
+alter table public.employee_certificate_audit
+  add column if not exists verification_code text;
+
 create index if not exists idx_employee_certificate_audit_employee_id
   on public.employee_certificate_audit(employee_id, created_at desc);
 
@@ -25,6 +29,10 @@ create index if not exists idx_employee_certificate_audit_documento
 
 create index if not exists idx_employee_certificate_audit_channel
   on public.employee_certificate_audit(channel, created_at desc);
+
+create unique index if not exists idx_employee_certificate_audit_verification_code
+  on public.employee_certificate_audit(verification_code)
+  where verification_code is not null;
 
 alter table public.employee_certificate_audit enable row level security;
 

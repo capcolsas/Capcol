@@ -5,6 +5,26 @@ export const certificateTemplateConfig = {
   companyLegalName: 'CONSULTORES EN ADMINISTRACION PUBLICA COLOMBIANA S.A.S.',
   companyNit: '900.939.656-7',
   companyRegimeText: '[ Actividad Principal: 7020 ] [ Regimen Simple ]',
+  layout: {
+    margins: {
+      top: 132,
+      right: 74,
+      bottom: 130,
+      left: 74
+    },
+    header: {
+      top: 18,
+      height: 96
+    },
+    footer: {
+      bottomOffset: 112,
+      height: 90
+    },
+    signature: {
+      width: 180,
+      height: 90
+    }
+  },
   header: {
     imagePath: './assets/certificate-header-blank.png',
     maxWidth: '100%',
