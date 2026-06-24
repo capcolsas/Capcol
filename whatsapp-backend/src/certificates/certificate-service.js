@@ -74,11 +74,12 @@ async function renderPdfFromHtml(html) {
   let browser = null;
   try {
     const executablePath = await resolveChromeExecutablePath();
+    const isLocalExecutable = process.platform === 'win32' || Boolean(config.certificateChromeExecutablePath);
     browser = await puppeteer.launch({
-      args: chromium.args,
+      args: isLocalExecutable ? puppeteer.defaultArgs({ headless: 'new' }) : chromium.args,
       defaultViewport: chromium.defaultViewport,
       executablePath,
-      headless: chromium.headless
+      headless: isLocalExecutable ? 'new' : chromium.headless
     });
     const page = await browser.newPage();
     await page.setContent(html, { waitUntil: 'networkidle0' });
@@ -88,6 +89,14 @@ async function renderPdfFromHtml(html) {
       preferCSSPageSize: true
     });
   } catch (error) {
+    console.error('Certificate PDF engine failed:', {
+      platform: process.platform,
+      isVercel: Boolean(process.env.VERCEL),
+      configuredExecutable: Boolean(config.certificateChromeExecutablePath),
+      message: error?.message || null,
+      name: error?.name || null,
+      stack: error?.stack || null
+    });
     const wrapped = new Error('certificate_pdf_engine_unavailable', { cause: error });
     wrapped.statusCode = 500;
     throw wrapped;
