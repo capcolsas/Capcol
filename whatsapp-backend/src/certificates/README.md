@@ -9,6 +9,7 @@ Esta carpeta contiene la plantilla HTML/CSS usada para generar certificados labo
 - Pie reservado: maximo 3.2 cm de alto.
 - Firma: imagen dentro del cuerpo del certificado, recomendada en PNG transparente.
 - El PDF se genera en memoria y no se almacena.
+- El motor principal usa HTML/CSS con Chromium. Si el entorno no permite iniciar Chromium, se usa un fallback PDFKit en Node para no bloquear la descarga.
 
 ## Archivos configurables por proyecto Rocky
 

@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import chromium from '@sparticuz/chromium';
+import PDFDocument from 'pdfkit';
 import puppeteer from 'puppeteer-core';
 import { config } from '../config.js';
 import { certificateTemplateConfig } from './config.js';
@@ -26,7 +27,18 @@ export function certificateFileName(employee = {}, type = 'basic') {
 export async function buildEmployeeCertificatePdf({ employee, cargo, type }) {
   const normalizedType = normalizeCertificateType(type);
   const html = await buildCertificateHtml({ employee, cargo, type: normalizedType });
-  return renderPdfFromHtml(html);
+  try {
+    return await renderPdfFromHtml(html);
+  } catch (error) {
+    if (String(error?.message || '') !== 'certificate_pdf_engine_unavailable') throw error;
+    console.error('Using PDFKit fallback for employee certificate:', {
+      employeeId: employee?.id || null,
+      documento: employee?.documento || null,
+      type: normalizedType,
+      cause: error?.cause?.message || null
+    });
+    return buildFallbackCertificatePdf({ employee, cargo, type: normalizedType });
+  }
 }
 
 export async function buildCertificateHtml({ employee, cargo, type }) {
@@ -105,6 +117,111 @@ async function renderPdfFromHtml(html) {
   }
 }
 
+async function buildFallbackCertificatePdf({ employee, cargo, type }) {
+  const cfg = certificateTemplateConfig;
+  const headerImage = await assetBuffer(cfg.header?.imagePath || cfg.header?.logoPath);
+  const footerImage = await assetBuffer(cfg.footer?.imagePath);
+  const signatureImage = await assetBuffer(cfg.signature?.imagePath);
+  const salary = cargo?.salario == null ? null : Number(cargo.salario);
+
+  return new Promise((resolve, reject) => {
+    const doc = new PDFDocument({
+      size: 'LETTER',
+      margins: {
+        top: 91,
+        right: 74,
+        bottom: 130,
+        left: 74
+      },
+      info: {
+        Title: 'Certificado laboral',
+        Author: cfg.companyLegalName || 'Rocky'
+      }
+    });
+    const chunks = [];
+    doc.on('data', (chunk) => chunks.push(chunk));
+    doc.on('error', reject);
+    doc.on('end', () => resolve(Buffer.concat(chunks)));
+
+    const pageWidth = doc.page.width;
+    const pageHeight = doc.page.height;
+    const contentWidth = pageWidth - doc.page.margins.left - doc.page.margins.right;
+    const left = doc.page.margins.left;
+
+    drawImageFit(doc, headerImage, left, 18, contentWidth, 62, cfg.header?.align || 'left');
+    drawImageFit(doc, footerImage, left, pageHeight - 112, contentWidth, 90, 'center');
+
+    doc.y = doc.page.margins.top + 20;
+    doc.font('Helvetica').fontSize(11).text(`${cfg.city || ''}, ${formatLongDate(new Date(), cfg)}`, {
+      width: contentWidth,
+      align: 'right'
+    });
+
+    doc.moveDown(2.2);
+    doc.font('Helvetica-Bold').fontSize(14).text('CERTIFICACION LABORAL', {
+      width: contentWidth,
+      align: 'center'
+    });
+
+    doc.moveDown(2);
+    doc.font('Helvetica').fontSize(12);
+    doc.text(
+      `${cfg.companyLegalName || ''} certifica que ${employee.nombre || 'Empleado'}, identificado(a) con documento de identidad No. ${employee.documento || '-'}, se encuentra vinculado(a) laboralmente con nuestra compania desde el ${formatLongDate(employee.fecha_ingreso, cfg)}, desempenando el cargo de ${employee.cargo_nombre || cargo?.nombre || employee.cargo_codigo || '-'}.`,
+      { width: contentWidth, align: 'justify' }
+    );
+
+    if (type === 'with_salary') {
+      doc.moveDown(1);
+      doc.text(`Actualmente devenga un salario de ${formatCurrency(salary, cfg)}.`, {
+        width: contentWidth,
+        align: 'justify'
+      });
+    }
+
+    doc.moveDown(1);
+    doc.text('La presente certificacion se expide a solicitud del interesado(a), para los fines que estime convenientes.', {
+      width: contentWidth,
+      align: 'justify'
+    });
+
+    const signatureTop = Math.min(doc.y + 50, pageHeight - doc.page.margins.bottom - 105);
+    drawImageFit(doc, signatureImage, left, signatureTop, 180, 90, 'left');
+    doc.y = signatureTop + 98;
+    doc.font('Helvetica-Bold').fontSize(11).text(cfg.signature?.signerName || '', { width: contentWidth });
+    doc.font('Helvetica').fontSize(11).text(cfg.signature?.signerTitle || '', { width: contentWidth });
+
+    const footerLines = Array.isArray(cfg.footer?.lines) ? cfg.footer.lines.filter(Boolean) : [];
+    if (footerLines.length) {
+      doc.font('Helvetica').fontSize(8).fillColor('#333333');
+      doc.text([
+        cfg.companyLegalName || '',
+        `[ NIT: ${cfg.companyNit || ''} ] ${cfg.companyRegimeText || ''}`,
+        ...footerLines
+      ].filter(Boolean).join('\n'), left, pageHeight - 96, {
+        width: contentWidth,
+        align: 'center',
+        lineGap: 1
+      });
+      doc.fillColor('#1f2933');
+    }
+
+    doc.end();
+  });
+}
+
+function drawImageFit(doc, image, x, y, width, height, align = 'center') {
+  if (!image?.length) return;
+  try {
+    doc.image(image, x, y, {
+      fit: [width, height],
+      align: align === 'right' ? 'right' : align === 'left' ? 'left' : 'center',
+      valign: 'center'
+    });
+  } catch (error) {
+    console.error('Certificate image draw failed:', error?.message || error);
+  }
+}
+
 async function resolveChromeExecutablePath() {
   const configured = String(config.certificateChromeExecutablePath || '').trim();
   if (configured) return configured;
@@ -125,6 +242,17 @@ async function resolveChromeExecutablePath() {
   }
 
   return chromium.executablePath();
+}
+
+async function assetBuffer(assetPath) {
+  const raw = String(assetPath || '').trim();
+  if (!raw) return null;
+  try {
+    const resolved = path.isAbsolute(raw) ? raw : path.resolve(__dirname, raw);
+    return await fs.readFile(resolved);
+  } catch {
+    return null;
+  }
 }
 
 function renderTemplate(template, values) {
