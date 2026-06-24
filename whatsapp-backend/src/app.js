@@ -549,6 +549,8 @@ function certificateMessageFromError(error) {
       return 'Solo se pueden generar certificados de empleados activos.';
     case 'missing_salary':
       return 'El cargo del empleado no tiene salario configurado.';
+    case 'certificate_pdf_engine_unavailable':
+      return 'No fue posible iniciar el motor PDF. En local configura CERTIFICATE_CHROME_EXECUTABLE_PATH o instala Chrome/Edge.';
     default:
       return 'No fue posible generar el certificado laboral.';
   }

@@ -73,10 +73,11 @@ export async function buildCertificateHtml({ employee, cargo, type }) {
 async function renderPdfFromHtml(html) {
   let browser = null;
   try {
+    const executablePath = await resolveChromeExecutablePath();
     browser = await puppeteer.launch({
       args: chromium.args,
       defaultViewport: chromium.defaultViewport,
-      executablePath: config.certificateChromeExecutablePath || await chromium.executablePath(),
+      executablePath,
       headless: chromium.headless
     });
     const page = await browser.newPage();
@@ -86,9 +87,35 @@ async function renderPdfFromHtml(html) {
       printBackground: true,
       preferCSSPageSize: true
     });
+  } catch (error) {
+    const wrapped = new Error('certificate_pdf_engine_unavailable', { cause: error });
+    wrapped.statusCode = 500;
+    throw wrapped;
   } finally {
     if (browser) await browser.close();
   }
+}
+
+async function resolveChromeExecutablePath() {
+  const configured = String(config.certificateChromeExecutablePath || '').trim();
+  if (configured) return configured;
+
+  if (process.platform === 'win32') {
+    const candidates = [
+      'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+      'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+      'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+      'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'
+    ];
+    for (const candidate of candidates) {
+      try {
+        await fs.access(candidate);
+        return candidate;
+      } catch {}
+    }
+  }
+
+  return chromium.executablePath();
 }
 
 function renderTemplate(template, values) {
