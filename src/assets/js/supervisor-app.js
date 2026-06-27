@@ -27,6 +27,7 @@ function emptyRegistry(fecha) {
     dailyStatus: [],
     attendance: [],
     replacements: [],
+    incapacities: [],
     closures: []
   };
 }
@@ -157,7 +158,8 @@ function renderFatal(message) {
 function renderApp() {
   if (!currentUser || !currentProfile) return;
   const rows = buildRegistryRows();
-  const filteredRows = filterRows(rows);
+  const registeredRows = rows.filter((row) => row.status !== 'pendiente');
+  const filteredRows = filterRows(registeredRows);
   const noveltyRows = rows.filter((row) => row.hasNovelty || row.status === 'novedad' || row.status === 'ausente');
   const summary = summarizeRows(rows);
   const zoneLabel = supervisorZones().join(', ') || 'Sin zona';
@@ -262,7 +264,6 @@ function toolbar() {
       } }, [
         option('all', 'Todos', statusFilter),
         option('presente', 'Correctos', statusFilter),
-        option('pendiente', 'Pendientes', statusFilter),
         option('novedad', 'Novedades', statusFilter),
         option('ausente', 'Ausentes', statusFilter)
       ]),
@@ -298,7 +299,16 @@ function recordCard(row) {
   const recordDetailLabel = row.hasNovelty || row.status === 'ausente' ? 'Novedad' : 'Registro';
   const recordDetailValue = row.hasNovelty || row.status === 'ausente'
     ? row.novedad || row.estadoDia || '-'
-    : row.registro || 'Correcto';
+    : row.status === 'pendiente'
+      ? 'Pendiente'
+      : row.registro || 'Correcto';
+  const cardDetails = [
+    detail('Hora', row.hora || '-'),
+    detail(recordDetailLabel, recordDetailValue),
+    row.incapacidadDias ? detail('Dias incapacidad', `${row.incapacidadDias} dia${row.incapacidadDias === 1 ? '' : 's'}`) : null,
+    detail('Zona', row.zonaNombre || row.zonaCodigo || '-'),
+    detail('Cobertura', row.reemplazo || row.decisionCobertura || '-')
+  ].filter(Boolean);
   return el('article', { className: 'supervisor-card' }, [
     el('div', { className: 'supervisor-card__main' }, [
       el('div', {}, [
@@ -307,12 +317,7 @@ function recordCard(row) {
       ]),
       statusBadge(row)
     ]),
-    el('div', { className: 'supervisor-card__details' }, [
-      detail('Hora', row.hora || '-'),
-      detail(recordDetailLabel, recordDetailValue),
-      detail('Zona', row.zonaNombre || row.zonaCodigo || '-'),
-      detail('Cobertura', row.reemplazo || row.decisionCobertura || '-')
-    ]),
+    el('div', { className: 'supervisor-card__details' }, cardDetails),
     el('div', { className: 'supervisor-card__actions' }, [
       phone ? linkAction('Llamar', `tel:${phone}`) : null,
       phone ? linkAction('WhatsApp', `https://wa.me/${phone}`) : null
@@ -395,6 +400,14 @@ function buildRegistryRows() {
     if (row.empleadoId) attendanceByEmployee.set(String(row.empleadoId).trim(), row);
   });
   const replacementByDoc = new Map((registry.replacements || []).map((row) => [String(row.documento || '').trim(), row]));
+  const incapacityByDoc = new Map();
+  const incapacityByEmployee = new Map();
+  (registry.incapacities || []).forEach((row) => {
+    const doc = String(row.documento || '').trim();
+    const employeeId = String(row.employeeId || '').trim();
+    if (doc && !incapacityByDoc.has(doc)) incapacityByDoc.set(doc, row);
+    if (employeeId && !incapacityByEmployee.has(employeeId)) incapacityByEmployee.set(employeeId, row);
+  });
   const rows = [];
 
   (registry.dailyStatus || []).forEach((status) => {
@@ -402,7 +415,8 @@ function buildRegistryRows() {
     const employee = employeesByDoc.get(doc) || employeesById.get(String(status.employeeId || '').trim()) || {};
     const attendance = attendanceByDoc.get(doc) || attendanceByEmployee.get(String(status.employeeId || '').trim()) || {};
     const replacement = replacementByDoc.get(doc) || {};
-    rows.push(normalizeRecord({ status, employee, attendance, replacement }));
+    const incapacity = incapacityByDoc.get(doc) || incapacityByEmployee.get(String(status.employeeId || '').trim()) || {};
+    rows.push(normalizeRecord({ status, employee, attendance, replacement, incapacity }));
   });
 
   if (!rows.length) {
@@ -411,7 +425,8 @@ function buildRegistryRows() {
       rows.push(normalizeRecord({
         employee,
         attendance: attendanceByDoc.get(doc) || attendanceByEmployee.get(String(employee.id || '').trim()) || {},
-        replacement: replacementByDoc.get(doc) || {}
+        replacement: replacementByDoc.get(doc) || {},
+        incapacity: incapacityByDoc.get(doc) || incapacityByEmployee.get(String(employee.id || '').trim()) || {}
       }));
     });
   }
@@ -420,7 +435,12 @@ function buildRegistryRows() {
   (registry.attendance || []).forEach((attendance) => {
     const doc = String(attendance.documento || '').trim();
     if (doc && seenDocs.has(doc)) return;
-    rows.push(normalizeRecord({ attendance, employee: employeesByDoc.get(doc) || {}, replacement: replacementByDoc.get(doc) || {} }));
+    rows.push(normalizeRecord({
+      attendance,
+      employee: employeesByDoc.get(doc) || {},
+      replacement: replacementByDoc.get(doc) || {},
+      incapacity: incapacityByDoc.get(doc) || incapacityByEmployee.get(String(attendance.empleadoId || '').trim()) || {}
+    }));
   });
 
   return rows.sort((a, b) => {
@@ -431,7 +451,7 @@ function buildRegistryRows() {
   });
 }
 
-function normalizeRecord({ status = {}, employee = {}, attendance = {}, replacement = {} }) {
+function normalizeRecord({ status = {}, employee = {}, attendance = {}, replacement = {}, incapacity = {} }) {
   const doc = status.documento || employee.documento || attendance.documento || replacement.documento || null;
   const hasAttendance = Boolean(attendance.id || status.sourceAttendanceId || status.asistio === true);
   const rawNovelty = status.novedadNombre || attendance.novedadNombre || attendance.novedad || replacement.novedadNombre || null;
@@ -440,7 +460,9 @@ function normalizeRecord({ status = {}, employee = {}, attendance = {}, replacem
   const operationalRecord = supervisorOperationalRecord(rawNovelty, noveltyCode, estadoDia);
   const novelty = operationalRecord ? null : supervisorNoveltyLabel(rawNovelty, noveltyCode, estadoDia);
   const normalizedNoveltyState = normalizeSupervisorText(estadoDia || novelty || '');
+  const isIncapacity = Boolean(incapacity.id) || /incap/.test(normalizedNoveltyState);
   const isAbsent = /ausen|incap|permiso|retiro|vacacion/.test(normalizedNoveltyState);
+  const incapacityDays = isIncapacity ? incapacityDaysForRecord(incapacity, selectedDate) : null;
   const hasNovelty = Boolean(novelty) || Boolean(replacement.id);
   let recordStatus = 'pendiente';
   if (hasAttendance) recordStatus = novelty ? 'novedad' : 'presente';
@@ -460,6 +482,9 @@ function normalizeRecord({ status = {}, employee = {}, attendance = {}, replacem
     estadoDia,
     novedad: novelty,
     registro: operationalRecord || (recordStatus === 'presente' ? 'Correcto' : null),
+    incapacidadDias: incapacityDays,
+    incapacidadInicio: incapacity.fechaInicio || null,
+    incapacidadFin: incapacity.fechaFin || null,
     hora: attendance.hora || formatTime(attendance.createdAt) || null,
     reemplazo: replacement.supernumerarioNombre || status.reemplazadoPorNombre || null,
     decisionCobertura: replacement.decision || status.decisionCobertura || null,
@@ -471,9 +496,9 @@ function normalizeRecord({ status = {}, employee = {}, attendance = {}, replacem
 function supervisorOperationalRecord(value, code, estadoDia) {
   const normalizedCode = String(code || '').trim();
   const text = normalizeSupervisorText(value || estadoDia || '');
-  if (text === 'ok') return 'Correcto';
-  if (normalizedCode === '1' || text === 'trabajando') return 'Correcto';
-  if (normalizedCode === '7' || text === 'compensatorio') return 'Correcto';
+  if (text === 'ok') return 'OK';
+  if (normalizedCode === '1' || text === 'trabajando') return 'Trabajando';
+  if (normalizedCode === '7' || text === 'compensatorio') return 'Compensatorio';
   return null;
 }
 
@@ -498,6 +523,31 @@ function formatSupervisorState(value) {
   const text = String(value || '').replace(/_/g, ' ').trim().toLowerCase();
   if (!text) return '';
   return text.replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function incapacityDaysForRecord(incapacity = {}, referenceDate = selectedDate) {
+  const start = normalizeIsoDate(incapacity.fechaInicio);
+  const end = normalizeIsoDate(incapacity.fechaFin);
+  const refDate = normalizeIsoDate(referenceDate);
+  if (!start || !end || end < start) return null;
+  const effectiveStart = refDate && refDate > start ? refDate : start;
+  return inclusiveDaysBetween(effectiveStart, end);
+}
+
+function inclusiveDaysBetween(startDate, endDate) {
+  const start = normalizeIsoDate(startDate);
+  const end = normalizeIsoDate(endDate);
+  if (!start || !end || end < start) return null;
+  const [sy, sm, sd] = start.split('-').map((n) => Number(n));
+  const [ey, em, ed] = end.split('-').map((n) => Number(n));
+  const startUtc = Date.UTC(sy, (sm || 1) - 1, sd || 1);
+  const endUtc = Date.UTC(ey, (em || 1) - 1, ed || 1);
+  return Math.floor((endUtc - startUtc) / 86400000) + 1;
+}
+
+function normalizeIsoDate(value) {
+  const iso = String(value || '').slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(iso) ? iso : null;
 }
 
 function filterRows(rows) {

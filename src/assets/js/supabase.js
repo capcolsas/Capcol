@@ -4498,6 +4498,7 @@ export async function listSupervisorDailyRegistry(fecha, zoneCodes = []) {
       dailyStatus: [],
       attendance: [],
       replacements: [],
+      incapacities: [],
       closures: []
     };
   }
@@ -4517,7 +4518,8 @@ export async function listSupervisorDailyRegistry(fecha, zoneCodes = []) {
     employeesResult,
     closuresResult,
     attendanceResult,
-    replacementsResult
+    replacementsResult,
+    incapacitiesResult
   ] = await Promise.all([
     supabase
       .from('employee_daily_status')
@@ -4553,14 +4555,22 @@ export async function listSupervisorDailyRegistry(fecha, zoneCodes = []) {
         .eq('fecha', day)
         .in('sede_codigo', sedeCodes)
         .order('ts', { ascending: false })
-      : Promise.resolve({ data: [], error: null })
+      : Promise.resolve({ data: [], error: null }),
+    supabase
+      .from('incapacitados')
+      .select('*')
+      .eq('estado', 'activo')
+      .lte('fecha_inicio', day)
+      .gte('fecha_fin', day)
+      .order('fecha_inicio', { ascending: false })
   ]);
 
   const firstError = dailyStatusResult.error
     || employeesResult.error
     || closuresResult.error
     || attendanceResult.error
-    || replacementsResult.error;
+    || replacementsResult.error
+    || incapacitiesResult.error;
   if (firstError) throw firstError;
 
   const employeeRows = (employeesResult.data || []).map(mapEmployeeRow);
@@ -4591,6 +4601,20 @@ export async function listSupervisorDailyRegistry(fecha, zoneCodes = []) {
     dailyStatus: operationalDailyStatus,
     attendance: (attendanceResult.data || []).map(mapAttendanceRow),
     replacements: (replacementsResult.data || []).map(mapImportReplacementRow),
+    incapacities: (incapacitiesResult.data || [])
+      .map(mapIncapacidadRow)
+      .filter((row) => {
+        const employeeId = String(row.employeeId || '').trim();
+        const documento = String(row.documento || '').trim();
+        return (employeeId && expectedEmployeeKeys.has(`id:${employeeId}`))
+          || (documento && expectedEmployeeKeys.has(`doc:${documento}`))
+          || operationalDailyStatus.some((status) => {
+            const statusEmployeeId = String(status.employeeId || '').trim();
+            const statusDocument = String(status.documento || '').trim();
+            return (employeeId && statusEmployeeId === employeeId)
+              || (documento && statusDocument === documento);
+          });
+      }),
     closures: (closuresResult.data || []).map(mapDailySedeClosureRow)
   };
 }
