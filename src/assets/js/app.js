@@ -36,7 +36,7 @@ import { QrDailyRegistry } from './components/QrDailyRegistry.js';
 import { QrDevicesInfo } from './components/QrDevicesInfo.js';
 
 import { addRoute, startRouter, navigate, refreshRoute } from './router.js';
-import { getState, setState } from './state.js';
+import { getState, setState, subscribe } from './state.js';
 import { can, PERMS, isSuperAdmin } from './permissions.js';
 import { ROLES } from './roles.js';
 import { installBrowserAlertReplacement } from './utils/notifications.js';
@@ -50,6 +50,7 @@ let deps={};
 sidebarMount.replaceChildren(Sidebar());
 headerMount.replaceChildren(Header());
 footerMount.replaceChildren(Footer());
+subscribe('userProfile', () => footerMount.replaceChildren(Footer()));
 
 let unsubRoleMatrix=null; let unsubUserOverrides=null; let unsubAudit=null;
 let authSyncToken = 0;
