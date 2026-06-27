@@ -4296,12 +4296,56 @@ export async function createIncapacidad({
     .select('*')
     .single();
   if (error) throw error;
+  await refreshOperationalStateForIncapacityChange(data);
   await notifyTableReload('incapacitados');
   return mapIncapacidadRow(data);
 }
 
 function supportValueOrNull(value) {
   return value ? value : null;
+}
+
+const INCAPACITY_OPERATIONAL_REFRESH_MAX_DAYS = 370;
+
+function collectIncapacityRefreshDays(...rows) {
+  const days = new Set();
+  for (const row of rows) {
+    const start = toISODate(row?.fechaInicio || row?.fecha_inicio);
+    const end = toISODate(row?.fechaFin || row?.fecha_fin || start);
+    if (!start || !end || end < start) continue;
+    let cursor = start;
+    let count = 0;
+    while (cursor && cursor <= end && count < INCAPACITY_OPERATIONAL_REFRESH_MAX_DAYS) {
+      days.add(cursor);
+      cursor = addDaysToIsoDate(cursor, 1);
+      count += 1;
+    }
+  }
+  return [...days].sort();
+}
+
+async function refreshOperationalStateForIncapacityChange(...rows) {
+  const days = collectIncapacityRefreshDays(...rows);
+  for (const day of days) {
+    if (await isOperationDayClosed(day)) continue;
+    await refreshOperationalState(day);
+  }
+}
+
+function incapacityOperationalSignature(row = {}) {
+  return [
+    String(row?.employee_id || row?.employeeId || '').trim(),
+    normalizeDailyDocument(row?.documento),
+    toISODate(row?.fecha_inicio || row?.fechaInicio) || '',
+    toISODate(row?.fecha_fin || row?.fechaFin) || '',
+    String(row?.estado || 'activo').trim().toLowerCase(),
+    String(row?.source || '').trim().toLowerCase()
+  ].join('|');
+}
+
+function hasIncapacityOperationalChange(before = null, after = null) {
+  if (!before || !after) return Boolean(after);
+  return incapacityOperationalSignature(before) !== incapacityOperationalSignature(after);
 }
 
 export async function updateIncapacidad(id, {
@@ -4331,6 +4375,12 @@ export async function updateIncapacidad(id, {
   if (soporteNombre !== undefined) patch.soporte_nombre = soporteNombre || null;
   if (soporteTipo !== undefined) patch.soporte_tipo = soporteTipo || null;
   if (soporteStoragePath !== undefined) patch.soporte_storage_path = soporteStoragePath || null;
+  const { data: previous, error: previousError } = await supabase
+    .from('incapacitados')
+    .select('*')
+    .eq('id', id)
+    .maybeSingle();
+  if (previousError) throw previousError;
   const { data, error } = await supabase
     .from('incapacitados')
     .update(patch)
@@ -4338,11 +4388,20 @@ export async function updateIncapacidad(id, {
     .select('*')
     .single();
   if (error) throw error;
+  if (hasIncapacityOperationalChange(previous, data)) {
+    await refreshOperationalStateForIncapacityChange(previous, data);
+  }
   await notifyTableReload('incapacitados');
   return mapIncapacidadRow(data);
 }
 
 export async function setIncapacidadStatus(id, estado) {
+  const { data: previous, error: previousError } = await supabase
+    .from('incapacitados')
+    .select('*')
+    .eq('id', id)
+    .maybeSingle();
+  if (previousError) throw previousError;
   const { data, error } = await supabase
     .from('incapacitados')
     .update({ estado: estado || 'activo' })
@@ -4350,6 +4409,9 @@ export async function setIncapacidadStatus(id, estado) {
     .select('*')
     .single();
   if (error) throw error;
+  if (hasIncapacityOperationalChange(previous, data)) {
+    await refreshOperationalStateForIncapacityChange(previous, data);
+  }
   await notifyTableReload('incapacitados');
   return mapIncapacidadRow(data);
 }
