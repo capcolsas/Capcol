@@ -3777,6 +3777,19 @@ export function streamSupernumerarios(onData) {
   };
 }
 
+export async function listSupervisorAvailableSupernumerarios() {
+  const { data, error } = await supabase.rpc('list_supernumerarios_for_current_supervisor');
+  if (error) throw error;
+  return (data || []).map((row) => ({
+    id: row.id,
+    documento: row.documento || null,
+    nombre: row.nombre || null,
+    estado: row.estado || 'activo',
+    sedeCodigo: row.sede_codigo || null,
+    sedeNombre: row.sede_nombre || null
+  }));
+}
+
 export async function getNextSupernumerarioCode(prefix = 'SUPN', width = 4) {
   return getNextPrefixedCode('employees', prefix, width);
 }

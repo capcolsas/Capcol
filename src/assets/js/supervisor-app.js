@@ -19,6 +19,7 @@ let loading = false;
 let lastLoadedAt = null;
 let supernumerarios = [];
 let unSupernumerarios = null;
+let supernumerariosStarted = false;
 let replacementSavingKey = '';
 let replacementMessage = null;
 
@@ -48,6 +49,7 @@ function emptyRegistry(fecha) {
       loadUserProfile: fb.loadUserProfile,
       createUserProfile: fb.createUserProfile,
       listSupervisorDailyRegistry: fb.listSupervisorDailyRegistry,
+      listSupervisorAvailableSupernumerarios: fb.listSupervisorAvailableSupernumerarios,
       streamSupernumerarios: fb.streamSupernumerarios,
       saveImportReplacements: fb.saveImportReplacements
     };
@@ -93,19 +95,44 @@ async function handleAuthState(user) {
 }
 
 function startSupernumerariosStream() {
-  if (unSupernumerarios || !deps.streamSupernumerarios) return;
+  if (unSupernumerarios || supernumerariosStarted) return;
+  supernumerariosStarted = true;
+  if (deps.listSupervisorAvailableSupernumerarios) {
+    loadSupervisorSupernumerarios();
+    return;
+  }
+  if (!deps.streamSupernumerarios) return;
   unSupernumerarios = deps.streamSupernumerarios((rows = []) => {
-    supernumerarios = (rows || [])
-      .filter((row) => String(row?.estado || 'activo').trim().toLowerCase() !== 'inactivo')
-      .sort((a, b) => String(a.nombre || '').localeCompare(String(b.nombre || '')));
-    if (currentUser && currentProfile) renderApp();
+    setSupervisorSupernumerarios(rows);
   });
 }
 
 function stopSupernumerariosStream() {
   unSupernumerarios?.();
   unSupernumerarios = null;
+  supernumerariosStarted = false;
   supernumerarios = [];
+}
+
+async function loadSupervisorSupernumerarios() {
+  try {
+    const rows = await deps.listSupervisorAvailableSupernumerarios?.();
+    setSupervisorSupernumerarios(rows || []);
+  } catch (error) {
+    console.error('No se pudieron cargar supernumerarios para supervisor:', error);
+    if (deps.streamSupernumerarios && !unSupernumerarios) {
+      unSupernumerarios = deps.streamSupernumerarios((rows = []) => {
+        setSupervisorSupernumerarios(rows);
+      });
+    }
+  }
+}
+
+function setSupervisorSupernumerarios(rows = []) {
+  supernumerarios = (rows || [])
+    .filter((row) => String(row?.estado || 'activo').trim().toLowerCase() !== 'inactivo')
+    .sort((a, b) => String(a.nombre || '').localeCompare(String(b.nombre || '')));
+  if (currentUser && currentProfile) renderApp();
 }
 
 function canUseSupervisorApp(profile = {}) {

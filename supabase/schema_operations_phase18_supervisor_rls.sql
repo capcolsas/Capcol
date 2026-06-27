@@ -147,6 +147,49 @@ as $$
   );
 $$;
 
+create or replace function public.list_supernumerarios_for_current_supervisor()
+returns table (
+  id uuid,
+  documento text,
+  nombre text,
+  estado text,
+  sede_codigo text,
+  sede_nombre text
+)
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select
+    e.id,
+    e.documento,
+    e.nombre,
+    e.estado,
+    e.sede_codigo,
+    e.sede_nombre
+  from public.employees e
+  left join public.cargos c on c.codigo = e.cargo_codigo
+  where coalesce(e.estado, 'activo') <> 'inactivo'
+    and (
+      lower(coalesce(c.alineacion_crud, '')) = 'supernumerario'
+      or lower(coalesce(c.nombre, '')) like '%supernumer%'
+      or lower(coalesce(e.cargo_nombre, '')) like '%supernumer%'
+    )
+    and (
+      public.current_profile_is_active_non_supervisor()
+      or exists (
+        select 1
+        from public.profiles p
+        where p.id = auth.uid()
+          and p.estado = 'activo'
+          and p.role::text = 'supervisor'
+          and p.supervisor_eligible = true
+      )
+    )
+  order by e.nombre asc;
+$$;
+
 grant execute on function public.current_profile_is_active_non_supervisor() to authenticated;
 grant execute on function public.current_supervisor_can_read_zone(text) to authenticated;
 grant execute on function public.can_read_zone_data(text) to authenticated;
@@ -155,6 +198,7 @@ grant execute on function public.can_read_employee_data(uuid, text) to authentic
 grant execute on function public.can_read_operational_sede_or_employee(text, uuid, text) to authenticated;
 grant execute on function public.current_supervisor_can_write_operational_replacement(text, uuid, text) to authenticated;
 grant execute on function public.can_view_qr_registry() to authenticated;
+grant execute on function public.list_supernumerarios_for_current_supervisor() to authenticated;
 
 drop policy if exists "zones_read_authenticated" on public.zones;
 create policy "zones_read_authenticated"
