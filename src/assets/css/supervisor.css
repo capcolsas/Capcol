@@ -96,6 +96,10 @@
 }
 .supervisor-title{margin:0;font-size:1.32rem;line-height:1.12;color:#102d42}
 .supervisor-subtitle{margin:.25rem 0 0;color:#5d7283;font-size:.9rem;line-height:1.35}
+.supervisor-subtitle--ok{color:#187a46;font-weight:700}
+.supervisor-subtitle--warn{color:#b7791f;font-weight:700}
+.supervisor-subtitle--danger{color:#c43d34;font-weight:700}
+.supervisor-subtitle--neutral{color:#5d7283}
 .supervisor-date{
   display:grid;
   gap:.22rem;

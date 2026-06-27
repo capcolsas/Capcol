@@ -228,19 +228,19 @@ function renderApp() {
     ]),
     el('main', { className: 'supervisor-main' }, [
       panel('home', [
-        hero(summary),
+        hero(summary, 'home'),
         kpiGrid(summary),
         sectionHead('Pendientes prioritarios', `${pendingRows(rows).length} pendientes`),
         listOrEmpty(pendingRows(rows).slice(0, 6), 'No hay pendientes para mostrar.')
       ]),
       panel('registry', [
-        hero(summary, true),
+        hero(summary, 'registry'),
         toolbar(),
         sectionHead('Registro diario', `${filteredRows.length} registros`),
         listOrEmpty(filteredRows, 'No hay registros con los filtros actuales.')
       ]),
       panel('novelties', [
-        hero(summary, true),
+        hero(summary, 'novelties'),
         sectionHead('Novedades y ausencias', `${noveltyRows.length} registros`),
         listOrEmpty(noveltyRows, 'No hay novedades registradas para esta fecha.')
       ]),
@@ -257,12 +257,13 @@ function panel(name, children) {
   return el('section', { className: `supervisor-panel${activeTab === name ? ' is-active' : ''}`, dataset: { panel: name } }, children);
 }
 
-function hero(summary, compact = false) {
+function hero(summary, section = 'home') {
+  const message = sectionMessage(summary, section);
   return el('section', { className: 'supervisor-hero' }, [
     el('div', { className: 'supervisor-hero__top' }, [
       el('div', {}, [
-        el('h1', { className: 'supervisor-title' }, [compact ? 'Registro diario' : 'Hoy en tu zona']),
-        el('p', { className: 'supervisor-subtitle' }, [currentRegistry.error ? `Error: ${currentRegistry.error}` : summaryLabel(summary)])
+        el('h1', { className: 'supervisor-title' }, [sectionTitle(section)]),
+        el('p', { className: `supervisor-subtitle supervisor-subtitle--${message.tone}` }, [message.text])
       ]),
       el('div', { className: 'supervisor-date' }, [
         el('label', { for: 'supervisorDate' }, ['Fecha']),
@@ -277,6 +278,27 @@ function hero(summary, compact = false) {
       el('button', { className: 'btn supervisor-refresh', type: 'button', onclick: loadRegistry }, ['Actualizar'])
     ])
   ]);
+}
+
+function sectionTitle(section) {
+  if (section === 'registry') return 'Registro diario';
+  if (section === 'novelties') return 'Novedades';
+  return 'Hoy en tu zona';
+}
+
+function sectionMessage(summary, section = 'home') {
+  if (currentRegistry.error) return { tone: 'danger', text: `Error: ${currentRegistry.error}` };
+  if (section === 'registry' || section === 'novelties') {
+    const pending = Number(summary.noveltyPending || 0);
+    if (pending > 0) {
+      return { tone: 'danger', text: `Tienes ${pending} novedad${pending === 1 ? '' : 'es'} pendiente${pending === 1 ? '' : 's'} de gestionar.` };
+    }
+    return { tone: 'ok', text: 'No tienes novedades pendientes de gestionar.' };
+  }
+  return {
+    tone: summaryTone(summary),
+    text: summaryLabel(summary)
+  };
 }
 
 function kpiGrid(summary) {
@@ -755,8 +777,14 @@ function summarizeRows(rows) {
     expected: rows.length,
     present: rows.filter((row) => row.status === 'presente').length,
     pending: rows.filter((row) => row.status === 'pendiente').length,
-    novelties: rows.filter((row) => row.hasNovelty || row.status === 'novedad' || row.status === 'ausente').length
+    novelties: rows.filter((row) => row.hasNovelty || row.status === 'novedad' || row.status === 'ausente').length,
+    noveltyPending: rows.filter((row) => isNoveltyPendingManagement(row)).length
   };
+}
+
+function isNoveltyPendingManagement(row = {}) {
+  return (row.hasNovelty || row.status === 'novedad' || row.status === 'ausente')
+    && !hasSavedCoverage(row);
 }
 
 function pendingRows(rows) {
@@ -768,6 +796,12 @@ function summaryLabel(summary) {
   if (!summary.expected) return 'No hay registros cargados para esta fecha.';
   if (summary.pending > 0) return `Hay ${summary.pending} personas pendientes por revisar.`;
   return 'El registro diario de tus zonas esta al dia.';
+}
+
+function summaryTone(summary) {
+  if (!supervisorZones().length || !summary.expected) return 'neutral';
+  if (summary.pending > 0) return 'warn';
+  return 'ok';
 }
 
 function displayName() {

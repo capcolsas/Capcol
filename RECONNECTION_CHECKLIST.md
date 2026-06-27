@@ -1,11 +1,11 @@
-# RockyDEMO - Checklist de reconexion
+# Rocky - Checklist de reconexion
 
 ## 1. GitHub
 - Crear un repositorio nuevo en la cuenta destino.
 - En local, apuntar `origin` al repo nuevo:
 
 ```powershell
-git remote add origin https://github.com/TU-USUARIO-O-ORG/RockyDEMO.git
+git remote add origin https://github.com/TU-USUARIO-O-ORG/RockyXXX.git
 git branch -M main
 git push -u origin main
 ```
@@ -13,7 +13,7 @@ git push -u origin main
 ## 2. Supabase
 - Crear un proyecto nuevo en Supabase.
 - Ejecutar los esquemas SQL en el orden documentado en `SUPABASE_SETUP.md`.
-  Desde una base nueva, incluye `schema_foundation_phase0.sql` y todas las fases hasta `schema_operations_phase13.sql`.
+  Desde una base nueva, incluye `schema_foundation_phase0.sql` y todas las fases hasta `schema_operations_phase18.sql`.
 - Actualizar `src/assets/js/config.js` con:
 
 ```js
@@ -44,6 +44,7 @@ export const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiO
 - Verificar que el cron de `whatsapp-backend/vercel.json` quede activo en la cuenta nueva.
 
 ## 5. Validacion final
+- usar `create_first_superadmin.template.sql` para crear el primer usuario superadmin y hacer el primer inicio
 - Probar login en frontend.
 - Probar lectura/escritura en Supabase.
 - Confirmar que `attendance`, `import_replacements` y `daily_metrics` quedaron agregadas a `supabase_realtime`.

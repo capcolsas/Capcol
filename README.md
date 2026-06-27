@@ -12,12 +12,13 @@ Plataforma de gestion operativa y administrativa para el seguimiento de servicio
 - Centro de accesos: `access.html`
 - Ingreso administrativo: `app.html#/login`
 - App de supervisores: `supervisor.html`
-- Portal separado para empleados: `employee.html`
+- Portal para empleados: `employee.html`
 
 ## Modulos principales
 - Login
 - Centro de permisos
 - Gestion administrativa
+- Gestion empleados
 - Operacion
 - Consultas y reportes
 
@@ -93,7 +94,7 @@ Plataforma de gestion operativa y administrativa para el seguimiento de servicio
 ## Ejecucion local
 1. Abrir `index.html` con Live Server.
 2. Entrar al centro de accesos desde `access.html`.
-3. Elegir `Administrativo` o `Empleados` segun el perfil.
+3. Elegir `Administrativo`, `Empleados` o `Supervisores` segun el perfil.
 4. Para probar `employee.html`, configurar `EMPLOYEE_PORTAL_API_BASE` hacia el dominio del backend `whatsapp-backend` que expone `/api/employee-*`; Live Server por si solo no sirve esas funciones.
 
 ## Formulario de propuesta
