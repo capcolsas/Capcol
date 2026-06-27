@@ -23,14 +23,14 @@ export const Login = (mount, deps = {}) => {
   }
 
   function loginForm() {
-    const ui = el('div', {}, [
+    const ui = el('div', { className: 'login-form' }, [
       el('label', { className: 'label mt-2' }, ['Correo']),
       el('input', { id: 'email', type: 'email', placeholder: 'correo@dominio.com', className: 'input' }),
       el('label', { className: 'label mt-2' }, ['Contrasena']),
       el('input', { id: 'pass', type: 'password', placeholder: '********', className: 'input' }),
-      el('div', { className: 'form-row mt-2' }, [
+      el('div', { className: 'form-row login-actions mt-2' }, [
         el('button', { id: 'btnLogin', className: 'btn btn--primary', type: 'button' }, ['Iniciar sesion']),
-        el('button', { id: 'btnOpenCreate', className: 'btn btn--primary right', type: 'button' }, ['Crear cuenta'])
+        el('button', { id: 'btnOpenCreate', className: 'btn btn--primary', type: 'button' }, ['Crear cuenta'])
       ]),
       el('p', { id: 'msg', className: 'text-muted mt-2' }, [' '])
     ]);
