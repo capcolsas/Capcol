@@ -594,7 +594,7 @@
 .link{color:var(--color-primary);cursor:pointer}
 .right{margin-left:auto}
 .login-form{
-  width:min(100%,420px);
+  width:min(100%,340px);
   margin:0 auto;
 }
 .login-form .input{
@@ -602,6 +602,7 @@
 }
 .login-actions{
   justify-content:center;
+  gap:.45rem;
 }
 .bulk-progress{
   display:grid;
