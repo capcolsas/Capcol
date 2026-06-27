@@ -2,7 +2,7 @@ import { el, qs } from '../utils/dom.js';
 import { showActionModal } from '../utils/actionModal.js';
 
 export const Login = (mount, deps = {}) => {
-  const root = el('section', { className: 'main-card' }, [
+  const root = el('section', { className: 'main-card login-card' }, [
     el('h2', {}, ['Acceso']),
     el('div', { id: 'loginContent', className: 'mt-2' }, [])
   ]);

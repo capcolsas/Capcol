@@ -593,8 +593,17 @@
 .divider{height:1px;background:var(--color-border);margin:.8rem 0}
 .link{color:var(--color-primary);cursor:pointer}
 .right{margin-left:auto}
+.login-card{
+  width:min(100%,390px);
+  margin:clamp(.6rem,4vh,2rem) auto 0;
+  padding:1.05rem;
+}
+.login-card>h2{
+  text-align:center;
+  margin-bottom:.45rem;
+}
 .login-form{
-  width:min(100%,340px);
+  width:100%;
   margin:0 auto;
 }
 .login-form .input{
