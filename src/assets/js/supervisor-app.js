@@ -158,7 +158,7 @@ function renderApp() {
   if (!currentUser || !currentProfile) return;
   const rows = buildRegistryRows();
   const filteredRows = filterRows(rows);
-  const noveltyRows = rows.filter((row) => row.hasNovelty || row.status === 'ausente');
+  const noveltyRows = rows.filter((row) => row.hasNovelty || row.status === 'novedad' || row.status === 'ausente');
   const summary = summarizeRows(rows);
   const zoneLabel = supervisorZones().join(', ') || 'Sin zona';
 
@@ -229,7 +229,7 @@ function hero(summary, compact = false) {
 function kpiGrid(summary) {
   return el('section', { className: 'supervisor-kpis' }, [
     kpi('Esperados', summary.expected, 'info'),
-    kpi('Presentes', summary.present, 'ok'),
+    kpi('Correctos', summary.present, 'ok'),
     kpi('Pendientes', summary.pending, 'warn'),
     kpi('Novedades', summary.novelties, 'danger')
   ]);
@@ -261,7 +261,7 @@ function toolbar() {
         renderApp();
       } }, [
         option('all', 'Todos', statusFilter),
-        option('presente', 'Presentes', statusFilter),
+        option('presente', 'Correctos', statusFilter),
         option('pendiente', 'Pendientes', statusFilter),
         option('novedad', 'Novedades', statusFilter),
         option('ausente', 'Ausentes', statusFilter)
@@ -295,6 +295,10 @@ function listOrEmpty(rows, emptyText) {
 
 function recordCard(row) {
   const phone = normalizePhone(row.telefono);
+  const recordDetailLabel = row.hasNovelty || row.status === 'ausente' ? 'Novedad' : 'Registro';
+  const recordDetailValue = row.hasNovelty || row.status === 'ausente'
+    ? row.novedad || row.estadoDia || '-'
+    : row.registro || 'Correcto';
   return el('article', { className: 'supervisor-card' }, [
     el('div', { className: 'supervisor-card__main' }, [
       el('div', {}, [
@@ -305,7 +309,7 @@ function recordCard(row) {
     ]),
     el('div', { className: 'supervisor-card__details' }, [
       detail('Hora', row.hora || '-'),
-      detail('Novedad', row.novedad || row.estadoDia || '-'),
+      detail(recordDetailLabel, recordDetailValue),
       detail('Zona', row.zonaNombre || row.zonaCodigo || '-'),
       detail('Cobertura', row.reemplazo || row.decisionCobertura || '-')
     ]),
@@ -325,7 +329,7 @@ function detail(label, value) {
 
 function statusBadge(row) {
   const labels = {
-    presente: 'Presente',
+    presente: 'Correcto',
     pendiente: 'Pendiente',
     novedad: 'Novedad',
     ausente: 'Ausente',
@@ -430,12 +434,17 @@ function buildRegistryRows() {
 function normalizeRecord({ status = {}, employee = {}, attendance = {}, replacement = {} }) {
   const doc = status.documento || employee.documento || attendance.documento || replacement.documento || null;
   const hasAttendance = Boolean(attendance.id || status.sourceAttendanceId || status.asistio === true);
-  const novelty = status.novedadNombre || attendance.novedadNombre || attendance.novedad || replacement.novedadNombre || null;
+  const rawNovelty = status.novedadNombre || attendance.novedadNombre || attendance.novedad || replacement.novedadNombre || null;
+  const noveltyCode = status.novedadCodigo || attendance.novedadCodigo || replacement.novedadCodigo || null;
   const estadoDia = status.estadoDia || null;
-  const isAbsent = /ausen|incap|permiso|retiro/i.test(String(estadoDia || novelty || ''));
-  const hasNovelty = Boolean(novelty && !hasAttendance) || Boolean(replacement.id);
+  const operationalRecord = supervisorOperationalRecord(rawNovelty, noveltyCode, estadoDia);
+  const novelty = operationalRecord ? null : supervisorNoveltyLabel(rawNovelty, noveltyCode, estadoDia);
+  const normalizedNoveltyState = normalizeSupervisorText(estadoDia || novelty || '');
+  const isAbsent = /ausen|incap|permiso|retiro|vacacion/.test(normalizedNoveltyState);
+  const hasNovelty = Boolean(novelty) || Boolean(replacement.id);
   let recordStatus = 'pendiente';
   if (hasAttendance) recordStatus = novelty ? 'novedad' : 'presente';
+  else if (operationalRecord) recordStatus = 'presente';
   else if (isAbsent) recordStatus = 'ausente';
   else if (hasNovelty) recordStatus = 'novedad';
   return {
@@ -450,12 +459,45 @@ function normalizeRecord({ status = {}, employee = {}, attendance = {}, replacem
     zonaNombre: status.zonaNombreSnapshot || employee.zonaNombre || null,
     estadoDia,
     novedad: novelty,
+    registro: operationalRecord || (recordStatus === 'presente' ? 'Correcto' : null),
     hora: attendance.hora || formatTime(attendance.createdAt) || null,
     reemplazo: replacement.supernumerarioNombre || status.reemplazadoPorNombre || null,
     decisionCobertura: replacement.decision || status.decisionCobertura || null,
     status: recordStatus,
     hasNovelty
   };
+}
+
+function supervisorOperationalRecord(value, code, estadoDia) {
+  const normalizedCode = String(code || '').trim();
+  const text = normalizeSupervisorText(value || estadoDia || '');
+  if (text === 'ok') return 'Correcto';
+  if (normalizedCode === '1' || text === 'trabajando') return 'Correcto';
+  if (normalizedCode === '7' || text === 'compensatorio') return 'Correcto';
+  return null;
+}
+
+function supervisorNoveltyLabel(value, code, estadoDia) {
+  const normalizedCode = String(code || '').trim();
+  const text = String(value || '').trim();
+  if (text && normalizedCode !== '1' && normalizedCode !== '7') return text;
+  const state = normalizeSupervisorText(estadoDia || '');
+  if (!state || state === 'sin_registro' || state === 'trabajando' || state === 'compensatorio' || state === 'ok') return null;
+  return formatSupervisorState(estadoDia);
+}
+
+function normalizeSupervisorText(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toLowerCase();
+}
+
+function formatSupervisorState(value) {
+  const text = String(value || '').replace(/_/g, ' ').trim().toLowerCase();
+  if (!text) return '';
+  return text.replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 function filterRows(rows) {
@@ -474,9 +516,9 @@ function filterRows(rows) {
 function summarizeRows(rows) {
   return {
     expected: rows.length,
-    present: rows.filter((row) => row.status === 'presente' || row.status === 'novedad').length,
+    present: rows.filter((row) => row.status === 'presente').length,
     pending: rows.filter((row) => row.status === 'pendiente').length,
-    novelties: rows.filter((row) => row.status === 'novedad' || row.status === 'ausente').length
+    novelties: rows.filter((row) => row.hasNovelty || row.status === 'novedad' || row.status === 'ausente').length
   };
 }
 

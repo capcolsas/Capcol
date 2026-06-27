@@ -4476,6 +4476,16 @@ function normalizeZoneCodeList(zoneCodes = []) {
     .filter(Boolean))];
 }
 
+function supervisorRegistryHasNovelty(row = {}) {
+  const code = String(row?.novedadCodigo || '').trim();
+  if (code && !['1', '7'].includes(code)) return true;
+  const name = normalizeMetricText(row?.novedadNombre || '');
+  if (name && !['trabajando', 'compensatorio', 'ok', '-'].includes(name)) return true;
+  const state = normalizeMetricText(String(row?.estadoDia || '').replace(/_/g, ' '));
+  if (!state) return false;
+  return !['sin registro', 'trabajando', 'trabajado reemplazo', 'compensatorio', 'ok'].includes(state);
+}
+
 export async function listSupervisorDailyRegistry(fecha, zoneCodes = []) {
   const day = String(fecha || '').trim();
   const zones = normalizeZoneCodeList(zoneCodes);
@@ -4568,8 +4578,9 @@ export async function listSupervisorDailyRegistry(fecha, zoneCodes = []) {
     .filter((row) => {
       const employeeId = String(row.employeeId || '').trim();
       const documento = String(row.documento || '').trim();
-      return (employeeId && expectedEmployeeKeys.has(`id:${employeeId}`))
+      const isExpected = (employeeId && expectedEmployeeKeys.has(`id:${employeeId}`))
         || (documento && expectedEmployeeKeys.has(`doc:${documento}`));
+      return isExpected || supervisorRegistryHasNovelty(row);
     });
 
   return {
