@@ -71,6 +71,9 @@ export const UsersAdmin = (mount, deps = {}) => {
       `UID: ${u.uid || '-'}`,
       `Documento: ${u.documento || '-'}`,
       `Estado: ${statusOf(u)}`,
+      `Supervisor elegible: ${u.supervisorEligible === true ? 'Si' : 'No'}`,
+      `Zona perfil: ${u.zonaCodigo || '-'}`,
+      `Zonas permitidas: ${(u.zonasPermitidas || []).join(', ') || '-'}`,
       `Creado por: ${u.createdByEmail || u.createdByUid || '-'}`,
       `Creado el: ${formatDate(u.createdAt)}`,
       `Ultimo cambio por: ${u.lastModifiedByEmail || u.lastModifiedByUid || '-'}`,
@@ -155,6 +158,34 @@ export const UsersAdmin = (mount, deps = {}) => {
     const currentUid = getState()?.user?.uid || '';
     const isSelf = String(currentUid || '') === String(u.uid || '');
     const st = statusOf(u);
+    const isSupervisor = String(u.role || '').trim().toLowerCase() === 'supervisor';
+
+    if (st !== 'eliminado' && canEditUsers && isSupervisor) {
+      const btnSyncSupervisor = el('button', {
+        className: 'btn btn--icon',
+        title: 'Sincronizar acceso supervisor',
+        'aria-label': 'Sincronizar acceso supervisor'
+      }, ['S']);
+      btnSyncSupervisor.addEventListener('click', async () => {
+        try {
+          await deps.syncSupervisorAccessForUser?.(u.uid);
+          await deps.addAuditLog?.({
+            targetType: 'user',
+            targetId: u.uid,
+            action: 'sync_supervisor_access',
+            before: {
+              supervisorEligible: u.supervisorEligible === true,
+              zonaCodigo: u.zonaCodigo || null,
+              zonasPermitidas: u.zonasPermitidas || []
+            }
+          });
+          setMsg(`Acceso supervisor sincronizado: ${u.email || u.uid}`);
+        } catch (e) {
+          setMsg(`Error al sincronizar supervisor: ${e?.message || e}`);
+        }
+      });
+      box.append(btnSyncSupervisor);
+    }
 
     if (st !== 'eliminado' && canEditUsers) {
       const btnToggle = el(

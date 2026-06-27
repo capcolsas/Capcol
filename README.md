@@ -11,6 +11,7 @@ Plataforma de gestion operativa y administrativa para el seguimiento de servicio
 - Pagina principal informativa: `index.html`
 - Centro de accesos: `access.html`
 - Ingreso administrativo: `app.html#/login`
+- App de supervisores: `supervisor.html`
 - Portal separado para empleados: `employee.html`
 
 ## Modulos principales
@@ -62,6 +63,18 @@ Plataforma de gestion operativa y administrativa para el seguimiento de servicio
 - `#/absenteeism`
 - `#/reports`
 - `#/upload`
+
+## App de supervisores
+- Acceso dedicado: `supervisor.html`.
+- Usa el mismo login de Supabase/Auth que el portal administrativo.
+- Requiere perfil con `role = supervisor` y `supervisor_eligible = true`.
+- Filtra el registro diario por `zonas_permitidas` o `zona_codigo` del perfil.
+- Al asignar `role = supervisor`, el perfil de acceso sincroniza automaticamente `supervisor_eligible`, `zona_codigo` y `zonas_permitidas` desde el supervisor operativo asociado por documento.
+- Si cambia la zona en el modulo Supervisores, tambien se actualiza el perfil de acceso del usuario supervisor asociado.
+- Para usuarios que ya tenian rol supervisor antes de esta mejora, usa la accion `Sincronizar acceso supervisor` en Usuarios.
+- Primera version mobile-first con resumen del dia, registros, novedades y perfil.
+- Migracion RLS recomendada: `supabase/schema_operations_phase18_supervisor_rls.sql`.
+  Esta migracion limita lecturas de supervisores a sus zonas en sedes, empleados, registro diario, QR, ausentismo, reemplazos e incapacidades.
 
 ## Portal de empleados
 - Acceso dedicado: `employee.html`

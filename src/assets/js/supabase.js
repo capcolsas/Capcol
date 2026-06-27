@@ -1471,6 +1471,7 @@ async function upsertSupervisorProfileFromEmployee(employee, override = {}) {
     .select('*')
     .single();
   if (error) throw error;
+  await syncSupervisorAccessProfilesByDocument(payload.documento, payload.zona_codigo, audit);
   await notifyTableReload('supervisor_profile');
   return data;
 }
@@ -2382,6 +2383,121 @@ export async function findUserByEmail(email) {
   return data ? mapUserProfileRow(data) : null;
 }
 
+function oneZoneArray(zonaCodigo) {
+  const code = String(zonaCodigo || '').trim();
+  return code ? [code] : [];
+}
+
+async function resolveSupervisorAccessByDocument(documento) {
+  const doc = String(documento || '').trim();
+  if (!doc) return null;
+
+  const { data: supervisorProfile, error: supervisorProfileError } = await supabase
+    .from('supervisor_profile')
+    .select('*')
+    .eq('documento', doc)
+    .maybeSingle();
+  if (supervisorProfileError) throw supervisorProfileError;
+
+  const mappedSupervisor = supervisorProfile ? mapSupervisorProfileRow(supervisorProfile) : null;
+  if (mappedSupervisor?.zonaCodigo) {
+    return {
+      zonaCodigo: mappedSupervisor.zonaCodigo,
+      zonaNombre: mappedSupervisor.zonaNombre || null,
+      source: 'supervisor_profile'
+    };
+  }
+
+  const employee = await findEmployeeByDocument(doc);
+  if (!employee) return null;
+  const alignment = await getCargoCrudAlignmentByCode(employee.cargoCodigo, employee.cargoNombre);
+  if (alignment !== 'supervisor' || !employee.zonaCodigo) return null;
+  return {
+    zonaCodigo: employee.zonaCodigo,
+    zonaNombre: employee.zonaNombre || null,
+    source: 'employees'
+  };
+}
+
+async function supervisorAccessPatchForUser(uid) {
+  const targetUid = String(uid || '').trim();
+  if (!targetUid) throw new Error('Falta el usuario a sincronizar.');
+  const { data: profile, error } = await supabase
+    .from(SUPABASE_PROFILES_TABLE)
+    .select('id,email,documento')
+    .eq('id', targetUid)
+    .maybeSingle();
+  if (error) throw error;
+  if (!profile) throw new Error('No se encontro el perfil del usuario.');
+
+  const documento = String(profile.documento || '').trim();
+  if (!documento) {
+    throw new Error('El usuario no tiene documento en su perfil. No se puede validar como supervisor.');
+  }
+
+  const supervisorAccess = await resolveSupervisorAccessByDocument(documento);
+  if (!supervisorAccess?.zonaCodigo) {
+    throw new Error('El usuario no tiene una zona asignada en el modulo Supervisores.');
+  }
+
+  return {
+    supervisor_eligible: true,
+    zona_codigo: supervisorAccess.zonaCodigo,
+    zonas_permitidas: oneZoneArray(supervisorAccess.zonaCodigo)
+  };
+}
+
+async function syncSupervisorAccessProfilesByDocument(documento, zonaCodigo, audit = null) {
+  const doc = String(documento || '').trim();
+  const zone = String(zonaCodigo || '').trim();
+  if (!doc || !zone) return 0;
+
+  const { data: profiles, error } = await supabase
+    .from(SUPABASE_PROFILES_TABLE)
+    .select('id')
+    .eq('documento', doc)
+    .eq('role', 'supervisor');
+  if (error) throw error;
+
+  const rows = Array.isArray(profiles) ? profiles : [];
+  for (const profile of rows) {
+    const { error: updateError } = await supabase
+      .from(SUPABASE_PROFILES_TABLE)
+      .update({
+        supervisor_eligible: true,
+        zona_codigo: zone,
+        zonas_permitidas: oneZoneArray(zone),
+        updated_at: new Date().toISOString(),
+        last_modified_by_uid: audit?.created_by_uid || null,
+        last_modified_by_email: audit?.created_by_email || null
+      })
+      .eq('id', profile.id);
+    if (updateError) throw updateError;
+  }
+
+  if (rows.length) await notifyTableReload(SUPABASE_PROFILES_TABLE);
+  return rows.length;
+}
+
+export async function syncSupervisorAccessForUser(uid) {
+  const targetUid = String(uid || '').trim();
+  if (!targetUid) throw new Error('Falta el usuario a sincronizar.');
+  const audit = await getCurrentAuditFields();
+  const patch = {
+    ...(await supervisorAccessPatchForUser(targetUid)),
+    updated_at: new Date().toISOString(),
+    last_modified_by_uid: audit.created_by_uid,
+    last_modified_by_email: audit.created_by_email
+  };
+  const { error } = await supabase
+    .from(SUPABASE_PROFILES_TABLE)
+    .update(patch)
+    .eq('id', targetUid)
+    .eq('role', 'supervisor');
+  if (error) throw error;
+  await notifyTableReload(SUPABASE_PROFILES_TABLE);
+}
+
 export async function setUserRole(uid, role) {
   const targetUid = String(uid || '').trim();
   const nextRole = String(role || '').trim().toLowerCase();
@@ -2394,6 +2510,11 @@ export async function setUserRole(uid, role) {
     last_modified_by_uid: audit.created_by_uid,
     last_modified_by_email: audit.created_by_email
   };
+  if (nextRole === 'supervisor') {
+    Object.assign(patch, await supervisorAccessPatchForUser(targetUid));
+  } else {
+    patch.supervisor_eligible = false;
+  }
   const { error } = await supabase
     .from(SUPABASE_PROFILES_TABLE)
     .update(patch)
@@ -4347,6 +4468,120 @@ export async function listDailySedeClosuresRange(dateFrom, dateTo) {
     .order('sede_codigo', { ascending: true });
   if (error) throw error;
   return (data || []).map(mapDailySedeClosureRow);
+}
+
+function normalizeZoneCodeList(zoneCodes = []) {
+  return [...new Set((Array.isArray(zoneCodes) ? zoneCodes : [zoneCodes])
+    .map((value) => String(value || '').trim())
+    .filter(Boolean))];
+}
+
+export async function listSupervisorDailyRegistry(fecha, zoneCodes = []) {
+  const day = String(fecha || '').trim();
+  const zones = normalizeZoneCodeList(zoneCodes);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || !zones.length) {
+    return {
+      fecha: day || null,
+      zones,
+      sedes: [],
+      employees: [],
+      dailyStatus: [],
+      attendance: [],
+      replacements: [],
+      closures: []
+    };
+  }
+
+  const { data: sedeRows, error: sedesError } = await supabase
+    .from('sedes')
+    .select('*')
+    .in('zona_codigo', zones)
+    .order('nombre', { ascending: true });
+  if (sedesError) throw sedesError;
+
+  const sedes = (sedeRows || []).map(mapSedeRow);
+  const sedeCodes = [...new Set(sedes.map((sede) => String(sede.codigo || '').trim()).filter(Boolean))];
+
+  const [
+    dailyStatusResult,
+    employeesResult,
+    closuresResult,
+    attendanceResult,
+    replacementsResult
+  ] = await Promise.all([
+    supabase
+      .from('employee_daily_status')
+      .select('*')
+      .eq('fecha', day)
+      .in('zona_codigo_snapshot', zones)
+      .order('sede_codigo', { ascending: true })
+      .order('nombre', { ascending: true }),
+    supabase
+      .from('employees')
+      .select('*')
+      .eq('estado', 'activo')
+      .in('zona_codigo', zones)
+      .order('nombre', { ascending: true }),
+    supabase
+      .from('daily_sede_closures')
+      .select('*')
+      .eq('fecha', day)
+      .in('zona_codigo', zones)
+      .order('sede_codigo', { ascending: true }),
+    sedeCodes.length
+      ? supabase
+        .from('attendance')
+        .select('*')
+        .eq('fecha', day)
+        .in('sede_codigo', sedeCodes)
+        .order('created_at', { ascending: false })
+      : Promise.resolve({ data: [], error: null }),
+    sedeCodes.length
+      ? supabase
+        .from('import_replacements')
+        .select('*')
+        .eq('fecha', day)
+        .in('sede_codigo', sedeCodes)
+        .order('ts', { ascending: false })
+      : Promise.resolve({ data: [], error: null })
+  ]);
+
+  const firstError = dailyStatusResult.error
+    || employeesResult.error
+    || closuresResult.error
+    || attendanceResult.error
+    || replacementsResult.error;
+  if (firstError) throw firstError;
+
+  const employeeRows = (employeesResult.data || []).map(mapEmployeeRow);
+  const expectedEmployees = employeeRows.filter((employee) => isEmployeeExpectedForDate(employee, day, sedes));
+  const expectedEmployeeKeys = new Set(
+    expectedEmployees
+      .flatMap((employee) => [
+        employee.id ? `id:${String(employee.id).trim()}` : '',
+        employee.documento ? `doc:${String(employee.documento).trim()}` : ''
+      ])
+      .filter(Boolean)
+  );
+  const operationalDailyStatus = (dailyStatusResult.data || [])
+    .map(mapEmployeeDailyStatusRow)
+    .filter((row) => {
+      const employeeId = String(row.employeeId || '').trim();
+      const documento = String(row.documento || '').trim();
+      return (employeeId && expectedEmployeeKeys.has(`id:${employeeId}`))
+        || (documento && expectedEmployeeKeys.has(`doc:${documento}`));
+    });
+
+  return {
+    fecha: day,
+    zones,
+    sedes,
+    employees: expectedEmployees,
+    dailyStatus: operationalDailyStatus,
+    attendance: (attendanceResult.data || []).map(mapAttendanceRow),
+    replacements: (replacementsResult.data || []).map(mapImportReplacementRow),
+    closures: (closuresResult.data || []).map(mapDailySedeClosureRow)
+  };
 }
 
 async function persistDailySedeClosureSnapshot(day) {
