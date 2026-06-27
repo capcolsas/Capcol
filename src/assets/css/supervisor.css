@@ -251,6 +251,43 @@
   gap:.45rem;
   flex-wrap:wrap
 }
+.supervisor-replacement{
+  display:grid;
+  gap:.38rem;
+  padding:.55rem;
+  border-radius:8px;
+  border:1px solid #d7e3ec;
+  background:#f9fbfd
+}
+.supervisor-replacement label{
+  color:#526a7c;
+  font-size:.74rem;
+  font-weight:700
+}
+.supervisor-replacement__row{
+  display:grid;
+  grid-template-columns:1fr auto;
+  gap:.45rem
+}
+.supervisor-replacement-select{
+  min-height:44px;
+  max-width:none;
+  border-radius:8px;
+  background:#fff
+}
+.supervisor-replacement-save{
+  min-height:44px;
+  border-radius:8px;
+  box-shadow:none
+}
+.supervisor-replacement-msg{
+  margin:0;
+  font-size:.78rem;
+  line-height:1.3;
+  color:#526a7c
+}
+.supervisor-replacement-msg.is-ok{color:#187a46}
+.supervisor-replacement-msg.is-error{color:#c43d34}
 .supervisor-action{
   flex:1 1 112px;
   min-height:44px;
@@ -369,4 +406,5 @@
   .supervisor-hero__top{display:grid}
   .supervisor-date{min-width:0}
   .supervisor-card__details{grid-template-columns:1fr}
+  .supervisor-replacement__row{grid-template-columns:1fr}
 }

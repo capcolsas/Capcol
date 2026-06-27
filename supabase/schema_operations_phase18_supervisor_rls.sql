@@ -106,6 +106,28 @@ as $$
     or public.can_read_employee_data(employee_id_value, documento_value);
 $$;
 
+create or replace function public.current_supervisor_can_write_operational_replacement(
+  sede_code text,
+  employee_id_value uuid,
+  documento_value text
+)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1
+    from public.profiles p
+    where p.id = auth.uid()
+      and p.estado = 'activo'
+      and p.role::text = 'supervisor'
+      and p.supervisor_eligible = true
+  )
+  and public.can_read_operational_sede_or_employee(sede_code, employee_id_value, documento_value);
+$$;
+
 create or replace function public.can_view_qr_registry()
 returns boolean
 language sql
@@ -131,6 +153,7 @@ grant execute on function public.can_read_zone_data(text) to authenticated;
 grant execute on function public.can_read_sede_data(text) to authenticated;
 grant execute on function public.can_read_employee_data(uuid, text) to authenticated;
 grant execute on function public.can_read_operational_sede_or_employee(text, uuid, text) to authenticated;
+grant execute on function public.current_supervisor_can_write_operational_replacement(text, uuid, text) to authenticated;
 grant execute on function public.can_view_qr_registry() to authenticated;
 
 drop policy if exists "zones_read_authenticated" on public.zones;
@@ -201,6 +224,21 @@ on public.import_replacements
 for select
 to authenticated
 using (public.can_read_operational_sede_or_employee(sede_codigo, empleado_id, documento));
+
+drop policy if exists "import_replacements_insert_supervisor" on public.import_replacements;
+create policy "import_replacements_insert_supervisor"
+on public.import_replacements
+for insert
+to authenticated
+with check (public.current_supervisor_can_write_operational_replacement(sede_codigo, empleado_id, documento));
+
+drop policy if exists "import_replacements_update_supervisor" on public.import_replacements;
+create policy "import_replacements_update_supervisor"
+on public.import_replacements
+for update
+to authenticated
+using (public.current_supervisor_can_write_operational_replacement(sede_codigo, empleado_id, documento))
+with check (public.current_supervisor_can_write_operational_replacement(sede_codigo, empleado_id, documento));
 
 drop policy if exists "daily_sede_closures_read_authenticated" on public.daily_sede_closures;
 create policy "daily_sede_closures_read_authenticated"

@@ -17,6 +17,10 @@ let statusFilter = 'all';
 let sedeFilter = 'all';
 let loading = false;
 let lastLoadedAt = null;
+let supernumerarios = [];
+let unSupernumerarios = null;
+let replacementSavingKey = '';
+let replacementMessage = null;
 
 function emptyRegistry(fecha) {
   return {
@@ -43,7 +47,9 @@ function emptyRegistry(fecha) {
       ensureUserProfile: fb.ensureUserProfile,
       loadUserProfile: fb.loadUserProfile,
       createUserProfile: fb.createUserProfile,
-      listSupervisorDailyRegistry: fb.listSupervisorDailyRegistry
+      listSupervisorDailyRegistry: fb.listSupervisorDailyRegistry,
+      streamSupernumerarios: fb.streamSupernumerarios,
+      saveImportReplacements: fb.saveImportReplacements
     };
     deps.authState(handleAuthState);
   } catch (error) {
@@ -55,6 +61,7 @@ async function handleAuthState(user) {
   currentUser = user || null;
   if (!user) {
     currentProfile = null;
+    stopSupernumerariosStream();
     renderLogin();
     return;
   }
@@ -78,10 +85,27 @@ async function handleAuthState(user) {
       renderDenied(profile);
       return;
     }
+    startSupernumerariosStream();
     await loadRegistry();
   } catch (error) {
     renderFatal(`No se pudo validar tu acceso: ${error?.message || error}`);
   }
+}
+
+function startSupernumerariosStream() {
+  if (unSupernumerarios || !deps.streamSupernumerarios) return;
+  unSupernumerarios = deps.streamSupernumerarios((rows = []) => {
+    supernumerarios = (rows || [])
+      .filter((row) => String(row?.estado || 'activo').trim().toLowerCase() !== 'inactivo')
+      .sort((a, b) => String(a.nombre || '').localeCompare(String(b.nombre || '')));
+    if (currentUser && currentProfile) renderApp();
+  });
+}
+
+function stopSupernumerariosStream() {
+  unSupernumerarios?.();
+  unSupernumerarios = null;
+  supernumerarios = [];
 }
 
 function canUseSupervisorApp(profile = {}) {
@@ -309,6 +333,7 @@ function recordCard(row) {
     detail('Zona', row.zonaNombre || row.zonaCodigo || '-'),
     detail('Cobertura', row.reemplazo || row.decisionCobertura || '-')
   ].filter(Boolean);
+  const replacementNode = replacementControl(row);
   return el('article', { className: 'supervisor-card' }, [
     el('div', { className: 'supervisor-card__main' }, [
       el('div', {}, [
@@ -318,11 +343,12 @@ function recordCard(row) {
       statusBadge(row)
     ]),
     el('div', { className: 'supervisor-card__details' }, cardDetails),
+    replacementNode,
     el('div', { className: 'supervisor-card__actions' }, [
       phone ? linkAction('Llamar', `tel:${phone}`) : null,
       phone ? linkAction('WhatsApp', `https://wa.me/${phone}`) : null
     ].filter(Boolean))
-  ]);
+  ].filter(Boolean));
 }
 
 function detail(label, value) {
@@ -349,6 +375,122 @@ function linkAction(label, href) {
 
 function actionButton(label, onClick, primary = false) {
   return el('button', { className: `btn supervisor-action${primary ? ' btn--primary' : ''}`, type: 'button', onclick: onClick }, [label]);
+}
+
+function replacementControl(row) {
+  if (!(row.hasNovelty || row.status === 'novedad' || row.status === 'ausente')) return null;
+  if (!deps.saveImportReplacements) return null;
+  const rowKey = replacementRowKey(row);
+  const available = replacementOptionsForRow(row);
+  const currentValue = row.replacementSupernumerarioId
+    || (row.decisionCobertura === 'ausentismo' ? '__ausentismo__' : '');
+  const select = el('select', { className: 'select supervisor-replacement-select' }, [
+    el('option', { value: '' }, ['Seleccione cobertura...']),
+    el('option', { value: '__ausentismo__', selected: currentValue === '__ausentismo__' }, ['Sin reemplazo']),
+    ...available.map((item) => el('option', {
+      value: item.id,
+      selected: currentValue === item.id
+    }, [`${item.nombre || item.documento || '-'} (${item.documento || '-'})`]))
+  ]);
+  const button = el('button', {
+    className: 'btn btn--primary supervisor-replacement-save',
+    type: 'button',
+    disabled: replacementSavingKey === rowKey,
+    onclick: () => saveSupervisorReplacement(row, select.value)
+  }, [replacementSavingKey === rowKey ? 'Guardando...' : 'Guardar']);
+  const message = replacementMessage?.key === rowKey
+    ? el('p', { className: `supervisor-replacement-msg is-${replacementMessage.type || 'info'}` }, [replacementMessage.text || ''])
+    : null;
+  return el('div', { className: 'supervisor-replacement' }, [
+    el('label', {}, ['Cobertura de novedad']),
+    el('div', { className: 'supervisor-replacement__row' }, [select, button]),
+    message
+  ].filter(Boolean));
+}
+
+function replacementOptionsForRow(row = {}) {
+  const rowDoc = String(row.documento || '').trim();
+  const currentId = String(row.replacementSupernumerarioId || '').trim();
+  const used = usedSupernumerarioIds(row);
+  return (supernumerarios || []).filter((item) => {
+    const id = String(item.id || '').trim();
+    const doc = String(item.documento || '').trim();
+    if (!id) return false;
+    if (doc && doc === rowDoc) return false;
+    if (id === currentId) return true;
+    return !used.has(id);
+  });
+}
+
+function usedSupernumerarioIds(currentRow = {}) {
+  const currentEmployeeId = String(currentRow.employeeId || '').trim();
+  const currentDoc = String(currentRow.documento || '').trim();
+  const used = new Set();
+  (currentRegistry.replacements || []).forEach((row) => {
+    if (String(row.decision || '').trim() !== 'reemplazo') return;
+    const superId = String(row.supernumerarioId || '').trim();
+    if (!superId) return;
+    const sameEmployee = currentEmployeeId && String(row.empleadoId || '').trim() === currentEmployeeId;
+    const sameDoc = currentDoc && String(row.documento || '').trim() === currentDoc;
+    if (!sameEmployee && !sameDoc) used.add(superId);
+  });
+  return used;
+}
+
+async function saveSupervisorReplacement(row = {}, selectedValue = '') {
+  const rowKey = replacementRowKey(row);
+  const value = String(selectedValue || '').trim();
+  if (!value) {
+    replacementMessage = { key: rowKey, type: 'error', text: 'Selecciona un supernumerario o sin reemplazo.' };
+    renderApp();
+    return;
+  }
+  const employeeId = String(row.employeeId || '').trim();
+  if (!employeeId) {
+    replacementMessage = { key: rowKey, type: 'error', text: 'No se encontro el empleado para guardar la cobertura.' };
+    renderApp();
+    return;
+  }
+  const selected = value === '__ausentismo__'
+    ? null
+    : (supernumerarios || []).find((item) => String(item.id || '').trim() === value) || null;
+  if (value !== '__ausentismo__' && !selected) {
+    replacementMessage = { key: rowKey, type: 'error', text: 'Selecciona un supernumerario valido.' };
+    renderApp();
+    return;
+  }
+  const assignment = {
+    fecha: selectedDate,
+    empleadoId: employeeId,
+    documento: row.documento || null,
+    nombre: row.nombre || null,
+    sedeCodigo: row.sedeCodigo || null,
+    sedeNombre: row.sedeNombre || null,
+    novedadCodigo: row.novedadCodigo || null,
+    novedadNombre: row.novedad || row.estadoDia || null,
+    decision: selected ? 'reemplazo' : 'ausentismo',
+    supernumerarioId: selected?.id || null,
+    supernumerarioDocumento: selected?.documento || null,
+    supernumerarioNombre: selected?.nombre || null
+  };
+  replacementSavingKey = rowKey;
+  replacementMessage = { key: rowKey, type: 'info', text: 'Guardando cobertura...' };
+  renderApp();
+  try {
+    await deps.saveImportReplacements?.({ fechaOperacion: selectedDate, assignments: [assignment] });
+    replacementMessage = { key: rowKey, type: 'ok', text: 'Cobertura guardada.' };
+    await loadRegistry();
+  } catch (error) {
+    replacementMessage = { key: rowKey, type: 'error', text: `Error guardando cobertura: ${error?.message || error}` };
+    renderApp();
+  } finally {
+    replacementSavingKey = '';
+    renderApp();
+  }
+}
+
+function replacementRowKey(row = {}) {
+  return `${String(row.employeeId || '').trim()}|${String(row.documento || '').trim()}|${selectedDate}`;
 }
 
 function bottomNav() {
@@ -480,6 +622,7 @@ function normalizeRecord({ status = {}, employee = {}, attendance = {}, replacem
     zonaCodigo: status.zonaCodigoSnapshot || employee.zonaCodigo || null,
     zonaNombre: status.zonaNombreSnapshot || employee.zonaNombre || null,
     estadoDia,
+    novedadCodigo: noveltyCode,
     novedad: novelty,
     registro: operationalRecord || (recordStatus === 'presente' ? 'Correcto' : null),
     incapacidadDias: incapacityDays,
@@ -487,6 +630,8 @@ function normalizeRecord({ status = {}, employee = {}, attendance = {}, replacem
     incapacidadFin: incapacity.fechaFin || null,
     hora: attendance.hora || formatTime(attendance.createdAt) || null,
     reemplazo: replacement.supernumerarioNombre || status.reemplazadoPorNombre || null,
+    replacementSupernumerarioId: replacement.supernumerarioId || status.reemplazadoPorEmployeeId || null,
+    replacementSupernumerarioDocumento: replacement.supernumerarioDocumento || status.reemplazadoPorDocumento || null,
     decisionCobertura: replacement.decision || status.decisionCobertura || null,
     status: recordStatus,
     hasNovelty
