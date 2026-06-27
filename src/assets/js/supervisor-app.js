@@ -358,7 +358,7 @@ function recordCard(row) {
     detail(recordDetailLabel, recordDetailValue),
     row.incapacidadDias ? detail('Dias incapacidad', `${row.incapacidadDias} dia${row.incapacidadDias === 1 ? '' : 's'}`) : null,
     detail('Zona', row.zonaNombre || row.zonaCodigo || '-'),
-    detail('Cobertura', row.reemplazo || row.decisionCobertura || '-')
+    detail('Cobertura', coverageLabel(row))
   ].filter(Boolean);
   const replacementNode = replacementControl(row);
   return el('article', { className: 'supervisor-card' }, [
@@ -407,6 +407,7 @@ function actionButton(label, onClick, primary = false) {
 function replacementControl(row) {
   if (!(row.hasNovelty || row.status === 'novedad' || row.status === 'ausente')) return null;
   if (!deps.saveImportReplacements) return null;
+  if (hasSavedCoverage(row)) return null;
   const rowKey = replacementRowKey(row);
   const available = replacementOptionsForRow(row);
   const currentValue = row.replacementSupernumerarioId
@@ -433,6 +434,21 @@ function replacementControl(row) {
     el('div', { className: 'supervisor-replacement__row' }, [select, button]),
     message
   ].filter(Boolean));
+}
+
+function hasSavedCoverage(row = {}) {
+  const decision = String(row.decisionCobertura || '').trim().toLowerCase();
+  return Boolean(row.reemplazo || row.replacementSupernumerarioId || row.replacementSupernumerarioDocumento)
+    || decision === 'reemplazo'
+    || decision === 'ausentismo';
+}
+
+function coverageLabel(row = {}) {
+  if (row.reemplazo) return row.reemplazo;
+  const decision = String(row.decisionCobertura || '').trim().toLowerCase();
+  if (decision === 'ausentismo') return 'Sin reemplazo';
+  if (decision === 'reemplazo') return 'Reemplazo guardado';
+  return '-';
 }
 
 function replacementOptionsForRow(row = {}) {
