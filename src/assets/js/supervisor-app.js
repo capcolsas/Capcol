@@ -437,17 +437,15 @@ function replacementControl(row) {
 }
 
 function hasSavedCoverage(row = {}) {
-  const decision = String(row.decisionCobertura || '').trim().toLowerCase();
-  return Boolean(row.reemplazo || row.replacementSupernumerarioId || row.replacementSupernumerarioDocumento)
-    || decision === 'reemplazo'
-    || decision === 'ausentismo';
+  return Boolean(row.replacementId);
 }
 
 function coverageLabel(row = {}) {
   if (row.reemplazo) return row.reemplazo;
+  if (row.replacementId) return 'Sin reemplazo';
   const decision = String(row.decisionCobertura || '').trim().toLowerCase();
-  if (decision === 'ausentismo') return 'Sin reemplazo';
   if (decision === 'reemplazo') return 'Reemplazo guardado';
+  if (decision === 'ausentismo') return 'Pendiente';
   return '-';
 }
 
@@ -672,6 +670,7 @@ function normalizeRecord({ status = {}, employee = {}, attendance = {}, replacem
     incapacidadInicio: incapacity.fechaInicio || null,
     incapacidadFin: incapacity.fechaFin || null,
     hora: attendance.hora || formatTime(attendance.createdAt) || null,
+    replacementId: replacement.id || null,
     reemplazo: replacement.supernumerarioNombre || status.reemplazadoPorNombre || null,
     replacementSupernumerarioId: replacement.supernumerarioId || status.reemplazadoPorEmployeeId || null,
     replacementSupernumerarioDocumento: replacement.supernumerarioDocumento || status.reemplazadoPorDocumento || null,
