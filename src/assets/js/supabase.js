@@ -2841,7 +2841,11 @@ export async function createSedesBulk(rows = []) {
       zonaCodigo: row.zonaCodigo || null,
       zonaNombre: row.zonaNombre || null,
       numeroOperarios: typeof row.numeroOperarios === 'number' ? row.numeroOperarios : Number(row.numeroOperarios || 0),
-      jornada: row.jornada || 'lun_vie'
+      jornada: row.jornada || 'lun_vie',
+      qrEnabled: row.qrEnabled === true,
+      qrLatitude: row.qrLatitude,
+      qrLongitude: row.qrLongitude,
+      qrRadiusMeters: typeof row.qrRadiusMeters === 'number' ? row.qrRadiusMeters : Number(row.qrRadiusMeters || 500)
     });
     created += 1;
   }

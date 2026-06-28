@@ -4,7 +4,7 @@ import { createTablePagination } from '../utils/pagination.js';
 export const CargueMasivoSedesAdmin=(mount,deps={})=>{
   const ui=el('section',{className:'main-card'},[
     el('h2',{},['Cargue masivo de sedes']),
-    el('p',{className:'text-muted mt-2'},['Columnas esperadas: nombre sede, dependencia codigo, zona codigo, nro operarios, jornada. El código de sede se genera automáticamente. Jornada válida: lun_vie, lun_sab o lun_dom.']),
+    el('p',{className:'text-muted mt-2'},['Columnas esperadas: nombre sede, dependencia codigo, zona codigo, nro operarios, jornada, qr, latitud qr, longitud qr, radio qr. El codigo de sede se genera automaticamente. Jornada valida: lun_vie, lun_sab o lun_dom.']),
     el('div',{className:'form-row mt-2'},[
       el('button',{id:'btnTemplate',className:'btn',type:'button'},['Descargar plantilla CSV']),
       el('input',{id:'fileInput',className:'input',type:'file',accept:'.csv,.xls,.xlsx'}),
@@ -28,6 +28,10 @@ export const CargueMasivoSedesAdmin=(mount,deps={})=>{
           el('th',{},['Zona']),
           el('th',{},['Nro operarios']),
           el('th',{},['Jornada']),
+          el('th',{},['QR']),
+          el('th',{},['Latitud QR']),
+          el('th',{},['Longitud QR']),
+          el('th',{},['Radio QR']),
           el('th',{},['Estado'])
         ]) ]),
         el('tbody',{})
@@ -96,9 +100,9 @@ export const CargueMasivoSedesAdmin=(mount,deps={})=>{
   });
 
   btnTemplate.addEventListener('click',()=>{
-    const headers=['nombre sede','dependencia codigo','zona codigo','nro operarios','jornada'];
-    const sampleA=['Sede Norte','DEP-0001','ZON-0001','12','lun_vie'];
-    const sampleB=['Sede Centro','DEP-0002','ZON-0002','18','lun_sab'];
+    const headers=['nombre sede','dependencia codigo','zona codigo','nro operarios','jornada','qr','latitud qr','longitud qr','radio qr'];
+    const sampleA=['Sede Norte','DEP-0001','ZON-0001','12','lun_vie','no','','','500'];
+    const sampleB=['Sede Centro','DEP-0002','ZON-0002','18','lun_sab','si','6.244203','-75.581212','500'];
     downloadCsv('plantilla_sedes.csv',[headers,sampleA,sampleB]);
   });
 
@@ -123,6 +127,10 @@ export const CargueMasivoSedesAdmin=(mount,deps={})=>{
       el('td',{},[r.zonaNombre||'-']),
       el('td',{},[String(r.numeroOperarios??'-')]),
       el('td',{},[r.jornada||'-']),
+      el('td',{},[r.qrEnabled===true?'Activo':'Inactivo']),
+      el('td',{},[formatOptionalNumber(r.qrLatitude)]),
+      el('td',{},[formatOptionalNumber(r.qrLongitude)]),
+      el('td',{},[String(r.qrRadiusMeters??500)]),
       el('td',{},[r.ok? 'OK':'ERROR'])
     ])));
   }
@@ -154,12 +162,18 @@ export const CargueMasivoSedesAdmin=(mount,deps={})=>{
       const zoneCode=String(raw.zonaCodigo||raw.zona||'').trim().toLowerCase();
       const ops=Number(String(raw.numeroOperarios||raw.operarios||'').trim());
       const jornada=String(raw.jornada||raw.horario||'lun_vie').trim().toLowerCase();
+      const qrEnabled=parseBooleanFlag(raw.qrEnabled ?? raw.qr ?? raw.qrActivo ?? raw.qr_activo, false);
+      const qrLatitude=parseOptionalNumber(raw.qrLatitude ?? raw.latitudQr ?? raw.latitud_qr ?? raw.latitud);
+      const qrLongitude=parseOptionalNumber(raw.qrLongitude ?? raw.longitudQr ?? raw.longitud_qr ?? raw.longitud);
+      const qrRadiusMeters=parsePositiveInteger(raw.qrRadiusMeters ?? raw.radioQr ?? raw.radio_qr ?? raw.radio, 500);
       const issues=[];
       if(!nombre) issues.push('Nombre sede requerido.');
       if(!depCode) issues.push('Dependencia codigo requerida.');
       if(!zoneCode) issues.push('Zona codigo requerida.');
       if(!Number.isFinite(ops) || ops<0 || !Number.isInteger(ops)) issues.push('Nro operarios invalido.');
       if(!['lun_vie','lun_sab','lun_dom'].includes(jornada)) issues.push('Jornada invalida (use: lun_vie, lun_sab o lun_dom).');
+      if(qrEnabled && (!Number.isFinite(qrLatitude) || !Number.isFinite(qrLongitude))) issues.push('Para activar QR debes informar latitud qr y longitud qr.');
+      if(!Number.isFinite(qrRadiusMeters) || qrRadiusMeters<1 || !Number.isInteger(qrRadiusMeters)) issues.push('Radio QR invalido.');
       const dep=depByCode.get(depCode);
       const zone=zoneByCode.get(zoneCode);
       if(depCode && !dep) issues.push(`Dependencia no existe: ${depCode}`);
@@ -171,7 +185,7 @@ export const CargueMasivoSedesAdmin=(mount,deps={})=>{
 
       if(issues.length){
         errors.push({ row:rowNum, message: issues.join(' ') });
-        preview.push({ nombre, dependenciaCodigo:raw.dependenciaCodigo||raw.dependencia||'', zonaCodigo:raw.zonaCodigo||raw.zona||'', dependenciaNombre:dep?.nombre||'', zonaNombre:zone?.nombre||'', numeroOperarios:ops, jornada, ok:false });
+        preview.push({ nombre, dependenciaCodigo:raw.dependenciaCodigo||raw.dependencia||'', zonaCodigo:raw.zonaCodigo||raw.zona||'', dependenciaNombre:dep?.nombre||'', zonaNombre:zone?.nombre||'', numeroOperarios:ops, jornada, qrEnabled, qrLatitude, qrLongitude, qrRadiusMeters, ok:false });
         return;
       }
 
@@ -182,9 +196,13 @@ export const CargueMasivoSedesAdmin=(mount,deps={})=>{
         zonaCodigo:zone.codigo,
         zonaNombre:zone.nombre,
         numeroOperarios:ops,
-        jornada
+        jornada,
+        qrEnabled,
+        qrLatitude,
+        qrLongitude,
+        qrRadiusMeters
       });
-      preview.push({ nombre, dependenciaCodigo:dep.codigo, zonaCodigo:zone.codigo, dependenciaNombre:dep.nombre, zonaNombre:zone.nombre, numeroOperarios:ops, jornada, ok:true });
+      preview.push({ nombre, dependenciaCodigo:dep.codigo, zonaCodigo:zone.codigo, dependenciaNombre:dep.nombre, zonaNombre:zone.nombre, numeroOperarios:ops, jornada, qrEnabled, qrLatitude, qrLongitude, qrRadiusMeters, ok:true });
     });
     return { rows, valid, errors, preview };
   }
@@ -229,7 +247,7 @@ export const CargueMasivoSedesAdmin=(mount,deps={})=>{
   }
 
   function normalizeInputRow(obj){
-    const out={ nombre:'', dependenciaCodigo:'', zonaCodigo:'', numeroOperarios:'', jornada:'' };
+    const out={ nombre:'', dependenciaCodigo:'', zonaCodigo:'', numeroOperarios:'', jornada:'', qrEnabled:'', qrLatitude:'', qrLongitude:'', qrRadiusMeters:'' };
     Object.keys(obj||{}).forEach((k)=>{
       const key=String(k||'').trim().toLowerCase();
       const v=String(obj[k]??'').trim();
@@ -238,8 +256,38 @@ export const CargueMasivoSedesAdmin=(mount,deps={})=>{
       if(key==='zona codigo' || key==='zona_codigo' || key==='zona') out.zonaCodigo=v;
       if(key==='nro operarios' || key==='numero operarios' || key==='operarios') out.numeroOperarios=v;
       if(key==='jornada' || key==='horario') out.jornada=v.toLowerCase();
+      if(key==='qr' || key==='qr activo' || key==='qr_activo' || key==='qr enabled' || key==='qr_enabled') out.qrEnabled=v;
+      if(key==='latitud qr' || key==='latitud_qr' || key==='qr latitude' || key==='qr_latitude' || key==='latitud') out.qrLatitude=v;
+      if(key==='longitud qr' || key==='longitud_qr' || key==='qr longitude' || key==='qr_longitude' || key==='longitud') out.qrLongitude=v;
+      if(key==='radio qr' || key==='radio_qr' || key==='qr radius' || key==='qr_radius' || key==='qr_radius_meters' || key==='radio') out.qrRadiusMeters=v;
     });
     return out;
+  }
+
+  function parseBooleanFlag(value, fallback=false){
+    const raw=String(value??'').trim().toLowerCase();
+    if(!raw) return fallback;
+    if(['si','sí','s','true','1','activo','activa','yes','y'].includes(raw)) return true;
+    if(['no','n','false','0','inactivo','inactiva'].includes(raw)) return false;
+    return fallback;
+  }
+
+  function parseOptionalNumber(value){
+    const raw=String(value??'').trim().replace(',','.');
+    if(!raw) return null;
+    const n=Number(raw);
+    return Number.isFinite(n) ? n : NaN;
+  }
+
+  function parsePositiveInteger(value,fallback=500){
+    const raw=String(value??'').trim();
+    if(!raw) return fallback;
+    const n=Number(raw);
+    return Number.isFinite(n) && Number.isInteger(n) && n>=1 ? n : NaN;
+  }
+
+  function formatOptionalNumber(value){
+    return Number.isFinite(Number(value)) ? String(value) : '-';
   }
 
   function downloadCsv(filename, rows){
