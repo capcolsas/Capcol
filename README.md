@@ -26,6 +26,7 @@ Plataforma de gestion operativa y administrativa para el seguimiento de servicio
 - Configuracion activa del frontend en `src/assets/js/config.js`
 - Cliente principal de datos en `src/assets/js/supabase.js`
 - Scripts SQL de migracion en `supabase/`
+- Recuperacion de contrasena: configurar `Site URL` y `Redirect URLs` segun `SUPABASE_SETUP.md`.
 
 ## Backend WhatsApp
 - Backend actual en `whatsapp-backend/`
@@ -47,6 +48,8 @@ Plataforma de gestion operativa y administrativa para el seguimiento de servicio
 
 ## Rutas de la app
 - `#/login`
+- `#/forgot-password`
+- `#/reset-password`
 - `#/`
 - `#/about`
 - `#/notes`

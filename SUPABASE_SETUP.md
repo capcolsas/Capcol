@@ -66,6 +66,70 @@ export const EMPLOYEE_PORTAL_API_BASE = 'https://capcol-whatsapp-backend.vercel.
 
 Para migrar a otra cuenta, reemplazar `SUPABASE_URL` y `SUPABASE_ANON_KEY` por los valores del nuevo proyecto.
 
+## Auth: recuperacion de contrasena
+El login administrativo usa Supabase Auth. Para que el flujo `Olvide mi contrasena` funcione en proyectos nuevos, configurar las URLs de autenticacion en Supabase antes de probar el envio de correos.
+
+Ruta de la app:
+- Solicitar recuperacion: `app.html#/forgot-password`
+- Crear nueva contrasena: `app.html#/reset-password`
+- Redirect tecnico usado por Supabase: `app.html?reset_password=1`
+
+En Supabase ir a:
+
+`Authentication` -> `URL Configuration`
+
+Configurar `Site URL` con la URL publica del panel administrativo:
+
+```text
+https://TU-DOMINIO-PRODUCTIVO/app.html
+```
+
+Ejemplos:
+
+```text
+https://rocky-demo.vercel.app/app.html
+https://tudominio.com/RockyDEMO/app.html
+```
+
+Agregar en `Redirect URLs` la URL exacta para recuperacion:
+
+```text
+https://TU-DOMINIO-PRODUCTIVO/app.html?reset_password=1
+```
+
+Si se trabaja localmente, agregar tambien:
+
+```text
+http://localhost:5173/app.html?reset_password=1
+```
+
+No dejar `Site URL` apuntando a `http://localhost:3000` en productivo. Si Supabase no encuentra permitido el `redirectTo`, puede caer al `Site URL`; por eso un proyecto mal configurado puede terminar en una URL como:
+
+```text
+http://localhost:3000/#error=access_denied&error_code=otp_expired
+```
+
+El frontend arma el `redirectTo` de forma dinamica desde la URL actual:
+
+```js
+`${window.location.origin}${window.location.pathname}?reset_password=1`
+```
+
+Por eso, en produccion el dominio que abre el usuario debe coincidir con una URL permitida en `Redirect URLs`.
+
+Validacion despues de configurar:
+1. Abrir la app desplegada en `https://TU-DOMINIO-PRODUCTIVO/app.html#/login`.
+2. Hacer clic en `Olvide mi contrasena`.
+3. Solicitar un correo nuevo.
+4. Abrir el enlace mas reciente recibido.
+5. Confirmar que la URL llegue al dominio productivo y contenga `reset_password=1` o abra `app.html#/reset-password`.
+6. Guardar la nueva contrasena e iniciar sesion.
+
+Errores comunes:
+- `otp_expired`: el enlace expiro, ya fue usado, o se abrio un correo viejo despues de solicitar otro. Solicitar un enlace nuevo.
+- Redireccion a `localhost:3000`: corregir `Site URL` y `Redirect URLs` en Supabase; luego solicitar un correo nuevo.
+- `Auth session missing`: el enlace no genero sesion de recuperacion. Verificar que el enlace tenga `code=...` o tokens de Supabase y que la URL de redireccion este permitida.
+
 ## Variables del backend
 Configurar en Vercel para el proyecto `whatsapp-backend/`:
 - `SUPABASE_URL`

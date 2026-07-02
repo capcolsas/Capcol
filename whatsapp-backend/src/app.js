@@ -2289,7 +2289,7 @@ async function removeInvalidScheduledEmployeeDailyStatusRows(date) {
     selectAllRows('sedes'),
     selectAllRows('employees'),
     selectAllRows('cargos', 'codigo, alineacion_crud, nombre'),
-    selectAllRows('employee_cargo_history', 'id, employee_id, sede_codigo, fecha_ingreso, fecha_retiro, created_at')
+    selectAllRows('employee_cargo_history', 'id, employee_id, cargo_codigo, cargo_nombre, sede_codigo, fecha_ingreso, fecha_retiro, created_at')
   ]);
   if (statusError) throw statusError;
 
@@ -2316,8 +2316,14 @@ async function removeInvalidScheduledEmployeeDailyStatusRows(date) {
       const employeeId = String(row?.employee_id || '').trim();
       const employee = employeeById.get(employeeId) || null;
       if (!employee) return true;
-      if (isEmployeeSupernumerarioByCargoMap(employee, cargoMap)) return true;
-      return !isEmployeeAssignedToActiveSedeOnDate(employee, day, activeSedeCodes, historyByEmployeeId.get(employeeId) || []);
+      const historyRows = historyByEmployeeId.get(employeeId) || [];
+      const assignment = resolveEmployeeAssignmentHistoryOnDate(employee, day, historyRows);
+      const source = assignment || employee;
+      const cargoCode = String(source?.cargo_codigo || source?.cargoCodigo || '').trim();
+      const cargo = cargoMap.get(cargoCode) || null;
+      const alignment = normalizeCargoAlignment(cargo?.alineacion_crud || source?.cargo_nombre || source?.cargoNombre || '');
+      if (alignment === 'supernumerario') return true;
+      return !isEmployeeAssignedToActiveSedeOnDate(employee, day, activeSedeCodes, historyRows);
     })
     .map((row) => String(row?.id || '').trim())
     .filter(Boolean);
