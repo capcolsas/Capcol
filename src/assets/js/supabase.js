@@ -4580,6 +4580,17 @@ export async function listSupernumerarioReplacementOccupancy(fecha) {
   return (data || []).map(mapImportReplacementRow);
 }
 
+export async function listSupernumerarioIncapacitiesForCurrentSupervisor(fecha) {
+  const day = String(fecha || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return [];
+  const { data, error } = await supabase.rpc('list_supernumerario_incapacities_for_current_supervisor', { p_fecha: day });
+  if (error) {
+    console.warn('No se pudo consultar incapacidades de supernumerarios:', error);
+    return [];
+  }
+  return (data || []).map(mapIncapacidadRow);
+}
+
 export async function listEmployeeDailyStatusRange(dateFrom, dateTo) {
   if (!dateFrom || !dateTo) return [];
   const rows = [];
@@ -4708,7 +4719,8 @@ export async function listSupervisorDailyRegistry(fecha, zoneCodes = []) {
     attendanceRows,
     replacementRows,
     supernumerarioOccupancyRows,
-    incapacityRows
+    incapacityRows,
+    supernumerarioIncapacityRows
   ] = await Promise.all([
     selectPagedRows(() => supabase
       .from('employee_daily_status')
@@ -4752,7 +4764,8 @@ export async function listSupervisorDailyRegistry(fecha, zoneCodes = []) {
       .eq('estado', 'activo')
       .lte('fecha_inicio', day)
       .gte('fecha_fin', day)
-      .order('fecha_inicio', { ascending: false }))
+      .order('fecha_inicio', { ascending: false })),
+    listSupernumerarioIncapacitiesForCurrentSupervisor(day)
   ]);
 
   const employeeRows = (employeeRowsRaw || []).map(mapEmployeeRow);
@@ -4775,6 +4788,32 @@ export async function listSupervisorDailyRegistry(fecha, zoneCodes = []) {
       return isExpected || supervisorRegistryHasNovelty(row);
     });
 
+  const scopedIncapacities = (incapacityRows || [])
+    .map(mapIncapacidadRow)
+    .filter((row) => {
+      const employeeId = String(row.employeeId || '').trim();
+      const documento = String(row.documento || '').trim();
+      return (employeeId && expectedEmployeeKeys.has(`id:${employeeId}`))
+        || (documento && expectedEmployeeKeys.has(`doc:${documento}`))
+        || operationalDailyStatus.some((status) => {
+          const statusEmployeeId = String(status.employeeId || '').trim();
+          const statusDocument = String(status.documento || '').trim();
+          return (employeeId && statusEmployeeId === employeeId)
+            || (documento && statusDocument === documento);
+        });
+    });
+  const incapacitiesById = new Map();
+  [...scopedIncapacities, ...(supernumerarioIncapacityRows || [])].forEach((row) => {
+    const key = String(row?.id || '').trim()
+      || [
+        String(row?.employeeId || '').trim(),
+        String(row?.documento || '').trim(),
+        String(row?.fechaInicio || '').trim(),
+        String(row?.fechaFin || '').trim()
+      ].join('|');
+    if (key) incapacitiesById.set(key, row);
+  });
+
   return {
     fecha: day,
     zones,
@@ -4784,20 +4823,7 @@ export async function listSupervisorDailyRegistry(fecha, zoneCodes = []) {
     attendance: (attendanceRows || []).map(mapAttendanceRow),
     replacements: (replacementRows || []).map(mapImportReplacementRow),
     supernumerarioOccupancy: (supernumerarioOccupancyRows || []).map((row) => row?.id ? row : mapImportReplacementRow(row)),
-    incapacities: (incapacityRows || [])
-      .map(mapIncapacidadRow)
-      .filter((row) => {
-        const employeeId = String(row.employeeId || '').trim();
-        const documento = String(row.documento || '').trim();
-        return (employeeId && expectedEmployeeKeys.has(`id:${employeeId}`))
-          || (documento && expectedEmployeeKeys.has(`doc:${documento}`))
-          || operationalDailyStatus.some((status) => {
-            const statusEmployeeId = String(status.employeeId || '').trim();
-            const statusDocument = String(status.documento || '').trim();
-            return (employeeId && statusEmployeeId === employeeId)
-              || (documento && statusDocument === documento);
-          });
-      }),
+    incapacities: Array.from(incapacitiesById.values()),
     closures: (closureRows || []).map(mapDailySedeClosureRow)
   };
 }

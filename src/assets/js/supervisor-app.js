@@ -632,6 +632,11 @@ function usedSupernumerarioKeys(currentRow = {}) {
     if (superId) ids.add(superId);
     if (superDoc) docs.add(superDoc);
   });
+  const incapacitated = supernumerarioIncapacityByKeys();
+  incapacitated.forEach((row, key) => {
+    if (key.startsWith('id:')) ids.add(key.slice(3));
+    if (key.startsWith('doc:')) docs.add(key.slice(4));
+  });
   return { ids, docs };
 }
 
@@ -659,6 +664,11 @@ async function saveSupervisorReplacement(row = {}, selectedValue = '') {
     : (supernumerarios || []).find((item) => String(item.id || '').trim() === value) || null;
   if (value !== '__ausentismo__' && !selected) {
     replacementMessage = { key: rowKey, type: 'error', text: 'Selecciona un supernumerario valido.' };
+    renderApp();
+    return;
+  }
+  if (selected && supernumerarioIncapacityForPerson(selected)) {
+    replacementMessage = { key: rowKey, type: 'error', text: 'Ese supernumerario esta ocupado por incapacidad.' };
     renderApp();
     return;
   }
@@ -748,6 +758,7 @@ function profilePanel(summary) {
 
 function buildSupernumerarioRows() {
   const occupied = new Map();
+  const incapacitated = supernumerarioIncapacityByKeys();
   globalSupernumerarioOccupancyRows().forEach((row) => {
     if (String(row.decision || '').trim().toLowerCase() !== 'reemplazo') return;
     const info = {
@@ -766,6 +777,9 @@ function buildSupernumerarioRows() {
     if (superDoc) occupied.set(`doc:${superDoc}`, info);
     if (superName) occupied.set(`name:${superName}`, info);
   });
+  incapacitated.forEach((info, key) => {
+    occupied.set(key, info);
+  });
 
   return (supernumerarios || []).map((row) => {
     const id = String(row.id || '').trim();
@@ -778,6 +792,73 @@ function buildSupernumerarioRows() {
       cobertura: coverage
     };
   });
+}
+
+function supernumerarioIncapacityByKeys() {
+  const superIds = new Set();
+  const superDocs = new Set();
+  const superNames = new Set();
+  (supernumerarios || []).forEach((row) => {
+    const id = String(row?.id || '').trim();
+    const doc = String(row?.documento || '').trim();
+    const name = normalizeSupervisorText(row?.nombre || '');
+    if (id) superIds.add(id);
+    if (doc) superDocs.add(doc);
+    if (name) superNames.add(name);
+  });
+
+  const out = new Map();
+  (currentRegistry.incapacities || []).forEach((row) => {
+    if (!isIncapacityActiveForSelectedDate(row)) return;
+    const employeeId = String(row?.employeeId || '').trim();
+    const documento = String(row?.documento || '').trim();
+    const name = normalizeSupervisorText(row?.nombre || '');
+    const matches = (employeeId && superIds.has(employeeId))
+      || (documento && superDocs.has(documento))
+      || (name && superNames.has(name));
+    if (!matches) return;
+
+    const info = {
+      tipo: 'incapacidad',
+      empleadoId: row.employeeId || null,
+      documento: row.documento || null,
+      nombre: row.nombre || null,
+      novedadNombre: 'Incapacidad',
+      incapacidadInicio: row.fechaInicio || null,
+      incapacidadFin: row.fechaFin || null
+    };
+    if (employeeId) out.set(`id:${employeeId}`, info);
+    if (documento) out.set(`doc:${documento}`, info);
+    if (name) out.set(`name:${name}`, info);
+  });
+  return out;
+}
+
+function supernumerarioIncapacityForPerson(person = {}) {
+  const id = String(person?.id || '').trim();
+  const doc = String(person?.documento || '').trim();
+  const name = normalizeSupervisorText(person?.nombre || '');
+  const map = supernumerarioIncapacityByKeys();
+  return (id && map.get(`id:${id}`))
+    || (doc && map.get(`doc:${doc}`))
+    || (name && map.get(`name:${name}`))
+    || null;
+}
+
+function isIncapacityActiveForSelectedDate(row = {}) {
+  const start = normalizeIsoDate(row?.fechaInicio);
+  const end = normalizeIsoDate(row?.fechaFin);
+  const day = normalizeIsoDate(selectedDate);
+  if (!day) return false;
+  if (String(row?.estado || 'activo').trim().toLowerCase() === 'inactivo') return false;
+  return (!start || start <= day) && (!end || end >= day);
+}
+
+function incapacityPeriodLabel(row = {}) {
+  const start = normalizeIsoDate(row?.incapacidadInicio || row?.fechaInicio);
+  const end = normalizeIsoDate(row?.incapacidadFin || row?.fechaFin);
+  if (start && end) return `${start} a ${end}`;
+  return start || end || selectedDate;
 }
 
 function globalSupernumerarioOccupancyRows() {
@@ -815,12 +896,15 @@ function filterSupernumerarioRows(rows = []) {
 function supernumerarioCard(row = {}) {
   const phone = normalizePhone(row.telefono);
   const coverage = row.cobertura || {};
+  const isIncapacity = coverage.tipo === 'incapacidad';
   const cardDetails = [
     detail('Estado dia', row.ocupado ? 'Ocupado' : 'Libre'),
     detail('Sede base', row.sedeNombre || row.sedeCodigo || '-'),
-    row.ocupado ? detail('Cubriendo a', coverage.nombre || coverage.documento || '-') : null,
-    row.ocupado ? detail('Sede cobertura', coverage.sedeNombre || '-') : null,
-    row.ocupado ? detail('Novedad', coverage.novedadNombre || '-') : null
+    row.ocupado && isIncapacity ? detail('Motivo', 'Incapacidad') : null,
+    row.ocupado && isIncapacity ? detail('Periodo', incapacityPeriodLabel(coverage)) : null,
+    row.ocupado && !isIncapacity ? detail('Cubriendo a', coverage.nombre || coverage.documento || '-') : null,
+    row.ocupado && !isIncapacity ? detail('Sede cobertura', coverage.sedeNombre || '-') : null,
+    row.ocupado && !isIncapacity ? detail('Novedad', coverage.novedadNombre || '-') : null
   ].filter(Boolean);
   return el('article', { className: 'supervisor-card' }, [
     el('div', { className: 'supervisor-card__main' }, [
