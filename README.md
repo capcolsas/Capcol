@@ -84,7 +84,7 @@ Plataforma de gestion operativa y administrativa para el seguimiento de servicio
 - Acceso dedicado: `employee.html`
 - No usa registro en `Auth`.
 - Valida `documento + ultimos 4 del celular` contra `employees`.
-- Si el empleado tiene un perfil activo con rol superior (`supervisor`, `admin`, etc.), se redirige al portal principal.
+- Si el empleado tiene un perfil activo administrativo (`superadmin`, `admin`, `editor`, `consultor` o `tablet_qr`), se redirige al portal principal. Los supervisores tambien pueden entrar al portal de empleados para gestionar sus incapacidades y certificados.
 - El backend de este portal vive en `whatsapp-backend/src/app.js`.
 - Requiere variables backend en `whatsapp-backend`:
   - `SUPABASE_URL`

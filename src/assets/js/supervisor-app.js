@@ -40,6 +40,7 @@ function emptyRegistry(fecha) {
     dailyStatus: [],
     attendance: [],
     replacements: [],
+    supernumerarioOccupancy: [],
     incapacities: [],
     closures: []
   };
@@ -221,7 +222,9 @@ function renderApp() {
   const filteredRows = filterRows(registeredRows);
   const noveltyRows = rows.filter((row) => row.hasNovelty || row.status === 'novedad' || row.status === 'ausente');
   const pending = pendingRows(rows);
-  const supernumerarioRows = filterSupernumerarioRows(buildSupernumerarioRows());
+  const allSupernumerarioRows = buildSupernumerarioRows();
+  const supernumerarioRows = filterSupernumerarioRows(allSupernumerarioRows);
+  const availableSupernumerarios = allSupernumerarioRows.filter((row) => !row.ocupado).length;
   const summary = summarizeRows(rows);
   const zoneLabel = supervisorZones().join(', ') || 'Sin zona';
 
@@ -274,7 +277,7 @@ function renderApp() {
         profilePanel(summary)
       ])
     ]),
-    bottomNav()
+    bottomNav(summary, { availableSupernumerarios })
   ]);
   root.replaceChildren(app);
 }
@@ -555,6 +558,7 @@ function actionButton(label, onClick, primary = false) {
 function replacementControl(row) {
   if (!(row.hasNovelty || row.status === 'novedad' || row.status === 'ausente')) return null;
   if (!deps.saveImportReplacements) return null;
+  if (!rowRequiresCoverage(row)) return null;
   if (hasSavedCoverage(row)) return null;
   const rowKey = replacementRowKey(row);
   const available = replacementOptionsForRow(row);
@@ -589,6 +593,7 @@ function hasSavedCoverage(row = {}) {
 }
 
 function coverageLabel(row = {}) {
+  if ((row.hasNovelty || row.status === 'novedad' || row.status === 'ausente') && !rowRequiresCoverage(row)) return 'Solo reporte';
   if (row.reemplazo) return row.reemplazo;
   if (row.replacementId) return 'Sin reemplazo';
   const decision = String(row.decisionCobertura || '').trim().toLowerCase();
@@ -600,35 +605,44 @@ function coverageLabel(row = {}) {
 function replacementOptionsForRow(row = {}) {
   const rowDoc = String(row.documento || '').trim();
   const currentId = String(row.replacementSupernumerarioId || '').trim();
-  const used = usedSupernumerarioIds(row);
+  const used = usedSupernumerarioKeys(row);
   return (supernumerarios || []).filter((item) => {
     const id = String(item.id || '').trim();
     const doc = String(item.documento || '').trim();
     if (!id) return false;
     if (doc && doc === rowDoc) return false;
     if (id === currentId) return true;
-    return !used.has(id);
+    return !used.ids.has(id) && (!doc || !used.docs.has(doc));
   });
 }
 
-function usedSupernumerarioIds(currentRow = {}) {
+function usedSupernumerarioKeys(currentRow = {}) {
   const currentEmployeeId = String(currentRow.employeeId || '').trim();
   const currentDoc = String(currentRow.documento || '').trim();
-  const used = new Set();
-  (currentRegistry.replacements || []).forEach((row) => {
+  const ids = new Set();
+  const docs = new Set();
+  globalSupernumerarioOccupancyRows().forEach((row) => {
     if (String(row.decision || '').trim() !== 'reemplazo') return;
     const superId = String(row.supernumerarioId || '').trim();
-    if (!superId) return;
+    const superDoc = String(row.supernumerarioDocumento || '').trim();
+    if (!superId && !superDoc) return;
     const sameEmployee = currentEmployeeId && String(row.empleadoId || '').trim() === currentEmployeeId;
     const sameDoc = currentDoc && String(row.documento || '').trim() === currentDoc;
-    if (!sameEmployee && !sameDoc) used.add(superId);
+    if (sameEmployee || sameDoc) return;
+    if (superId) ids.add(superId);
+    if (superDoc) docs.add(superDoc);
   });
-  return used;
+  return { ids, docs };
 }
 
 async function saveSupervisorReplacement(row = {}, selectedValue = '') {
   const rowKey = replacementRowKey(row);
   const value = String(selectedValue || '').trim();
+  if (!rowRequiresCoverage(row)) {
+    replacementMessage = { key: rowKey, type: 'error', text: 'Esta novedad es solo reporte y no admite reemplazo.' };
+    renderApp();
+    return;
+  }
   if (!value) {
     replacementMessage = { key: rowKey, type: 'error', text: 'Selecciona un supernumerario o sin reemplazo.' };
     renderApp();
@@ -682,25 +696,35 @@ function replacementRowKey(row = {}) {
   return `${String(row.employeeId || '').trim()}|${String(row.documento || '').trim()}|${selectedDate}`;
 }
 
-function bottomNav() {
+function bottomNav(summary = {}, counts = {}) {
   const items = [
-    ['home', 'Inicio', 'Inicio'],
-    ['registry', 'Registros', 'Registros'],
-    ['novelties', 'Novedades', 'Novedades'],
-    ['supernumerarios', 'Supernum.', 'Supernumerarios']
+    { key: 'home', label: 'Inicio', fullLabel: 'Inicio', badge: summary.pending, tone: 'warn', hideZero: true, badgeLabel: 'pendientes' },
+    { key: 'registry', label: 'Registros', fullLabel: 'Registros' },
+    { key: 'novelties', label: 'Novedades', fullLabel: 'Novedades', badge: summary.noveltyPending, tone: 'danger', hideZero: true, badgeLabel: 'novedades pendientes de gestionar' },
+    { key: 'supernumerarios', label: 'Supernum.', fullLabel: 'Supernumerarios', badge: counts.availableSupernumerarios, tone: 'ok', hideZero: false, badgeLabel: 'supernumerarios libres' }
   ];
-  return el('nav', { className: 'supervisor-bottom-nav', 'aria-label': 'Navegacion supervisores' }, items.map(([key, label, fullLabel]) => (
-    el('button', {
-      className: `supervisor-nav-btn${activeTab === key ? ' is-active' : ''}`,
-      type: 'button',
-      title: fullLabel,
-      'aria-label': fullLabel,
-      onclick: () => {
-        activeTab = key;
-        renderApp();
-      }
-    }, [label])
-  )));
+  return el('nav', { className: 'supervisor-bottom-nav', 'aria-label': 'Navegacion supervisores' }, items.map((item) => navButton(item)));
+}
+
+function navButton(item = {}) {
+  const key = String(item.key || '').trim();
+  const count = Math.max(0, Number(item.badge || 0));
+  const showBadge = item.badge != null && (!item.hideZero || count > 0);
+  const badgeText = count > 99 ? '99+' : String(count);
+  const badgeLabel = showBadge ? `${count} ${item.badgeLabel || 'pendientes'}` : '';
+  return el('button', {
+    className: `supervisor-nav-btn${activeTab === key ? ' is-active' : ''}`,
+    type: 'button',
+    title: showBadge ? `${item.fullLabel} - ${badgeLabel}` : item.fullLabel,
+    'aria-label': showBadge ? `${item.fullLabel} - ${badgeLabel}` : item.fullLabel,
+    onclick: () => {
+      activeTab = key;
+      renderApp();
+    }
+  }, [
+    el('span', { className: 'supervisor-nav-btn__label' }, [item.label || item.fullLabel || key]),
+    showBadge ? el('span', { className: `supervisor-nav-badge supervisor-nav-badge--${item.tone || 'neutral'}` }, [badgeText]) : null
+  ].filter(Boolean));
 }
 
 function profilePanel(summary) {
@@ -724,7 +748,7 @@ function profilePanel(summary) {
 
 function buildSupernumerarioRows() {
   const occupied = new Map();
-  (currentRegistry.replacements || []).forEach((row) => {
+  globalSupernumerarioOccupancyRows().forEach((row) => {
     if (String(row.decision || '').trim().toLowerCase() !== 'reemplazo') return;
     const info = {
       empleadoId: row.empleadoId || null,
@@ -754,6 +778,25 @@ function buildSupernumerarioRows() {
       cobertura: coverage
     };
   });
+}
+
+function globalSupernumerarioOccupancyRows() {
+  const rows = [
+    ...(currentRegistry.supernumerarioOccupancy || []),
+    ...(currentRegistry.replacements || [])
+  ];
+  const byKey = new Map();
+  rows.forEach((row) => {
+    const key = String(row?.id || '').trim()
+      || [
+        String(row?.fecha || selectedDate || '').trim(),
+        String(row?.supernumerarioId || row?.supernumerarioDocumento || '').trim(),
+        String(row?.empleadoId || row?.documento || '').trim()
+      ].join('|');
+    if (!key) return;
+    byKey.set(key, row);
+  });
+  return Array.from(byKey.values());
 }
 
 function filterSupernumerarioRows(rows = []) {
@@ -898,9 +941,14 @@ function normalizeRecord({ status = {}, employee = {}, attendance = {}, replacem
     replacementSupernumerarioId: replacement.supernumerarioId || status.reemplazadoPorEmployeeId || null,
     replacementSupernumerarioDocumento: replacement.supernumerarioDocumento || status.reemplazadoPorDocumento || null,
     decisionCobertura: replacement.decision || status.decisionCobertura || null,
+    servicioProgramado: status.servicioProgramado === true || (!status.id && Boolean(employee.id)),
     status: recordStatus,
     hasNovelty
   };
+}
+
+function rowRequiresCoverage(row = {}) {
+  return row.servicioProgramado === true;
 }
 
 function supervisorOperationalRecord(value, code, estadoDia) {
@@ -985,6 +1033,7 @@ function summarizeRows(rows) {
 
 function isNoveltyPendingManagement(row = {}) {
   return (row.hasNovelty || row.status === 'novedad' || row.status === 'ausente')
+    && rowRequiresCoverage(row)
     && !hasSavedCoverage(row);
 }
 
