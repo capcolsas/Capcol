@@ -4329,7 +4329,7 @@ export function streamIncapacitadosByDate(fecha, onData) {
   emit();
   const unregister = registerTableReloader('incapacitados', emit);
   const channel = supabase
-    .channel(`incapacitados-${day}`)
+    .channel(nextRealtimeChannelName(`incapacitados-${day}`))
     .on('postgres_changes', { event: '*', schema: 'public', table: 'incapacitados' }, emit)
     .subscribe();
   return () => {
