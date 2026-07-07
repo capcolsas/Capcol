@@ -433,12 +433,6 @@ function supernumerarioOccupancyKeys(rows = []) {
   return keys;
 }
 
-function isPendingManagedNovelty(row = {}) {
-  return String(row?.tipoPersonal || '').trim() === 'empleado'
-    && row?.servicioProgramado === true
-    && String(row?.decisionCobertura || '').trim() === 'pendiente';
-}
-
 function countPendingManagedNovelties({
   day,
   statusRows = [],
@@ -449,12 +443,6 @@ function countPendingManagedNovelties({
   supernumerarios = [],
   novedades = []
 } = {}) {
-  const pendingStatusKeys = new Set();
-  (statusRows || []).filter(isPendingManagedNovelty).forEach((row) => {
-    const key = dailyPersonKey(row);
-    if (key) pendingStatusKeys.add(key);
-  });
-
   const statusByKey = new Map();
   (statusRows || []).forEach((row) => {
     const key = dailyPersonKey(row);
@@ -465,14 +453,13 @@ function countPendingManagedNovelties({
   (replacementRows || []).forEach((row) => {
     const decision = String(row?.decision || '').trim();
     if (!['reemplazo', 'ausentismo'].includes(decision)) return;
-    const key = dailyPersonKey(row);
+    const key = replacementRowKeyForBadge(row);
     if (key) handledReplacementKeys.add(key);
   });
-  handledReplacementKeys.forEach((key) => pendingStatusKeys.delete(key));
 
   const pendingAttendanceKeys = new Set();
   (attendanceRows || []).forEach((row) => {
-    const key = dailyPersonKey(row);
+    const key = replacementRowKeyForBadge(row);
     if (!key || handledReplacementKeys.has(key)) return;
     if (isSupernumerarioAttendanceForBadge(row, supernumerarios, day)) return;
     if (!isAttendanceReplacementNovelty(row, novedades)) return;
@@ -480,7 +467,12 @@ function countPendingManagedNovelties({
     pendingAttendanceKeys.add(key);
   });
 
-  return new Set([...pendingStatusKeys, ...pendingAttendanceKeys]).size;
+  return pendingAttendanceKeys.size;
+}
+
+function replacementRowKeyForBadge(row = {}) {
+  const empId = String(row?.empleadoId || row?.employeeId || '').trim();
+  return `${String(row?.fecha || '').trim()}_${empId}`;
 }
 
 function dailyPersonKey(row = {}) {
