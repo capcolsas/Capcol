@@ -31,6 +31,7 @@ Ejecutar en este orden desde el SQL Editor de Supabase:
 20. `supabase/schema_operations_phase17_employee_certificates.sql`
 21. `supabase/schema_operations_phase17_tablet_qr_role.sql`
 22. `supabase/schema_operations_phase18_supervisor_rls.sql`
+23. `supabase/schema_operations_phase21_admin_permission_rls.sql`
 
 ## Que habilita cada bloque
 - `phase0` instala `pgcrypto` para `gen_random_uuid()`.
@@ -53,6 +54,7 @@ Ejecutar en este orden desde el SQL Editor de Supabase:
 - `phase17 employee certificates` agrega auditoria de certificados laborales.
 - `phase17 tablet QR role` agrega el rol dedicado `tablet_qr`.
 - `phase18 supervisor RLS` limita lecturas de supervisores a sus zonas y crea funciones de alcance.
+- `phase21 admin permission RLS` permite que supervisores habilitados usen escrituras administrativas de empleados segun sus permisos.
 
 ## Variables del frontend
 Configurar en `src/assets/js/config.js`:
