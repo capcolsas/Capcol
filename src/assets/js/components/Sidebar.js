@@ -57,7 +57,7 @@ export const Sidebar = (deps = {}) => {
     const opLinks = [];
     if (can(PERMS.IMPORT_DATA)) opLinks.push(navLink('Registro Diario', '/registros-vivo', { badgeId: 'sidebarRegistroDiarioBadge' }));
     if (can(PERMS.VIEW_QR_DAILY_REGISTRY)) opLinks.push(navLink('Registro QR', '/registro-qr'));
-    if (can(PERMS.VIEW_SUPERNUMERARIOS)) opLinks.push(navLink('Supernumerarios', '/supernumerarios', { badgeId: 'sidebarSupernumerariosFreeBadge' }));
+    if (can(PERMS.VIEW_SUPERNUMERARIOS)) opLinks.push(navLink('Supernumerarios', '/supernumerarios', { badgeId: 'sidebarSupernumerariosFreeBadge', badgeAlwaysVisible: true, badgeAriaLabel: '0 supernumerarios libres hoy' }));
     if (can(PERMS.IMPORT_DATA)) opLinks.push(navLink('Registro Sede', '/registro-sede'));
     if (can(PERMS.VIEW_IMPORT_HISTORY)) opLinks.push(navLink('Historial', '/import-history'));
     if (opLinks.length) sections.push(section('Operacion', opLinks, 'operacion'));
@@ -176,9 +176,9 @@ function navLink(text, to, options = {}) {
       textNode,
       el('span', {
         id: options.badgeId,
-        className: 'sidebar__nav-badge',
-        hidden: true,
-        'aria-label': '0 novedades pendientes'
+        className: `sidebar__nav-badge${options.badgeClassName ? ` ${options.badgeClassName}` : ''}`,
+        hidden: options.badgeAlwaysVisible ? false : true,
+        'aria-label': options.badgeAriaLabel || '0 novedades pendientes'
       }, ['0'])
     ])
     : textNode;
@@ -270,6 +270,7 @@ function bindPendingNoveltyBadge(container, deps = {}) {
       setCount(pending);
     } catch (error) {
       if (!active) return;
+      setCount(0);
       console.warn('No se pudo actualizar la burbuja de novedades pendientes:', error);
     }
   };
@@ -314,7 +315,6 @@ function bindFreeSupernumerariosBadge(container, deps = {}) {
   if (!badge) return () => {};
   badge.hidden = false;
   badge.textContent = '0';
-  badge.setAttribute('aria-label', '0 supernumerarios libres hoy');
   if (typeof deps.streamSupernumerarios !== 'function') return () => {};
 
   let active = true;
@@ -433,6 +433,12 @@ function supernumerarioOccupancyKeys(rows = []) {
   return keys;
 }
 
+function isPendingManagedNovelty(row = {}) {
+  return String(row?.tipoPersonal || '').trim() === 'empleado'
+    && row?.servicioProgramado === true
+    && String(row?.decisionCobertura || '').trim() === 'pendiente';
+}
+
 function countPendingManagedNovelties({
   day,
   statusRows = [],
@@ -443,6 +449,12 @@ function countPendingManagedNovelties({
   supernumerarios = [],
   novedades = []
 } = {}) {
+  const pendingStatusKeys = new Set();
+  (statusRows || []).filter(isPendingManagedNovelty).forEach((row) => {
+    const key = dailyPersonKey(row);
+    if (key) pendingStatusKeys.add(key);
+  });
+
   const statusByKey = new Map();
   (statusRows || []).forEach((row) => {
     const key = dailyPersonKey(row);
@@ -453,13 +465,14 @@ function countPendingManagedNovelties({
   (replacementRows || []).forEach((row) => {
     const decision = String(row?.decision || '').trim();
     if (!['reemplazo', 'ausentismo'].includes(decision)) return;
-    const key = replacementRowKeyForBadge(row);
+    const key = dailyPersonKey(row);
     if (key) handledReplacementKeys.add(key);
   });
+  handledReplacementKeys.forEach((key) => pendingStatusKeys.delete(key));
 
   const pendingAttendanceKeys = new Set();
   (attendanceRows || []).forEach((row) => {
-    const key = replacementRowKeyForBadge(row);
+    const key = dailyPersonKey(row);
     if (!key || handledReplacementKeys.has(key)) return;
     if (isSupernumerarioAttendanceForBadge(row, supernumerarios, day)) return;
     if (!isAttendanceReplacementNovelty(row, novedades)) return;
@@ -467,12 +480,7 @@ function countPendingManagedNovelties({
     pendingAttendanceKeys.add(key);
   });
 
-  return pendingAttendanceKeys.size;
-}
-
-function replacementRowKeyForBadge(row = {}) {
-  const empId = String(row?.empleadoId || row?.employeeId || '').trim();
-  return `${String(row?.fecha || '').trim()}_${empId}`;
+  return new Set([...pendingStatusKeys, ...pendingAttendanceKeys]).size;
 }
 
 function dailyPersonKey(row = {}) {
