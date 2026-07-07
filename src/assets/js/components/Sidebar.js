@@ -57,7 +57,7 @@ export const Sidebar = (deps = {}) => {
     const opLinks = [];
     if (can(PERMS.IMPORT_DATA)) opLinks.push(navLink('Registro Diario', '/registros-vivo', { badgeId: 'sidebarRegistroDiarioBadge' }));
     if (can(PERMS.VIEW_QR_DAILY_REGISTRY)) opLinks.push(navLink('Registro QR', '/registro-qr'));
-    if (can(PERMS.VIEW_SUPERNUMERARIOS)) opLinks.push(navLink('Supernumerarios', '/supernumerarios', { badgeId: 'sidebarSupernumerariosFreeBadge', badgeAlwaysVisible: true, badgeAriaLabel: '0 supernumerarios libres hoy' }));
+    if (can(PERMS.VIEW_SUPERNUMERARIOS)) opLinks.push(navLink('Supernumerarios', '/supernumerarios', { badgeId: 'sidebarSupernumerariosFreeBadge' }));
     if (can(PERMS.IMPORT_DATA)) opLinks.push(navLink('Registro Sede', '/registro-sede'));
     if (can(PERMS.VIEW_IMPORT_HISTORY)) opLinks.push(navLink('Historial', '/import-history'));
     if (opLinks.length) sections.push(section('Operacion', opLinks, 'operacion'));
@@ -176,9 +176,9 @@ function navLink(text, to, options = {}) {
       textNode,
       el('span', {
         id: options.badgeId,
-        className: `sidebar__nav-badge${options.badgeClassName ? ` ${options.badgeClassName}` : ''}`,
-        hidden: options.badgeAlwaysVisible ? false : true,
-        'aria-label': options.badgeAriaLabel || '0 novedades pendientes'
+        className: 'sidebar__nav-badge',
+        hidden: true,
+        'aria-label': '0 novedades pendientes'
       }, ['0'])
     ])
     : textNode;
@@ -270,7 +270,6 @@ function bindPendingNoveltyBadge(container, deps = {}) {
       setCount(pending);
     } catch (error) {
       if (!active) return;
-      setCount(0);
       console.warn('No se pudo actualizar la burbuja de novedades pendientes:', error);
     }
   };
@@ -315,6 +314,7 @@ function bindFreeSupernumerariosBadge(container, deps = {}) {
   if (!badge) return () => {};
   badge.hidden = false;
   badge.textContent = '0';
+  badge.setAttribute('aria-label', '0 supernumerarios libres hoy');
   if (typeof deps.streamSupernumerarios !== 'function') return () => {};
 
   let active = true;
