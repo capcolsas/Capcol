@@ -51,13 +51,13 @@ export const Sidebar = (deps = {}) => {
     if (can(PERMS.VIEW_EMPLOYEES)) employeeLinks.push(navLink('Empleados', '/employees'));
     if (can(PERMS.VIEW_EMPLOYEES)) employeeLinks.push(navLink('Novedades empleados', '/employee-novelties'));
     if (can(PERMS.VIEW_SUPERVISORS)) employeeLinks.push(navLink('Supervisores', '/supervisors'));
-    if (can(PERMS.VIEW_SUPERNUMERARIOS)) employeeLinks.push(navLink('Supernumerarios', '/supernumerarios'));
     if (can(PERMS.UPLOAD_DATA)) employeeLinks.push(navLink('Incapacidades', '/upload'));
     if (employeeLinks.length) sections.push(section('Empleados', employeeLinks, 'empleados'));
 
     const opLinks = [];
     if (can(PERMS.IMPORT_DATA)) opLinks.push(navLink('Registro Diario', '/registros-vivo', { badgeId: 'sidebarRegistroDiarioBadge' }));
     if (can(PERMS.VIEW_QR_DAILY_REGISTRY)) opLinks.push(navLink('Registro QR', '/registro-qr'));
+    if (can(PERMS.VIEW_SUPERNUMERARIOS)) opLinks.push(navLink('Supernumerarios', '/supernumerarios', { badgeId: 'sidebarSupernumerariosFreeBadge', badgeAlwaysVisible: true, badgeAriaLabel: '0 supernumerarios libres hoy' }));
     if (can(PERMS.IMPORT_DATA)) opLinks.push(navLink('Registro Sede', '/registro-sede'));
     if (can(PERMS.VIEW_IMPORT_HISTORY)) opLinks.push(navLink('Historial', '/import-history'));
     if (opLinks.length) sections.push(section('Operacion', opLinks, 'operacion'));
@@ -110,9 +110,11 @@ export const Sidebar = (deps = {}) => {
   applyTheme(getState().theme);
   const unsub = subscribe('theme', applyTheme);
   const unPendingBadge = bindPendingNoveltyBadge(container, deps);
+  const unFreeSupernumerariosBadge = bindFreeSupernumerariosBadge(container, deps);
   container._cleanup = () => {
     unsub?.();
     unPendingBadge?.();
+    unFreeSupernumerariosBadge?.();
   };
 
   return container;
@@ -174,9 +176,9 @@ function navLink(text, to, options = {}) {
       textNode,
       el('span', {
         id: options.badgeId,
-        className: 'sidebar__nav-badge',
-        hidden: true,
-        'aria-label': '0 novedades pendientes'
+        className: `sidebar__nav-badge${options.badgeClassName ? ` ${options.badgeClassName}` : ''}`,
+        hidden: options.badgeAlwaysVisible ? false : true,
+        'aria-label': options.badgeAriaLabel || '0 novedades pendientes'
       }, ['0'])
     ])
     : textNode;
@@ -306,6 +308,129 @@ function bindPendingNoveltyBadge(container, deps = {}) {
     if (refreshTimer) clearTimeout(refreshTimer);
     unsubs.forEach((un) => un?.());
   };
+}
+
+function bindFreeSupernumerariosBadge(container, deps = {}) {
+  const badge = qs('#sidebarSupernumerariosFreeBadge', container);
+  if (!badge) return () => {};
+  badge.hidden = false;
+  badge.textContent = '0';
+  if (typeof deps.streamSupernumerarios !== 'function') return () => {};
+
+  let active = true;
+  let refreshTimer = null;
+  const unsubs = [];
+  let supernumerarios = [];
+  let incapacitados = [];
+  let occupancyRows = [];
+
+  const setCount = (count) => {
+    if (!active) return;
+    const value = Math.max(0, Number(count || 0));
+    badge.hidden = false;
+    badge.classList.toggle('sidebar__nav-badge--ok', value > 0);
+    badge.textContent = value > 99 ? '99+' : String(value);
+    const label = `${value} supernumerario${value === 1 ? '' : 's'} libre${value === 1 ? '' : 's'} hoy`;
+    badge.setAttribute('aria-label', label);
+    const link = badge.closest('.sidebar__nav-link');
+    if (link) {
+      link.title = value > 0 ? `Supernumerarios - ${label}` : 'Supernumerarios';
+      link.setAttribute('aria-label', link.title);
+    }
+  };
+
+  const refreshCount = () => {
+    const day = todayBogota();
+    const incapKeys = supernumerarioIncapacityKeys(incapacitados);
+    const occupiedKeys = supernumerarioOccupancyKeys(occupancyRows);
+    const free = (supernumerarios || []).filter((row) => {
+      if (!isAvailableSupernumerarioForBadge(row, day)) return false;
+      const keys = supernumerarioPersonKeys(row);
+      if (keys.some((key) => incapKeys.has(key))) return false;
+      if (keys.some((key) => occupiedKeys.has(key))) return false;
+      return true;
+    }).length;
+    setCount(free);
+  };
+
+  const refreshOccupancy = async () => {
+    const day = todayBogota();
+    try {
+      if (typeof deps.listSupernumerarioReplacementOccupancy === 'function') {
+        occupancyRows = await deps.listSupernumerarioReplacementOccupancy(day) || [];
+      } else if (typeof deps.listImportReplacementsRange === 'function') {
+        occupancyRows = (await deps.listImportReplacementsRange(day, day) || [])
+          .filter((row) => String(row?.decision || '').trim() === 'reemplazo');
+      }
+      refreshCount();
+    } catch (error) {
+      console.warn('No se pudo actualizar la burbuja de supernumerarios libres:', error);
+      occupancyRows = [];
+      refreshCount();
+    }
+  };
+
+  const scheduleRefresh = () => {
+    if (refreshTimer) clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(refreshOccupancy, 250);
+  };
+
+  unsubs.push(deps.streamSupernumerarios((rows) => {
+    supernumerarios = rows || [];
+    refreshCount();
+  }));
+  if (typeof deps.streamIncapacitadosByDate === 'function') {
+    unsubs.push(deps.streamIncapacitadosByDate(todayBogota(), (rows) => {
+      incapacitados = rows || [];
+      refreshCount();
+    }));
+  }
+  if (typeof deps.streamImportReplacementsByDate === 'function') {
+    unsubs.push(deps.streamImportReplacementsByDate(todayBogota(), scheduleRefresh, scheduleRefresh));
+  }
+  refreshOccupancy();
+
+  return () => {
+    active = false;
+    if (refreshTimer) clearTimeout(refreshTimer);
+    unsubs.forEach((un) => un?.());
+  };
+}
+
+function isAvailableSupernumerarioForBadge(row = {}, day = '') {
+  const estado = String(row?.estado || 'activo').trim().toLowerCase();
+  if (estado === 'inactivo' || estado === 'eliminado') return false;
+  return isPersonActiveForBadgeDate(row, day);
+}
+
+function supernumerarioPersonKeys(row = {}) {
+  return [
+    String(row?.id || row?.employeeId || '').trim() ? `id:${String(row?.id || row?.employeeId || '').trim()}` : '',
+    String(row?.documento || '').trim() ? `doc:${String(row?.documento || '').trim()}` : ''
+  ].filter(Boolean);
+}
+
+function supernumerarioIncapacityKeys(rows = []) {
+  const keys = new Set();
+  (rows || []).forEach((row) => {
+    const id = String(row?.employeeId || '').trim();
+    const doc = String(row?.documento || '').trim();
+    if (id) keys.add(`id:${id}`);
+    if (doc) keys.add(`doc:${doc}`);
+  });
+  return keys;
+}
+
+function supernumerarioOccupancyKeys(rows = []) {
+  const keys = new Set();
+  (rows || []).forEach((row) => {
+    if (String(row?.decision || 'reemplazo').trim() !== 'reemplazo') return;
+    const id = String(row?.supernumerarioId || '').trim();
+    const doc = String(row?.supernumerarioDocumento || '').trim();
+    if (id) keys.add(`id:${id}`);
+    if (doc) keys.add(`doc:${doc}`);
+  });
+  return keys;
 }
 
 function isPendingManagedNovelty(row = {}) {

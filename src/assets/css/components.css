@@ -398,6 +398,10 @@
   line-height:1;
   box-shadow:0 8px 16px rgba(220,38,38,.24)
 }
+.sidebar__nav-badge--ok{
+  background:#16a34a;
+  box-shadow:0 8px 16px rgba(22,163,74,.24)
+}
 .sidebar__nav-badge[hidden]{display:none}
 .sidebar[data-collapsed="true"] .sidebar__section-title{display:none}
 .sidebar[data-collapsed="true"] .sidebar__section-toggle{display:none}
@@ -703,6 +707,8 @@
 
 .badge{display:inline-block;padding:.18rem .58rem;border-radius:999px;border:1px solid var(--color-border);font-size:.75rem}
 .badge--ok{color:#187a46;border-color:#187a4633;background:#187a4612}
+.badge--busy{color:#1d4ed8;border-color:#1d4ed833;background:#1d4ed812}
+.badge--warn{color:#b7791f;border-color:#b7791f33;background:#b7791f14}
 .badge--off{color:#c43d34;border-color:#c43d3433;background:#c43d3412}
 .text-success{color:#187a46}
 .text-danger{color:#c43d34}

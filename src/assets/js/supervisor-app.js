@@ -711,7 +711,7 @@ function bottomNav(summary = {}, counts = {}) {
     { key: 'home', label: 'Inicio', fullLabel: 'Inicio', badge: summary.pending, tone: 'warn', hideZero: true, badgeLabel: 'pendientes' },
     { key: 'registry', label: 'Registros', fullLabel: 'Registros' },
     { key: 'novelties', label: 'Novedades', fullLabel: 'Novedades', badge: summary.noveltyPending, tone: 'danger', hideZero: true, badgeLabel: 'novedades pendientes de gestionar' },
-    { key: 'supernumerarios', label: 'Supernum.', fullLabel: 'Supernumerarios', badge: counts.availableSupernumerarios, tone: 'ok', hideZero: false, badgeLabel: 'supernumerarios libres' }
+    { key: 'supernumerarios', label: 'Supernum.', fullLabel: 'Supernumerarios', badge: counts.availableSupernumerarios, tone: counts.availableSupernumerarios > 0 ? 'ok' : 'danger', hideZero: false, badgeLabel: 'supernumerarios libres' }
   ];
   return el('nav', { className: 'supervisor-bottom-nav', 'aria-label': 'Navegacion supervisores' }, items.map((item) => navButton(item)));
 }
