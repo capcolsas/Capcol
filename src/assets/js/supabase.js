@@ -4767,6 +4767,20 @@ function supervisorRegistryHasNovelty(row = {}) {
   return !['sin registro', 'trabajando', 'trabajado reemplazo', 'compensatorio', 'ok'].includes(state);
 }
 
+function mapSupervisorIncapacityRow(row = {}) {
+  const mapped = row?.fechaInicio ? row : mapIncapacidadRow(row);
+  return {
+    id: mapped.id || null,
+    employeeId: mapped.employeeId || null,
+    documento: mapped.documento || null,
+    nombre: mapped.nombre || null,
+    fechaInicio: mapped.fechaInicio || null,
+    fechaFin: mapped.fechaFin || null,
+    estado: mapped.estado || 'activo',
+    soporteCargado: Boolean(mapped.soporteUrl || mapped.soporteNombre || mapped.soporteStoragePath || mapped.soporteCargado)
+  };
+}
+
 export async function listSupervisorDailyRegistry(fecha, zoneCodes = []) {
   const day = String(fecha || '').trim();
   const zones = normalizeZoneCodeList(zoneCodes);
@@ -4871,7 +4885,7 @@ export async function listSupervisorDailyRegistry(fecha, zoneCodes = []) {
     });
 
   const scopedIncapacities = (incapacityRows || [])
-    .map(mapIncapacidadRow)
+    .map(mapSupervisorIncapacityRow)
     .filter((row) => {
       const employeeId = String(row.employeeId || '').trim();
       const documento = String(row.documento || '').trim();
@@ -4885,7 +4899,7 @@ export async function listSupervisorDailyRegistry(fecha, zoneCodes = []) {
         });
     });
   const incapacitiesById = new Map();
-  [...scopedIncapacities, ...(supernumerarioIncapacityRows || [])].forEach((row) => {
+  [...scopedIncapacities, ...((supernumerarioIncapacityRows || []).map(mapSupervisorIncapacityRow))].forEach((row) => {
     const key = String(row?.id || '').trim()
       || [
         String(row?.employeeId || '').trim(),
