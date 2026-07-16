@@ -4,7 +4,7 @@ import { el, qs } from './utils/dom.js';
 
 const root = document.getElementById('employee-root');
 const SESSION_STORAGE_KEY = 'employee_portal_token';
-const EMPLOYEE_CERTIFICATES_VISIBLE = false;
+const EMPLOYEE_CERTIFICATES_VISIBLE = true;
 const REQUEST_TIMEOUT_MS = 20000;
 
 function apiUrl(path) {
