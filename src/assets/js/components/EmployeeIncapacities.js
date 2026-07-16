@@ -66,7 +66,7 @@ export function EmployeeIncapacities(mount, { apiRequest, session } = {}) {
     loading = true;
     setBusy(true);
     setMessage('Consultando incapacidades...', 'ok');
-    renderRows();
+    renderRows({ busy: true });
 
     try {
       const data = await apiRequest(`/api/employee-incapacities?dateFrom=${encodeURIComponent(dateFrom)}&dateTo=${encodeURIComponent(dateTo)}`, { method: 'GET' });
@@ -87,8 +87,8 @@ export function EmployeeIncapacities(mount, { apiRequest, session } = {}) {
     }
   }
 
-  function renderRows() {
-    if (loading) {
+  function renderRows({ busy = loading } = {}) {
+    if (busy) {
       list.replaceChildren(
         el('div', { className: 'employee-incapacity-empty' }, ['Cargando...'])
       );
@@ -102,7 +102,15 @@ export function EmployeeIncapacities(mount, { apiRequest, session } = {}) {
       return;
     }
 
-    list.replaceChildren(...rows.map(renderIncapacityCard));
+    try {
+      const cards = rows.map(renderIncapacityCard);
+      list.replaceChildren(...cards);
+    } catch (error) {
+      console.error('No se pudieron renderizar las incapacidades del portal:', error);
+      list.replaceChildren(
+        el('div', { className: 'employee-incapacity-empty' }, ['No fue posible mostrar las incapacidades. Actualiza e intenta nuevamente.'])
+      );
+    }
   }
 
   function renderIncapacityCard(row) {

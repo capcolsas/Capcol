@@ -1,4 +1,4 @@
-import { EmployeeIncapacities } from './components/EmployeeIncapacities.js';
+import { EmployeeIncapacities } from './components/EmployeeIncapacities.js?v=20260715-render-fix';
 import { EMPLOYEE_PORTAL_API_BASE } from './config.js';
 import { el, qs } from './utils/dom.js';
 
