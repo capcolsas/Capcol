@@ -72,11 +72,9 @@ export function EmployeeIncapacities(mount, { apiRequest, session } = {}) {
       const data = await apiRequest(`/api/employee-incapacities?dateFrom=${encodeURIComponent(dateFrom)}&dateTo=${encodeURIComponent(dateTo)}`, { method: 'GET' });
       rows = Array.isArray(data?.rows) ? data.rows : [];
       setMessage(`${rows.length} incapacidad(es) en el rango seleccionado.`, rows.length ? 'ok' : '');
-      renderRows();
     } catch (error) {
       rows = [];
       setMessage(error?.message || 'No fue posible consultar tus incapacidades.', 'error');
-      renderRows();
       if (error?.redirectMain) {
         window.setTimeout(() => {
           window.location.href = 'access.html';
@@ -85,6 +83,7 @@ export function EmployeeIncapacities(mount, { apiRequest, session } = {}) {
     } finally {
       loading = false;
       setBusy(false);
+      renderRows();
     }
   }
 
