@@ -21,8 +21,8 @@ export function EmployeeIncapacities(mount, { apiRequest, session } = {}) {
   const ui = employeeIncapacityCard([
     el('div', { className: 'employee-incapacity-header' }, [
       el('div', {}, [
-        el('p', { className: 'employee-card__kicker' }, ['Incapacidades']),
-        el('p', { className: 'text-muted' }, ['Consulta tus incapacidades reportadas por WhatsApp y adjunta el soporte cuando haga falta.'])
+        el('p', { className: 'employee-card__kicker employee-incapacity-title' }, ['Incapacidades']),
+        el('p', { className: 'text-muted' }, ['Adjunta el soporte de las incapacidades'])
       ]),
       el('button', { id: 'empIncRefresh', className: 'btn', type: 'button' }, ['Actualizar'])
     ]),

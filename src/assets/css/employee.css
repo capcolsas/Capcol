@@ -416,6 +416,11 @@
   line-height:1.45;
 }
 
+.employee-incapacity-title{
+  font-size:1.12rem;
+  line-height:1.2;
+}
+
 .employee-incapacity-filters{
   display:grid;
   grid-template-columns:repeat(2, minmax(0, 180px)) auto;
