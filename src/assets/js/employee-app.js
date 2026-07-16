@@ -5,6 +5,7 @@ import { el, qs } from './utils/dom.js';
 const root = document.getElementById('employee-root');
 const SESSION_STORAGE_KEY = 'employee_portal_token';
 const EMPLOYEE_CERTIFICATES_VISIBLE = false;
+const REQUEST_TIMEOUT_MS = 20000;
 
 function apiUrl(path) {
   const base = String(EMPLOYEE_PORTAL_API_BASE || '').trim().replace(/\/+$/, '');
@@ -28,7 +29,7 @@ function setSessionToken(token) {
 
 async function request(path, options = {}) {
   const token = getSessionToken();
-  const response = await fetch(apiUrl(path), {
+  const response = await fetchWithTimeout(apiUrl(path), {
     headers: {
       'Content-Type': 'application/json',
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -56,7 +57,7 @@ async function request(path, options = {}) {
 
 async function requestBlob(path, options = {}) {
   const token = getSessionToken();
-  const response = await fetch(apiUrl(path), {
+  const response = await fetchWithTimeout(apiUrl(path), {
     headers: {
       'Content-Type': 'application/json',
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -82,6 +83,24 @@ async function requestBlob(path, options = {}) {
   const disposition = String(response.headers.get('content-disposition') || '');
   const filename = disposition.match(/filename="([^"]+)"/)?.[1] || 'certificado-laboral.pdf';
   return { blob, filename };
+}
+
+async function fetchWithTimeout(url, options = {}) {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: options.signal || controller.signal
+    });
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error('La consulta esta tardando demasiado. Intenta de nuevo en unos segundos.');
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timer);
+  }
 }
 
 function downloadBlob(blob, filename) {
