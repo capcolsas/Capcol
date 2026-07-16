@@ -22,11 +22,12 @@ export function EmployeeIncapacities(mount, { apiRequest, session } = {}) {
     el('div', { className: 'employee-incapacity-header' }, [
       el('div', {}, [
         el('p', { className: 'employee-card__kicker' }, ['Incapacidades']),
-        el('h2', {}, ['Soportes registrados']),
         el('p', { className: 'text-muted' }, ['Consulta tus incapacidades reportadas por WhatsApp y adjunta el soporte cuando haga falta.'])
       ]),
       el('button', { id: 'empIncRefresh', className: 'btn', type: 'button' }, ['Actualizar'])
     ]),
+    msg,
+    list,
     el('div', { className: 'employee-incapacity-filters' }, [
       el('div', {}, [
         el('label', { className: 'label', htmlFor: 'empIncFrom' }, ['Desde']),
@@ -37,9 +38,7 @@ export function EmployeeIncapacities(mount, { apiRequest, session } = {}) {
         el('input', { id: 'empIncTo', className: 'input', type: 'date', value: today, max: today })
       ]),
       el('button', { id: 'empIncSearch', className: 'btn btn--primary', type: 'button' }, ['Buscar'])
-    ]),
-    msg,
-    list
+    ])
   ]);
 
   mount.replaceChildren(ui);
@@ -130,7 +129,7 @@ export function EmployeeIncapacities(mount, { apiRequest, session } = {}) {
       }, ['Ver soporte']));
     }
 
-    return el('article', { className: 'employee-incapacity-item' }, [
+    return el('article', { className: `employee-incapacity-item ${hasSupport ? 'has-support' : 'missing-support'}` }, [
       el('div', { className: 'employee-incapacity-item__main' }, [
         el('div', {}, [
           el('p', { className: 'employee-incapacity-item__type' }, [row?.source || 'Incapacidad']),

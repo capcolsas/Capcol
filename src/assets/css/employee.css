@@ -295,6 +295,11 @@
   align-items:center;
 }
 
+.employee-dashboard-stack{
+  display:grid;
+  gap:1rem;
+}
+
 .employee-session-copy{
   min-width:0;
 }
@@ -416,6 +421,8 @@
   grid-template-columns:repeat(2, minmax(0, 180px)) auto;
   gap:.65rem;
   align-items:end;
+  padding-top:.9rem;
+  border-top:1px solid color-mix(in srgb,var(--color-primary) 10%, var(--color-border));
 }
 
 .employee-incapacity-filters .input{
@@ -450,12 +457,31 @@
 }
 
 .employee-incapacity-item{
+  --support-accent:var(--color-primary);
+  --support-bg:rgba(248,251,253,.92);
+  --support-detail-bg:color-mix(in srgb,var(--color-primary) 5%, rgba(255,255,255,.8));
+  --support-detail-border:color-mix(in srgb,var(--color-primary) 10%, var(--color-border));
   display:grid;
   gap:.72rem;
   padding:.9rem;
-  border:1px solid color-mix(in srgb,var(--color-primary) 12%, var(--color-border));
+  border:1px solid color-mix(in srgb,var(--support-accent) 24%, var(--color-border));
+  border-left:6px solid var(--support-accent);
   border-radius:8px;
-  background:linear-gradient(180deg,rgba(255,255,255,.92),rgba(248,251,253,.92));
+  background:linear-gradient(180deg,rgba(255,255,255,.96),var(--support-bg));
+}
+
+.employee-incapacity-item.has-support{
+  --support-accent:#15803d;
+  --support-bg:#f0fdf4;
+  --support-detail-bg:rgba(240,253,244,.82);
+  --support-detail-border:rgba(21,128,61,.18);
+}
+
+.employee-incapacity-item.missing-support{
+  --support-accent:#b91c1c;
+  --support-bg:#fef2f2;
+  --support-detail-bg:rgba(254,242,242,.82);
+  --support-detail-border:rgba(185,28,28,.18);
 }
 
 .employee-incapacity-item__main{
@@ -473,7 +499,7 @@
 
 .employee-incapacity-item__type{
   margin:0;
-  color:var(--color-primary-600);
+  color:var(--support-accent);
   font-size:.74rem;
   font-weight:800;
   letter-spacing:.08em;
@@ -491,8 +517,8 @@
   min-width:0;
   padding:.55rem .65rem;
   border-radius:8px;
-  background:color-mix(in srgb,var(--color-primary) 5%, rgba(255,255,255,.8));
-  border:1px solid color-mix(in srgb,var(--color-primary) 10%, var(--color-border));
+  background:var(--support-detail-bg);
+  border:1px solid var(--support-detail-border);
 }
 
 .employee-incapacity-details dt{
