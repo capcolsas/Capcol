@@ -297,7 +297,7 @@ function bindPendingNoveltyBadge(container, deps = {}) {
     unsubs.push(deps.streamSedes((rows) => { sedes = rows || []; scheduleRefresh(); }));
   }
   if (typeof deps.streamSupernumerarios === 'function') {
-    unsubs.push(deps.streamSupernumerarios((rows) => { supernumerarios = rows || []; scheduleRefresh(); }));
+    unsubs.push(deps.streamSupernumerarios((rows) => { supernumerarios = rows || []; scheduleRefresh(); }, todayBogota()));
   }
   if (typeof deps.streamNovedades === 'function') {
     unsubs.push(deps.streamNovedades((rows) => { novedades = rows || []; scheduleRefresh(); }));
@@ -378,7 +378,7 @@ function bindFreeSupernumerariosBadge(container, deps = {}) {
   unsubs.push(deps.streamSupernumerarios((rows) => {
     supernumerarios = rows || [];
     refreshCount();
-  }));
+  }, todayBogota()));
   if (typeof deps.streamIncapacitadosByDate === 'function') {
     unsubs.push(deps.streamIncapacitadosByDate(todayBogota(), (rows) => {
       incapacitados = rows || [];
@@ -399,7 +399,7 @@ function bindFreeSupernumerariosBadge(container, deps = {}) {
 
 function isAvailableSupernumerarioForBadge(row = {}, day = '') {
   const estado = String(row?.estado || 'activo').trim().toLowerCase();
-  if (estado === 'inactivo' || estado === 'eliminado') return false;
+  if (estado === 'eliminado') return false;
   return isPersonActiveForBadgeDate(row, day);
 }
 

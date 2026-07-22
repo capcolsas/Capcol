@@ -237,6 +237,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
 
   function classifyRow(row) {
     if (isSupernumerarioAttendance(row)) return 'super_replacement';
+    if (activeIncapacityForRow(row)) return 'replace_yes';
     const raw = String(row.novedadNombre || row.novedad || '').trim();
     const code = attendanceNovedadCode(row);
     if ((!raw && !code) || code === '1' || raw === '1') return row.asistio ? 'replace_no' : 'none';
@@ -315,24 +316,33 @@ export const WhatsAppLive = (mount, deps = {}) => {
   }
 
   function incapacidadRangeForRow(row) {
-    const directStart = normalizeIsoDate(row?.incapacidadInicio);
-    const directEnd = normalizeIsoDate(row?.incapacidadFin);
-    if (directStart && directEnd && directEnd >= directStart) {
-      return { start: directStart, end: directEnd };
-    }
-    const doc = String(row?.documento || '').trim();
-    const active = (incapacitados || []).find((item) => {
-      if (String(item?.documento || '').trim() !== doc) return false;
-      const start = normalizeIsoDate(item?.fechaInicio);
-      const end = normalizeIsoDate(item?.fechaFin);
-      return Boolean(start && end && String(row?.fecha || '').trim() >= start && String(row?.fecha || '').trim() <= end);
-    });
+    const active = activeIncapacityForRow(row);
     if (active) {
       const start = normalizeIsoDate(active.fechaInicio);
       const end = normalizeIsoDate(active.fechaFin);
       if (start && end && end >= start) return { start, end };
     }
+    const directStart = normalizeIsoDate(row?.incapacidadInicio);
+    const directEnd = normalizeIsoDate(row?.incapacidadFin);
+    if (directStart && directEnd && directEnd >= directStart) {
+      return { start: directStart, end: directEnd };
+    }
     return null;
+  }
+
+  function activeIncapacityForRow(row = {}) {
+    const rowDate = String(row?.fecha || '').trim() || today;
+    const doc = String(row?.documento || '').trim();
+    const employeeId = String(row?.empleadoId || row?.employeeId || '').trim();
+    return (incapacitados || []).find((item) => {
+      const itemDoc = String(item?.documento || '').trim();
+      const itemEmployeeId = String(item?.employeeId || '').trim();
+      const samePerson = (doc && itemDoc === doc) || (employeeId && itemEmployeeId === employeeId);
+      if (!samePerson) return false;
+      const start = normalizeIsoDate(item?.fechaInicio);
+      const end = normalizeIsoDate(item?.fechaFin);
+      return Boolean(start && end && rowDate >= start && rowDate <= end);
+    }) || null;
   }
 
   function incapacidadDaysForRow(row) {
@@ -422,6 +432,8 @@ export const WhatsAppLive = (mount, deps = {}) => {
   }
 
   function displayNovedad(row) {
+    const activeIncapacity = activeIncapacityForRow(row);
+    if (activeIncapacity) return incapacityLabel(activeIncapacity);
     const baseRaw = String(row.novedadNombre || row.novedad || '').trim();
     const code = attendanceNovedadCode(row);
     const raw = baseRaw || code;
@@ -438,8 +450,15 @@ export const WhatsAppLive = (mount, deps = {}) => {
     return `${nov.nombre}${daysLabel}`;
   }
 
+  function incapacityLabel(row = {}) {
+    const source = String(row?.source || '').replace(/_/g, ' ').trim();
+    if (!source) return 'INCAPACIDAD';
+    return source.replace(/\b\w/g, (letter) => letter.toUpperCase());
+  }
+
   function optionsForRow(row) {
-    const active = (supernumerarios || []).filter((s) => String(s.estado || 'activo') !== 'inactivo');
+    const rowDate = String(row?.fecha || '').trim() || today;
+    const active = (supernumerarios || []).filter((s) => isPersonActiveForDate(s, rowDate));
     const sameSede = active.filter((s) => String(s.sedeCodigo || '').trim() === String(row.sedeCodigo || '').trim());
     const list = sameSede.length ? sameSede : active;
     const used = usedReplacementDocsForDate(row.fecha, row.empleadoId);
@@ -693,7 +712,6 @@ export const WhatsAppLive = (mount, deps = {}) => {
     const pendingRows = [];
     const seen = new Set();
     (employees || []).forEach((emp) => {
-      if (String(emp?.estado || '').trim().toLowerCase() !== 'activo') return;
       if (isSupernumerarioEmployee(emp, supernumerarios)) return;
       if (!isEmployeeExpectedForDate(emp, today, sedes)) return;
       const employeeId = String(emp?.id || '').trim();
@@ -877,7 +895,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
         const opts = canAssign ? optionsForRow(r) : [];
         const isSuperRow = rowClass === 'super_replacement';
         const isReportOnly = !isSuperRow && rowClass === 'replace_yes' && !rowHasScheduledService(r);
-        const baseNovedadText = String(r.novedadNombre || displayNovedad(r) || '-').trim() || '-';
+        const baseNovedadText = String(displayNovedad(r) || r.novedadNombre || '-').trim() || '-';
         const novedadText = isSuperRow
           ? `${baseNovedadText} · SUPERNUMERARIO`
           : isReportOnly
@@ -1147,7 +1165,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
     const operationalDayRows = dayRows.filter((row) => rowHasScheduledService(row));
     const activeSedes = (sedes || []).filter((s) => String(s?.estado || 'activo').trim().toLowerCase() !== 'inactivo');
     const expectedLocal = (employees || []).filter((e) => {
-      if (String(e?.estado || '').trim().toLowerCase() !== 'activo') return false;
+      if (!isPersonActiveForDate(e, today)) return false;
       const sedeCodigo = String(e?.sedeCodigo || '').trim();
       const sede = activeSedes.find((row) => String(row?.codigo || '').trim() === sedeCodigo) || null;
       if (!isSedeScheduledForDate(sede, today)) return false;
@@ -1402,7 +1420,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
     unSupernumerarios = deps.streamSupernumerarios((rows) => {
       supernumerarios = rows || [];
       render();
-    });
+    }, today);
   }
   if (deps.streamNovedades) {
     unNovedades = deps.streamNovedades((rows) => {
@@ -1425,6 +1443,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
   if (deps.streamIncapacitadosByDate) {
     unIncapacitados = deps.streamIncapacitadosByDate(today, (rows) => {
       incapacitados = rows || [];
+      refreshEmployeeDailyStatusSnapshot({ silent: true }).catch(() => {});
       render();
     });
   }
@@ -1584,10 +1603,11 @@ function isSupernumerarioEmployee(emp, supernumerariosRows = []) {
 function isPersonActiveForDate(person, selectedDate) {
   if (!selectedDate) return false;
   const estado = String(person?.estado || '').trim().toLowerCase();
-  if (estado === 'inactivo') return false;
+  if (estado === 'eliminado') return false;
   const ingreso = toISODate(person?.fechaIngreso);
   if (!ingreso || ingreso > selectedDate) return false;
   const retiro = toISODate(person?.fechaRetiro);
+  if (estado === 'inactivo') return Boolean(retiro && retiro >= selectedDate);
   if (retiro && retiro < selectedDate) return false;
   return true;
 }

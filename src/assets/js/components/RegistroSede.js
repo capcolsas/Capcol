@@ -192,7 +192,7 @@ export const RegistroSede = (mount, deps = {}) => {
         loadSedesSnapshot(),
         loadNovedadesSnapshot(),
         loadEmployeesSnapshot(),
-        loadSupernumerariosSnapshot(),
+        loadSupernumerariosSnapshot(date),
         deps.isOperationDayClosed?.(date) || false
       ]);
       novedadRules = buildNovedadReplacementRules(novedades || []);
@@ -566,9 +566,9 @@ export const RegistroSede = (mount, deps = {}) => {
     return snapshotOnce(deps.streamEmployees);
   }
 
-  async function loadSupernumerariosSnapshot() {
+  async function loadSupernumerariosSnapshot(date = todayBogota()) {
     if (typeof deps.streamSupernumerarios !== 'function') return [];
-    return snapshotOnce(deps.streamSupernumerarios);
+    return snapshotOnce((onData) => deps.streamSupernumerarios(onData, date));
   }
 
   function refreshZoneFilterOptions() {
