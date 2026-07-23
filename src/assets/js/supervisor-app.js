@@ -139,9 +139,23 @@ async function loadSupervisorSupernumerarios() {
 
 function setSupervisorSupernumerarios(rows = []) {
   supernumerarios = (rows || [])
-    .filter((row) => String(row?.estado || 'activo').trim().toLowerCase() !== 'inactivo')
+    .filter((row) => isSupernumerarioEffectiveForDate(row, selectedDate, { allowMissingIngreso: true }))
     .sort((a, b) => String(a.nombre || '').localeCompare(String(b.nombre || '')));
   if (currentUser && currentProfile) renderApp();
+}
+
+function isSupernumerarioEffectiveForDate(row = {}, day = '', options = {}) {
+  const selected = normalizeIsoDate(day);
+  if (!selected) return false;
+  const estado = String(row?.estado || 'activo').trim().toLowerCase();
+  if (estado === 'eliminado') return false;
+  const ingreso = normalizeIsoDate(row?.fechaIngreso);
+  if (ingreso && ingreso > selected) return false;
+  if (!ingreso && options?.allowMissingIngreso !== true) return false;
+  const retiro = normalizeIsoDate(row?.fechaRetiro);
+  if (estado === 'inactivo') return Boolean(retiro && retiro >= selected);
+  if (retiro && retiro < selected) return false;
+  return true;
 }
 
 function canUseSupervisorApp(profile = {}) {

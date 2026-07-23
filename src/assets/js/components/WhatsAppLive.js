@@ -265,7 +265,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
     const doc = String(row?.documento || '').trim();
     if (!doc) return false;
     return (supernumerarios || []).some((s) => {
-      if (!isPersonActiveForDate(s, String(row?.fecha || '').trim() || today)) return false;
+      if (!isPersonActiveForDate(s, String(row?.fecha || '').trim() || today, { allowMissingIngreso: true })) return false;
       return String(s?.documento || '').trim() === doc;
     });
   }
@@ -458,7 +458,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
 
   function optionsForRow(row) {
     const rowDate = String(row?.fecha || '').trim() || today;
-    const active = (supernumerarios || []).filter((s) => isPersonActiveForDate(s, rowDate));
+    const active = (supernumerarios || []).filter((s) => isPersonActiveForDate(s, rowDate, { allowMissingIngreso: true }));
     const sameSede = active.filter((s) => String(s.sedeCodigo || '').trim() === String(row.sedeCodigo || '').trim());
     const list = sameSede.length ? sameSede : active;
     const used = usedReplacementDocsForDate(row.fecha, row.empleadoId);
@@ -683,10 +683,12 @@ export const WhatsAppLive = (mount, deps = {}) => {
   }
 
   function infoButtonForRow(row) {
-    const btn = el('button', { className: 'btn', type: 'button', title: 'Ver informacion del empleado', 'aria-label': 'Ver informacion del empleado' }, ['ⓘ']);
+    const isSuper = row?.isSupernumerario === true || String(row?.tipoPersonal || '').trim() === 'supernumerario';
+    const target = isSuper ? 'supernumerario' : 'empleado';
+    const btn = el('button', { className: 'btn', type: 'button', title: `Ver informacion del ${target}`, 'aria-label': `Ver informacion del ${target}` }, ['ⓘ']);
     btn.addEventListener('click', () => {
       const info = employeeInfoSnapshot(row);
-      showInfoModal('Informacion del empleado', [
+      showInfoModal(`Informacion del ${target}`, [
         `Cedula: ${info.documento}`,
         `Nombre: ${info.nombre}`,
         `Telefono: ${info.telefono}`,
@@ -699,14 +701,17 @@ export const WhatsAppLive = (mount, deps = {}) => {
   }
 
   function pendingEmployeesForToday() {
-    const registeredKeys = new Set();
+    const registeredEmployeeKeys = new Set();
+    const registeredPersonKeys = new Set();
     (statsAttendance || []).forEach((row) => {
       if (String(row?.fecha || '').trim() !== today) return;
-      if (isSupernumerarioAttendance(row)) return;
       const employeeId = String(row?.empleadoId || row?.employeeId || '').trim();
       const documento = String(row?.documento || '').trim();
-      if (employeeId) registeredKeys.add(`id:${employeeId}`);
-      if (documento) registeredKeys.add(`doc:${documento}`);
+      if (employeeId) registeredPersonKeys.add(`id:${employeeId}`);
+      if (documento) registeredPersonKeys.add(`doc:${documento}`);
+      if (isSupernumerarioAttendance(row)) return;
+      if (employeeId) registeredEmployeeKeys.add(`id:${employeeId}`);
+      if (documento) registeredEmployeeKeys.add(`doc:${documento}`);
     });
 
     const pendingRows = [];
@@ -716,7 +721,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
       if (!isEmployeeExpectedForDate(emp, today, sedes)) return;
       const employeeId = String(emp?.id || '').trim();
       const documento = String(emp?.documento || '').trim();
-      if ((employeeId && registeredKeys.has(`id:${employeeId}`)) || (documento && registeredKeys.has(`doc:${documento}`))) return;
+      if ((employeeId && registeredEmployeeKeys.has(`id:${employeeId}`)) || (documento && registeredEmployeeKeys.has(`doc:${documento}`))) return;
       const uniqueKey = employeeId || documento;
       if (!uniqueKey || seen.has(uniqueKey)) return;
       seen.add(uniqueKey);
@@ -726,15 +731,55 @@ export const WhatsAppLive = (mount, deps = {}) => {
         nombre: String(emp?.nombre || '-').trim() || '-',
         telefono: String(emp?.telefono || '-').trim() || '-',
         sedeCodigo: String(emp?.sedeCodigo || '').trim(),
-        sedeNombre: String(emp?.sedeNombre || '').trim()
+        sedeNombre: String(emp?.sedeNombre || '').trim(),
+        tipoPersonal: 'empleado'
       });
     });
 
+    (supernumerarios || []).forEach((sup) => {
+      if (!isPersonActiveForDate(sup, today, { allowMissingIngreso: true })) return;
+      const employeeId = String(sup?.id || sup?.employeeId || '').trim();
+      const documento = String(sup?.documento || '').trim();
+      if ((employeeId && registeredPersonKeys.has(`id:${employeeId}`)) || (documento && registeredPersonKeys.has(`doc:${documento}`))) return;
+      const uniqueKey = `super:${employeeId || documento}`;
+      if (!employeeId && !documento) return;
+      if (seen.has(uniqueKey)) return;
+      const pendingRow = {
+        empleadoId: employeeId || null,
+        employeeId: employeeId || null,
+        documento: documento || '-',
+        nombre: String(sup?.nombre || '-').trim() || '-',
+        telefono: String(sup?.telefono || '-').trim() || '-',
+        sedeCodigo: String(sup?.sedeCodigo || '').trim(),
+        sedeNombre: String(sup?.sedeNombre || '').trim(),
+        isSupernumerario: true,
+        tipoPersonal: 'supernumerario'
+      };
+      if (activeIncapacityForRow(pendingRow)) return;
+      seen.add(uniqueKey);
+      pendingRows.push(pendingRow);
+    });
+
     return pendingRows.sort((a, b) => {
+      const typeCmp = Number(a.isSupernumerario === true) - Number(b.isSupernumerario === true);
+      if (typeCmp !== 0) return typeCmp;
       const sedeCmp = sedeNameByCode(a.sedeCodigo, a.sedeNombre).localeCompare(sedeNameByCode(b.sedeCodigo, b.sedeNombre));
       if (sedeCmp !== 0) return sedeCmp;
       return String(a.nombre || '').localeCompare(String(b.nombre || ''));
     });
+  }
+
+  function pendingSummaryLabel(count) {
+    const total = Math.max(0, Number(count || 0));
+    return `${total} registro${total === 1 ? '' : 's'} pendiente${total === 1 ? '' : 's'}`;
+  }
+
+  function pendingRowStyle(row = {}) {
+    if (row?.isSupernumerario !== true) return {};
+    return {
+      style: 'color:#1d4ed8;font-weight:600;',
+      title: 'Supernumerario pendiente de registro'
+    };
   }
 
   async function refreshEmployeeDailyStatusSnapshot({ silent = true } = {}) {
@@ -1035,7 +1080,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
     qs('#waNoveltyPending', ui).textContent = String(stats.noveltyPending);
     pendingBody.replaceChildren(
       ...filteredPendingRows.map(({ row, info }) => {
-        return el('tr', {}, [
+        return el('tr', pendingRowStyle(row), [
           el('td', {}, [info.documento]),
           el('td', {}, [info.nombre]),
           el('td', {}, [info.telefono]),
@@ -1050,13 +1095,13 @@ export const WhatsAppLive = (mount, deps = {}) => {
       const totalPending = pendingEmployees.length;
       const visiblePending = filteredPendingRows.length;
       pendingSummary.textContent = pendingZone === 'all'
-        ? `${totalPending} empleado${totalPending === 1 ? '' : 's'} pendiente${totalPending === 1 ? '' : 's'}`
-        : `${visiblePending} de ${totalPending} empleado${totalPending === 1 ? '' : 's'} pendiente${totalPending === 1 ? '' : 's'}`;
+        ? pendingSummaryLabel(totalPending)
+        : `${pendingSummaryLabel(visiblePending)} de ${totalPending}`;
     }
     if (pendingEmpty) {
       pendingEmpty.textContent = pendingZone === 'all'
-        ? 'Todos los empleados esperados para hoy ya realizaron su registro.'
-        : 'No hay empleados pendientes para la zona seleccionada.';
+        ? 'Todos los registros esperados para hoy ya se realizaron.'
+        : 'No hay registros pendientes para la zona seleccionada.';
       pendingEmpty.style.display = filteredPendingRows.length ? 'none' : '';
     }
     if (pendingWrap) pendingWrap.style.display = filteredPendingRows.length ? '' : 'none';
@@ -1600,12 +1645,13 @@ function isSupernumerarioEmployee(emp, supernumerariosRows = []) {
   return (supernumerariosRows || []).some((s) => String(s?.id || '').trim() === id);
 }
 
-function isPersonActiveForDate(person, selectedDate) {
+function isPersonActiveForDate(person, selectedDate, options = {}) {
   if (!selectedDate) return false;
   const estado = String(person?.estado || '').trim().toLowerCase();
   if (estado === 'eliminado') return false;
   const ingreso = toISODate(person?.fechaIngreso);
-  if (!ingreso || ingreso > selectedDate) return false;
+  if (ingreso && ingreso > selectedDate) return false;
+  if (!ingreso && options?.allowMissingIngreso !== true) return false;
   const retiro = toISODate(person?.fechaRetiro);
   if (estado === 'inactivo') return Boolean(retiro && retiro >= selectedDate);
   if (retiro && retiro < selectedDate) return false;

@@ -229,7 +229,7 @@ export const RegistroSede = (mount, deps = {}) => {
       );
       const superDocs = new Set(
         (supernumerarios || [])
-          .filter((s) => isEmployeeExpectedForDate(s, date, activeScheduledSedes))
+          .filter((s) => isPersonActiveForDate(s, date, { allowMissingIngreso: true }))
           .map((s) => String(s.documento || '').trim())
           .filter(Boolean)
       );
@@ -692,6 +692,19 @@ function resolveAttendanceSedeCode(attendanceRow = {}, context = {}) {
   if (!sedeCode) return null;
   if (context?.activeSedeCodes?.size && !context.activeSedeCodes.has(sedeCode)) return null;
   return sedeCode;
+}
+
+function isPersonActiveForDate(person = {}, selectedDate = '', options = {}) {
+  if (!selectedDate) return false;
+  const estado = String(person?.estado || '').trim().toLowerCase();
+  if (estado === 'eliminado') return false;
+  const ingreso = toISODate(person?.fechaIngreso);
+  if (ingreso && ingreso > selectedDate) return false;
+  if (!ingreso && options?.allowMissingIngreso !== true) return false;
+  const retiro = toISODate(person?.fechaRetiro);
+  if (estado === 'inactivo') return Boolean(retiro && retiro >= selectedDate);
+  if (retiro && retiro < selectedDate) return false;
+  return true;
 }
 
 function isEmployeeExpectedForDate(emp, selectedDate, sedeRows = []) {
