@@ -18,30 +18,36 @@ export const CargueMasivoSedesAdmin=(mount,deps={})=>{
       el('div',{},[ el('label',{className:'label'},['Validas']), el('input',{id:'sumOk',className:'input',disabled:true}) ]),
       el('div',{},[ el('label',{className:'label'},['Errores']), el('input',{id:'sumErr',className:'input',disabled:true}) ])
     ]),
-    el('div',{className:'mt-2 table-wrap'},[
-      el('table',{className:'table',id:'tblPreview'},[
-        el('thead',{},[ el('tr',{},[
-          el('th',{},['Nombre sede']),
-          el('th',{},['Dependencia codigo']),
-          el('th',{},['Zona codigo']),
-          el('th',{},['Dependencia']),
-          el('th',{},['Zona']),
-          el('th',{},['Nro operarios']),
-          el('th',{},['Jornada']),
-          el('th',{},['QR']),
-          el('th',{},['Latitud QR']),
-          el('th',{},['Longitud QR']),
-          el('th',{},['Radio QR']),
-          el('th',{},['Estado'])
-        ]) ]),
-        el('tbody',{})
-      ])
+    el('div',{className:'responsive-records mt-2'},[
+      el('div',{className:'table-wrap responsive-table-view'},[
+        el('table',{className:'table',id:'tblPreview'},[
+          el('thead',{},[ el('tr',{},[
+            el('th',{},['Nombre sede']),
+            el('th',{},['Dependencia codigo']),
+            el('th',{},['Zona codigo']),
+            el('th',{},['Dependencia']),
+            el('th',{},['Zona']),
+            el('th',{},['Nro operarios']),
+            el('th',{},['Jornada']),
+            el('th',{},['QR']),
+            el('th',{},['Latitud QR']),
+            el('th',{},['Longitud QR']),
+            el('th',{},['Radio QR']),
+            el('th',{},['Estado'])
+          ]) ]),
+          el('tbody',{})
+        ])
+      ]),
+      el('div',{id:'bulkSedePreviewCards',className:'record-card-list'},[])
     ]),
-    el('div',{className:'mt-2 table-wrap'},[
-      el('table',{className:'table',id:'tblErrors'},[
-        el('thead',{},[ el('tr',{},[ el('th',{},['Fila']), el('th',{},['Error']) ]) ]),
-        el('tbody',{})
-      ])
+    el('div',{className:'responsive-records mt-2'},[
+      el('div',{className:'table-wrap responsive-table-view'},[
+        el('table',{className:'table',id:'tblErrors'},[
+          el('thead',{},[ el('tr',{},[ el('th',{},['Fila']), el('th',{},['Error']) ]) ]),
+          el('tbody',{})
+        ])
+      ]),
+      el('div',{id:'bulkSedeErrorCards',className:'record-card-list'},[])
     ])
   ]);
 
@@ -53,8 +59,10 @@ export const CargueMasivoSedesAdmin=(mount,deps={})=>{
   let validRows=[];
   let previewRows=[];
   let errorRows=[];
-  const previewPaginator=createTablePagination(ui,{id:'bulkSedesPreview',after:'#tblPreview',onChange:()=> renderPreview()});
-  const errorsPaginator=createTablePagination(ui,{id:'bulkSedesErrors',after:'#tblErrors',onChange:()=> renderErrors()});
+  const previewCards=qs('#bulkSedePreviewCards',ui);
+  const errorCards=qs('#bulkSedeErrorCards',ui);
+  const previewPaginator=createTablePagination(ui,{id:'bulkSedesPreview',after:'#bulkSedePreviewCards',onChange:()=> renderPreview()});
+  const errorsPaginator=createTablePagination(ui,{id:'bulkSedesErrors',after:'#bulkSedeErrorCards',onChange:()=> renderErrors()});
 
   const unSedes=deps.streamSedes?.((arr)=>{ sedes=arr||[]; });
   const unDeps=deps.streamDependencies?.((arr)=>{ depsList=arr||[]; });
@@ -133,6 +141,7 @@ export const CargueMasivoSedesAdmin=(mount,deps={})=>{
       el('td',{},[String(r.qrRadiusMeters??500)]),
       el('td',{},[r.ok? 'OK':'ERROR'])
     ])));
+    previewCards.replaceChildren(...(pageRows.length ? pageRows.map((r)=> previewCard(r)) : [el('p',{className:'text-muted record-card__empty'},['Sin filas para previsualizar.'])]));
   }
 
   function renderErrors(errors){
@@ -146,6 +155,48 @@ export const CargueMasivoSedesAdmin=(mount,deps={})=>{
       el('td',{},[String(err.row)]),
       el('td',{},[err.message||'Error'])
     ])));
+    errorCards.replaceChildren(...(pageRows.length ? pageRows.map((err)=> errorCard(err)) : [el('p',{className:'text-muted record-card__empty'},['Sin errores para mostrar.'])]));
+  }
+
+  function previewCard(row){
+    return el('article',{className:'record-card'},[
+      el('div',{className:'record-card__header'},[
+        el('div',{className:'record-card__identity'},[
+          el('strong',{className:'record-card__title'},[row.nombre||'-']),
+          el('span',{className:'record-card__subtitle'},[`Dependencia: ${row.dependenciaCodigo||'-'}`])
+        ]),
+        el('span',{className:`badge ${row.ok?'badge--ok':'badge--off'}`},[row.ok?'OK':'ERROR'])
+      ]),
+      el('dl',{className:'record-card__meta'},[
+        ['Dependencia',row.dependenciaNombre||row.dependenciaCodigo||'-'],
+        ['Zona',row.zonaNombre||row.zonaCodigo||'-'],
+        ['Operarios',String(row.numeroOperarios??'-')],
+        ['Jornada',row.jornada||'-'],
+        ['QR',row.qrEnabled===true?'Activo':'Inactivo'],
+        ['Ubicacion QR',`${formatOptionalNumber(row.qrLatitude)}, ${formatOptionalNumber(row.qrLongitude)} (${String(row.qrRadiusMeters??500)} m)`]
+      ].map(([label,value])=> el('div',{className:'record-card__meta-item'},[
+        el('dt',{},[label]),
+        el('dd',{},[value||'-'])
+      ])))
+    ]);
+  }
+
+  function errorCard(err){
+    return el('article',{className:'record-card'},[
+      el('div',{className:'record-card__header'},[
+        el('div',{className:'record-card__identity'},[
+          el('strong',{className:'record-card__title'},[`Fila ${String(err.row||'-')}`]),
+          el('span',{className:'record-card__subtitle'},['Validacion'])
+        ]),
+        el('span',{className:'badge badge--off'},['Error'])
+      ]),
+      el('dl',{className:'record-card__meta'},[
+        ['Detalle',err.message||'Error']
+      ].map(([label,value])=> el('div',{className:'record-card__meta-item'},[
+        el('dt',{},[label]),
+        el('dd',{},[value||'-'])
+      ])))
+    ]);
   }
 
   function validateRows(rows, sedesList, dependencies, zoneList){
