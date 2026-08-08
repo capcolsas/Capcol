@@ -185,7 +185,7 @@ for (let day = from; day <= to; day = addOneDay(day)) {
     summary.asistencias = actualRows.filter((row) => row?.asistio === true).length;
     summary.ausentismos = 0;
     summary.faltan = 0;
-    summary.sobran = actualRows.length;
+    summary.sobran = summary.asistencias;
   }
 
   const payload = {

@@ -31,8 +31,14 @@ Ejecutar en este orden desde el SQL Editor de Supabase:
 20. `supabase/schema_operations_phase17_employee_certificates.sql`
 21. `supabase/schema_operations_phase17_tablet_qr_role.sql`
 22. `supabase/schema_operations_phase18_supervisor_rls.sql`
-23. `supabase/schema_operations_phase21_admin_permission_rls.sql`
-24. `supabase/schema_operations_phase22_supernumerarios_by_date.sql`
+23. `supabase/schema_operations_phase19_supernumerario_occupancy.sql`
+24. `supabase/schema_operations_phase20_supernumerario_incapacities.sql`
+25. `supabase/schema_operations_phase21_admin_permission_rls.sql`
+26. `supabase/schema_operations_phase22_supernumerarios_by_date.sql`
+27. `supabase/schema_operations_phase22_report_performance_indexes.sql`
+28. `supabase/schema_operations_phase23_profile_role_protection.sql`
+29. `supabase/schema_operations_phase24_colombia_holiday_july9.sql`
+30. `supabase/schema_operations_phase25_employee_extended_info.sql`
 
 ## Que habilita cada bloque
 - `phase0` instala `pgcrypto` para `gen_random_uuid()`.
@@ -55,8 +61,14 @@ Ejecutar en este orden desde el SQL Editor de Supabase:
 - `phase17 employee certificates` agrega auditoria de certificados laborales.
 - `phase17 tablet QR role` agrega el rol dedicado `tablet_qr`.
 - `phase18 supervisor RLS` limita lecturas de supervisores a sus zonas y crea funciones de alcance.
+- `phase19 supernumerario occupancy` evita doble ocupacion de supernumerarios en reemplazos del dia.
+- `phase20 supernumerario incapacities` lista incapacidades activas de supernumerarios.
 - `phase21 admin permission RLS` permite que supervisores habilitados usen escrituras administrativas de empleados segun sus permisos.
 - `phase22 supernumerarios by date` hace que la app liste supernumerarios segun el cargo vigente en la fecha operativa y trate el retiro del dia como vigente hasta terminar la jornada.
+- `phase22 report indexes` agrega indices para acelerar reportes operativos e incapacidades.
+- `phase23 profile role protection` protege rol, estado y campos administrativos del perfil contra cambios de autoservicio.
+- `phase24 Colombia holiday July 9` actualiza la funcion de festivos con el 9 de julio.
+- `phase25 employee extended info` agrega datos ampliados del empleado: fecha de nacimiento, seguridad social y dotacion.
 
 ## Variables del frontend
 Configurar en `src/assets/js/config.js`:
@@ -149,6 +161,8 @@ Configurar en Vercel para el proyecto `whatsapp-backend/`:
 - `WHATSAPP_BACKEND_PUBLIC_URL` o `PUBLIC_BACKEND_URL`
 - `ATTENDANCE_QR_TOKEN_MINUTES`
 
+`EMPLOYEE_PORTAL_ALLOWED_ORIGINS` debe listar dominios publicos del frontend separados por coma. Para desarrollo local, el backend permite por codigo origenes `localhost` y `127.0.0.1`.
+
 ## Tablas principales ya usadas
 - `profiles`
 - `roles_matrix`
@@ -204,6 +218,9 @@ Configurar en Vercel para el proyecto `whatsapp-backend/`:
 - `current_supervisor_can_write_operational_replacement`
 - `can_view_qr_registry`
 - `list_supernumerarios_for_current_supervisor`
+- `list_supernumerario_replacement_occupancy`
+- `list_supernumerario_incapacities_for_current_supervisor`
+- `is_colombia_holiday_sql`
 
 ## Realtime
 Despues de ejecutar las fases, confirmar que `supabase_realtime` incluya al menos:
@@ -245,6 +262,8 @@ Despues de ejecutar las fases, confirmar que `supabase_realtime` incluya al meno
 - Consulta de registros diarios, reportes, ausentismo e incapacidades.
 - Carga y descarga de soportes de incapacidades.
 - Registro QR: generar dispositivo, activar sede, crear token y leer QR.
+- Certificados laborales: generar PDF desde portal de empleados/admin y verificar el codigo publico.
+- Supernumerarios: validar ocupacion por fecha, incapacidades activas y listado por cargo vigente.
 - Webhook WhatsApp: `GET /api/webhooks/whatsapp`.
 - Mensaje real de WhatsApp con registro de asistencia/novedad.
 - Cron del backend segun `whatsapp-backend/vercel.json`.
@@ -252,8 +271,20 @@ Despues de ejecutar las fases, confirmar que `supabase_realtime` incluya al meno
 ## Scripts de soporte
 Estos scripts no son fases obligatorias para una base limpia; usarlos solo para diagnostico o recuperacion:
 
+Scripts SQL:
 - `supabase/diagnose_whatsapp_missing_attendance.sql`
 - `supabase/diagnose_whatsapp_final_actions_without_attendance.sql`
 - `supabase/recover_whatsapp_missing_attendance.sql`
 - `supabase/backfill_daily_closures_from_daily_metrics.sql`
 - `supabase/payroll_attendance_recovery_playbook.sql`
+
+Scripts Node del backend que usan `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY` desde `whatsapp-backend/.env`:
+- `whatsapp-backend/scripts/backup-supabase.mjs`
+- `whatsapp-backend/scripts/normalize-closed-absenteeism.mjs`
+- `whatsapp-backend/scripts/rebuild-daily-closures-summary.mjs`
+- `whatsapp-backend/scripts/rebuild-daily-sede-closures.mjs`
+- `whatsapp-backend/scripts/rebuild-employee-daily-status.mjs`
+- `whatsapp-backend/scripts/refresh-employee-status-2026-04-06-to-2026-05-03.mjs`
+- `whatsapp-backend/scripts/repair-missing-employee-cargo-history-transfers.mjs`
+- `whatsapp-backend/scripts/repair-overlapping-employee-cargo-history.mjs`
+- `whatsapp-backend/scripts/run-payroll-recovery-diagnostics.mjs`

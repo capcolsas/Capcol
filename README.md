@@ -6,6 +6,7 @@ Plataforma de gestion operativa y administrativa para el seguimiento de servicio
 - Frontend desplegado en Vercel.
 - Autenticacion y datos operando con Supabase/PostgreSQL.
 - Backend de WhatsApp desplegado en Vercel.
+- Portal de empleados, app de supervisores, lector QR, certificados laborales y cron operativo conectados al mismo backend/Supabase.
 
 ## Flujo de acceso
 - Pagina principal informativa: `index.html`
@@ -13,6 +14,7 @@ Plataforma de gestion operativa y administrativa para el seguimiento de servicio
 - Ingreso administrativo: `app.html#/login`
 - App de supervisores: `supervisor.html`
 - Portal para empleados: `employee.html`
+- Tablet/lector QR dedicado: `qr.html`
 
 ## Modulos principales
 - Login
@@ -20,18 +22,38 @@ Plataforma de gestion operativa y administrativa para el seguimiento de servicio
 - Gestion administrativa
 - Gestion empleados
 - Operacion
+- Registro QR
+- Certificados laborales
+- Supernumerarios
 - Consultas y reportes
 
 ## Supabase
 - Configuracion activa del frontend en `src/assets/js/config.js`
 - Cliente principal de datos en `src/assets/js/supabase.js`
 - Scripts SQL de migracion en `supabase/`
+- Para una base nueva, ejecutar todas las fases documentadas en `SUPABASE_SETUP.md`, desde `schema_foundation_phase0.sql` hasta `schema_operations_phase25_employee_extended_info.sql`.
+- Bucket requerido para soportes de incapacidades: `incapacidades-soportes`.
 - Recuperacion de contrasena: configurar `Site URL` y `Redirect URLs` segun `SUPABASE_SETUP.md`.
 
 ## Backend WhatsApp
 - Backend actual en `whatsapp-backend/`
 - Guia de migracion y despliegue en `WHATSAPP_BACKEND_MIGRATION.md`
 - Configurar nuevos secretos en `whatsapp-backend/.env` y en Vercel.
+- Atiende webhook de WhatsApp, portal de empleados, certificados laborales, registro QR y cron de cierre diario.
+- Variables principales:
+  - `SUPABASE_URL`
+  - `SUPABASE_SERVICE_ROLE_KEY`
+  - `WHATSAPP_VERIFY_TOKEN`
+  - `WHATSAPP_ACCESS_TOKEN`
+  - `WHATSAPP_PHONE_NUMBER_ID`
+  - `WHATSAPP_GRAPH_VERSION`
+  - `WHATSAPP_APP_SECRET`
+  - `CRON_SECRET`
+  - `EMPLOYEE_PORTAL_ALLOWED_ORIGINS`
+  - `EMPLOYEE_PORTAL_SESSION_HOURS`
+  - `WHATSAPP_BACKEND_PUBLIC_URL` o `PUBLIC_BACKEND_URL`
+  - `ATTENDANCE_QR_TOKEN_MINUTES`
+- Cron Vercel: `/api/cron/close-daily-operation`.
 
 ## Registro QR por sede
 - Migracion requerida: `supabase/schema_operations_phase16_qr_attendance.sql`.
@@ -42,9 +64,24 @@ Plataforma de gestion operativa y administrativa para el seguimiento de servicio
 - La tablet usa `app.html#/lector-qr` y debe activarse con un token de dispositivo generado desde `Sedes`.
 - Para tablets dedicadas usa `qr.html` con un usuario de rol `tablet_qr`; solo habilita el lector QR.
 - El seguimiento diario QR se consulta en `app.html#/registro-qr`, incluyendo hora de ingreso, hora de salida y alerta por celular diferente.
+- El historico QR de dias cerrados se consulta en `app.html#/reports-qr-history` y permite exportar registros y pendientes.
 - Variables opcionales del backend:
   - `WHATSAPP_BACKEND_PUBLIC_URL` o `PUBLIC_BACKEND_URL`
   - `ATTENDANCE_QR_TOKEN_MINUTES`
+
+## Certificados laborales
+- Se generan desde el portal de empleados y desde el panel administrativo.
+- El backend genera PDFs en memoria con PDFKit.
+- Cada certificado queda auditado en `employee_certificate_audit`.
+- Cada PDF incluye codigo/QR de verificacion publica en `/api/certificates/verify/:code`.
+- Assets privados y configuracion en `whatsapp-backend/src/certificates/`.
+- Migracion requerida: `supabase/schema_operations_phase17_employee_certificates.sql`.
+
+## Supernumerarios
+- Modulo administrativo en `app.html#/supernumerarios`.
+- La disponibilidad se calcula segun cargo vigente por fecha operativa.
+- Las fases 19, 20 y 22 agregan ocupacion diaria, incapacidades activas y listado por fecha.
+- Los indices de `schema_operations_phase22_report_performance_indexes.sql` ayudan a reportes e incapacidades.
 
 ## Rutas de la app
 - `#/login`
@@ -53,19 +90,44 @@ Plataforma de gestion operativa y administrativa para el seguimiento de servicio
 - `#/`
 - `#/about`
 - `#/notes`
+- `#/contact`
+- `#/data-treatment`
+- `#/gobierno-dashboard`
 - `#/permissions`
+- `#/permissions-audit`
+- `#/administracion-dashboard`
 - `#/users`
 - `#/zones`
 - `#/dependencies`
 - `#/sedes`
+- `#/bulk-upload-sedes`
+- `#/empleados-dashboard`
 - `#/employees`
+- `#/employee-novelties`
+- `#/supernumerarios`
+- `#/bulk-upload`
+- `#/cargos`
+- `#/novedades`
 - `#/supervisors`
+- `#/operacion-dashboard`
 - `#/registros-vivo`
+- `#/registro-sede`
+- `#/lector-qr`
+- `#/tablets-qr`
+- `#/registro-qr`
 - `#/imports-replacements`
 - `#/import-history`
-- `#/payroll`
 - `#/absenteeism`
+- `#/reportes-dashboard`
 - `#/reports`
+- `#/reports-daily-history`
+- `#/reports-qr-history`
+- `#/reports-employees`
+- `#/reports-hiring`
+- `#/reports-novelties-consolidated`
+- `#/reports-services-consolidated`
+- `#/reports-consolidated`
+- `#/cargue-masivo-dashboard`
 - `#/upload`
 
 ## App de supervisores
@@ -86,19 +148,23 @@ Plataforma de gestion operativa y administrativa para el seguimiento de servicio
 - Valida `documento + ultimos 4 del celular` contra `employees`.
 - Si el empleado tiene un perfil activo administrativo (`superadmin`, `admin`, `editor`, `consultor` o `tablet_qr`), se redirige al portal principal. Los supervisores tambien pueden entrar al portal de empleados para gestionar sus incapacidades y certificados.
 - El backend de este portal vive en `whatsapp-backend/src/app.js`.
+- Permite gestionar incapacidades propias, cargar soportes y generar certificados laborales.
 - Requiere variables backend en `whatsapp-backend`:
   - `SUPABASE_URL`
   - `SUPABASE_SERVICE_ROLE_KEY`
   - `EMPLOYEE_PORTAL_ALLOWED_ORIGINS`
   - `EMPLOYEE_PORTAL_SESSION_HOURS`
+- Para certificados y QR tambien requiere `WHATSAPP_BACKEND_PUBLIC_URL` o `PUBLIC_BACKEND_URL`.
 - El frontend usa `EMPLOYEE_PORTAL_API_BASE` en `src/assets/js/config.js` para apuntar al backend cuando esta en otro dominio.
-- Requiere aplicar la migracion `supabase/schema_operations_phase14_employee_portal.sql`.
+- Requiere aplicar `supabase/schema_operations_phase14_employee_portal.sql`, `supabase/schema_operations_phase15_incapacidades_support.sql` y `supabase/schema_operations_phase17_employee_certificates.sql`.
 
 ## Ejecucion local
 1. Abrir `index.html` con Live Server.
 2. Entrar al centro de accesos desde `access.html`.
 3. Elegir `Administrativo`, `Empleados` o `Supervisores` segun el perfil.
 4. Para probar `employee.html`, configurar `EMPLOYEE_PORTAL_API_BASE` hacia el dominio del backend `whatsapp-backend` que expone `/api/employee-*`; Live Server por si solo no sirve esas funciones.
+5. Para probar el backend localmente, configurar `whatsapp-backend/.env` y ejecutar `npm run dev` dentro de `whatsapp-backend/`.
+6. Para Live Server contra el backend desplegado, los origenes locales `localhost` y `127.0.0.1` quedan permitidos por CORS; los dominios publicos deben estar en `EMPLOYEE_PORTAL_ALLOWED_ORIGINS`.
 
 ## Formulario de propuesta
 - El landing usa `POST /api/contact`.
@@ -115,4 +181,5 @@ Plataforma de gestion operativa y administrativa para el seguimiento de servicio
 ## Documentacion operativa
 - Supabase: `SUPABASE_SETUP.md`
 - WhatsApp backend: `WHATSAPP_BACKEND_MIGRATION.md`
+- Guia de conversacion WhatsApp: `WHATSAPP_CONVERSATION_GUIDE.md`
 - Reconexion completa: `RECONNECTION_CHECKLIST.md`

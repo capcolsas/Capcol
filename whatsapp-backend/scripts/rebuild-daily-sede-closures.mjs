@@ -300,7 +300,7 @@ async function computeDailySedeClosureSnapshot(day) {
     const registrados = Number(registeredBySede.get(sedeCode)?.size || 0);
     const externalRegistered = Math.max(0, registrados - baseContracted);
     const contratados = Math.min(planeados, baseContracted + externalRegistered);
-    const faltantes = Math.max(0, planeados - registrados);
+    const faltantes = Math.max(0, planeados - contratados);
     const sobrantes = Math.max(0, registrados - planeados);
     return {
       id: day + '_' + sedeCode,

@@ -21,3 +21,21 @@ export const config = {
   whatsappGraphVersion: String(process.env.WHATSAPP_GRAPH_VERSION || 'v25.0').trim(),
   whatsappAppSecret: String(process.env.WHATSAPP_APP_SECRET || '').trim()
 };
+
+export function isAllowedCorsOrigin(origin) {
+  const value = String(origin || '').trim();
+  if (!value) return false;
+  if (isLocalDevOrigin(value)) return true;
+  if (!config.employeePortalAllowedOrigins.length) return true;
+  return config.employeePortalAllowedOrigins.includes(value);
+}
+
+function isLocalDevOrigin(origin) {
+  try {
+    const url = new URL(origin);
+    return ['http:', 'https:'].includes(url.protocol)
+      && ['localhost', '127.0.0.1', '::1'].includes(url.hostname);
+  } catch (_) {
+    return false;
+  }
+}
