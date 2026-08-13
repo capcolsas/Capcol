@@ -3206,6 +3206,9 @@ export async function createSedesBulk(rows = []) {
 }
 
 export async function updateSede(id, { codigo, nombre, dependenciaCodigo, dependenciaNombre, zonaCodigo, zonaNombre, numeroOperarios, jornada, qrEnabled, qrLatitude, qrLongitude, qrRadiusMeters }) {
+  const previous = await supabase.from('sedes').select('*').eq('id', id).single();
+  if (previous.error) throw previous.error;
+  const previousRow = previous.data || {};
   const patch = {};
   if (typeof codigo === 'string') patch.codigo = codigo;
   if (typeof nombre === 'string') patch.nombre = nombre;
@@ -3219,10 +3222,57 @@ export async function updateSede(id, { codigo, nombre, dependenciaCodigo, depend
   if (qrLatitude !== undefined) patch.qr_latitude = typeof qrLatitude === 'number' && Number.isFinite(qrLatitude) ? qrLatitude : null;
   if (qrLongitude !== undefined) patch.qr_longitude = typeof qrLongitude === 'number' && Number.isFinite(qrLongitude) ? qrLongitude : null;
   if (typeof qrRadiusMeters === 'number' && Number.isFinite(qrRadiusMeters)) patch.qr_radius_meters = qrRadiusMeters;
-  const { error } = await supabase.from('sedes').update(patch).eq('id', id);
+  const { data: updated, error } = await supabase.from('sedes').update(patch).eq('id', id).select('*').single();
   if (error) throw error;
-  await notifyTableReload('sedes');
+  try {
+    await syncSedeCatalogReferences(previousRow, updated || previousRow);
+  } catch (syncError) {
+    console.warn('No se pudieron sincronizar referencias de sede desde el cliente. Verifica que la migracion phase26 este aplicada.', syncError);
+  }
+  await Promise.all([
+    notifyTableReload('sedes'),
+    notifyTableReload('employees'),
+    notifyTableReload('employee_cargo_history'),
+    notifyTableReload('supervisor_profile'),
+    notifyTableReload('sede_devices')
+  ]);
   await refreshOperationalState(todayBogotaISO());
+}
+
+async function syncSedeCatalogReferences(previous = {}, current = {}) {
+  const previousCode = String(previous?.codigo || '').trim();
+  const currentCode = String(current?.codigo || previousCode || '').trim();
+  if (!previousCode || !currentCode) return;
+
+  const currentName = String(current?.nombre || '').trim() || null;
+  const currentZoneCode = current?.zona_codigo || null;
+  const currentZoneName = current?.zona_nombre || null;
+  const updateSedeFields = {
+    sede_codigo: currentCode,
+    sede_nombre: currentName
+  };
+  const updateSedeZoneFields = {
+    ...updateSedeFields,
+    zona_codigo: currentZoneCode,
+    zona_nombre: currentZoneName
+  };
+
+  const updates = [
+    supabase.from('employees').update(updateSedeZoneFields).eq('sede_codigo', previousCode),
+    supabase.from('employee_cargo_history').update(updateSedeFields).eq('sede_codigo', previousCode),
+    supabase.from('sede_devices').update(updateSedeFields).eq('sede_codigo', previousCode),
+    supabase.from('sede_device_sites').update(updateSedeFields).eq('sede_codigo', previousCode),
+    supabase.from('supervisor_profile').update({
+      sede_codigo: currentCode,
+      zona_codigo: currentZoneCode,
+      zona_nombre: currentZoneName
+    }).eq('sede_codigo', previousCode)
+  ];
+
+  for (const request of updates) {
+    const { error } = await request;
+    if (error) throw error;
+  }
 }
 
 export async function setSedeStatus(id, estado) {

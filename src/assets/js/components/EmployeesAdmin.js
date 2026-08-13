@@ -390,7 +390,8 @@ export const EmployeesAdmin=(mount,deps={})=>{
   function statusBadge(st){ return el('span',{className:'badge '+(st==='activo'?'badge--ok':'badge--off')},[st||'-']); }
   function assignmentCellText(assignment={},kind='sede'){
     if(kind==='cargo') return assignment?.cargoNombre||cargoNameByCode(assignment?.cargoCodigo)||assignment?.cargoCodigo||'-';
-    return assignment?.sedeNombre||sedeNameByCode(assignment?.sedeCodigo)||assignment?.sedeCodigo||'-';
+    const catalogName = sedeNameByCode(assignment?.sedeCodigo);
+    return catalogName !== '-' ? catalogName : (assignment?.sedeNombre||assignment?.sedeCodigo||'-');
   }
   function programmedBadge(assignment=null,kind='sede'){
     if(!assignment) return null;
