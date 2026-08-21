@@ -52,18 +52,7 @@ export const CargarDatos = (mount, deps = {}) => {
         ? 'Adjunta el soporte de la incapacidad que registraste por WhatsApp.'
         : 'Consulta y administra las incapacidades reportadas por WhatsApp y por la web de empleados.'
     ]),
-    el('div', { className: 'tabs mt-2 hidden' }, [
-      el('button', { id: 'incTabCreateBtn', className: 'tab', type: 'button' }, ['Registrar']),
-      el('button', { id: 'incTabListBtn', className: 'tab is-active', type: 'button' }, ['Consultar'])
-    ]),
-    el('div', { id: 'incTabCreate', className: 'hidden' }, [
-      el('div', { className: 'employee-panel' }, [
-        el('div', { className: 'form-row' }, buildCreateFields(portalMode, canManageAll)),
-        el('p', { id: 'incIdentityHint', className: 'text-muted mt-1' }, [' ']),
-        el('span', { id: 'incCreateMsg', className: 'text-muted' }, [' '])
-      ])
-    ]),
-    el('div', { id: 'incTabList' }, [
+    el('div', { id: 'incListPanel' }, [
       el('div', { className: 'form-row' }, [
         el('div', {}, [
           el('label', { className: 'label', htmlFor: 'incQueryStart' }, ['Fecha inicio']),
@@ -129,24 +118,10 @@ export const CargarDatos = (mount, deps = {}) => {
     ])
   ]);
 
-  const paginator = createTablePagination(ui, { id: 'incapacidades', after: '#incTabList .responsive-records', onChange: renderList });
+  const paginator = createTablePagination(ui, { id: 'incapacidades', after: '#incListPanel .responsive-records', onChange: renderList });
 
   mount.replaceChildren(ui);
 
-  const tabCreateBtn = qs('#incTabCreateBtn', ui);
-  const tabListBtn = qs('#incTabListBtn', ui);
-  const tabCreate = qs('#incTabCreate', ui);
-  const tabList = qs('#incTabList', ui);
-  const employeeInput = qs('#incEmployeeSearch', ui);
-  const employeeList = qs('#incEmployeeList', ui);
-  const sourceSelect = qs('#incSource', ui);
-  const startInput = qs('#incStart', ui);
-  const endInput = qs('#incEnd', ui);
-  const fileInput = qs('#incSupport', ui);
-  const saveBtn = qs('#incSaveBtn', ui);
-  const resetBtn = qs('#incResetBtn', ui);
-  const createMsg = qs('#incCreateMsg', ui);
-  const identityHint = qs('#incIdentityHint', ui);
   const queryStartInput = qs('#incQueryStart', ui);
   const queryEndInput = qs('#incQueryEnd', ui);
   const queryBtn = qs('#incQueryBtn', ui);
@@ -160,40 +135,22 @@ export const CargarDatos = (mount, deps = {}) => {
   let sortKey = 'fechaInicio';
   let sortDir = -1;
 
-  qs('.tabs', ui)?.classList.add('hidden');
-  tabCreate.classList.add('hidden');
-  tabList.classList.remove('hidden');
   const btnOpenCreate = portalMode || !canManageIncapacities
     ? null
     : el('button', { id: 'incOpenCreate', className: 'btn btn--primary right', type: 'button' }, ['Crear incapacidad']);
-  if (btnOpenCreate) qs('#incTabList .form-row', ui)?.append(btnOpenCreate);
-
-  function setTab(which) {
-    const create = which === 'create';
-    tabCreateBtn.classList.toggle('is-active', create);
-    tabListBtn.classList.toggle('is-active', !create);
-    tabCreate.classList.toggle('hidden', !create);
-    tabList.classList.toggle('hidden', create);
-  }
-
-  tabCreateBtn.addEventListener('click', () => setTab('create'));
-  tabListBtn.addEventListener('click', () => setTab('list'));
+  if (btnOpenCreate) qs('#incListPanel .form-row', ui)?.append(btnOpenCreate);
 
   searchInput?.addEventListener('input', () => { paginator.reset(); renderList(); });
   statusFilter?.addEventListener('change', () => { paginator.reset(); renderList(); });
   channelFilter?.addEventListener('change', () => { paginator.reset(); renderList(); });
   supportFilter?.addEventListener('change', () => { paginator.reset(); renderList(); });
   queryBtn?.addEventListener('click', runQuery);
-  saveBtn?.addEventListener('click', onSave);
-  resetBtn?.addEventListener('click', resetForm);
   btnOpenCreate?.addEventListener('click', () => openIncapacityModal());
   initSorting();
 
   if (!portalMode && typeof deps.streamEmployees === 'function') {
     unEmployees = deps.streamEmployees((rows) => {
       employees = rows || [];
-      renderEmployeeOptions();
-      refreshIdentityHint();
       renderList();
     });
   }
@@ -206,12 +163,9 @@ export const CargarDatos = (mount, deps = {}) => {
   if (!portalMode && typeof deps.streamNovedades === 'function') {
     unNovedades = deps.streamNovedades((rows) => {
       novedades = rows || [];
-      renderSourceOptions();
     });
   }
 
-  renderSourceOptions();
-  refreshIdentityHint();
   renderList();
   Promise.resolve().then(() => runQuery());
 
@@ -253,34 +207,12 @@ export const CargarDatos = (mount, deps = {}) => {
     }
   }
 
-  function renderEmployeeOptions() {
-    if (!employeeList) return;
-    const items = employees
-      .filter((row) => String(row?.estado || 'activo').trim().toLowerCase() === 'activo')
-      .map((row) => employeeLabel(row))
-      .filter((value, index, all) => value && all.indexOf(value) === index)
-      .map((value) => el('option', { value }));
-    employeeList.replaceChildren(...items);
-  }
-
   function getSourceOptions() {
     return buildSourceOptions(novedades);
   }
 
   function defaultSource() {
     return getSourceOptions()[0]?.value || SOURCE_OPTIONS[0];
-  }
-
-  function renderSourceOptions() {
-    if (!sourceSelect) return;
-    const current = String(sourceSelect.value || '').trim();
-    const options = getSourceOptions();
-    sourceSelect.replaceChildren(...options.map((option, index) =>
-      el('option', { value: option.value, selected: current ? option.value === current : index === 0 }, [option.label || option.value])
-    ));
-    sourceSelect.value = current && options.some((option) => option.value === current)
-      ? current
-      : defaultSource();
   }
 
   function currentFixedEmployee() {
@@ -298,17 +230,6 @@ export const CargarDatos = (mount, deps = {}) => {
       documento: ownDocument,
       nombre: matched?.nombre || String(profile?.displayName || 'Empleado').trim() || 'Empleado'
     };
-  }
-
-  function refreshIdentityHint() {
-    const fixed = !canManageAll ? currentFixedEmployee() : resolveEmployeeInput(employeeInput?.value || '');
-    if (!fixed?.documento) {
-      identityHint.textContent = canManageAll
-        ? 'Selecciona un empleado para registrar o editar la incapacidad.'
-        : 'No fue posible resolver el empleado autenticado.';
-      return;
-    }
-    identityHint.textContent = `Empleado objetivo: ${fixed.nombre || '-'} (${fixed.documento || '-'})`;
   }
 
   function resolveEmployeeInput(value) {
@@ -329,133 +250,6 @@ export const CargarDatos = (mount, deps = {}) => {
       documento: sanitizeDocument(row.documento),
       nombre: String(row.nombre || '').trim() || row.documento || 'Empleado'
     };
-  }
-
-  async function onSave() {
-    if (!canManageIncapacities) {
-      setMessage(createMsg, 'No tienes permiso para gestionar incapacidades.', 'error');
-      return;
-    }
-    const target = canManageAll ? resolveEmployeeInput(employeeInput?.value || '') : currentFixedEmployee();
-    const fechaInicio = String(startInput?.value || '').trim();
-    const fechaFin = String(endInput?.value || '').trim();
-    const supportFile = fileInput?.files?.[0] || null;
-    const source = String(sourceSelect?.value || defaultSource()).trim() || defaultSource();
-
-    setMessage(createMsg, ' ');
-    refreshIdentityHint();
-
-    if (!target?.documento) {
-      setMessage(createMsg, 'Selecciona un empleado valido.', 'error');
-      return;
-    }
-    if (!fechaInicio || !fechaFin) {
-      setMessage(createMsg, 'Selecciona fecha de inicio y fecha de terminacion.', 'error');
-      return;
-    }
-    if (fechaFin < fechaInicio) {
-      setMessage(createMsg, 'La fecha de terminacion no puede ser menor a la fecha de inicio.', 'error');
-      return;
-    }
-    if (!editingId && !supportFile) {
-      setMessage(createMsg, 'Adjunta el soporte de la incapacidad.', 'error');
-      return;
-    }
-
-    saveBtn.disabled = true;
-    resetBtn.disabled = true;
-    setMessage(createMsg, editingId ? 'Actualizando incapacidad...' : 'Registrando incapacidad...', 'ok');
-
-    try {
-      if (portalMode) {
-        if (!supportFile) throw new Error('Adjunta el soporte de la incapacidad.');
-        const supportDataUrl = await fileToDataUrl(supportFile);
-        const result = await deps.apiRequest('/api/employee-incapacities', {
-          method: 'POST',
-          body: JSON.stringify({
-            fechaInicio,
-            fechaFin,
-            source,
-            soporte: {
-              name: supportFile.name,
-              dataUrl: supportDataUrl
-            }
-          })
-        });
-        if (result?.row) incapRows = [result.row, ...incapRows];
-        resetForm();
-        setTab('list');
-        if (hasQueried) await runQuery();
-        renderList();
-        setMessage(createMsg, 'Incapacidad registrada correctamente.', 'ok');
-        return;
-      }
-
-      const currentRow = editingId ? incapRows.find((row) => row.id === editingId) || null : null;
-      let supportInfo = {
-        url: currentRow?.soporteUrl || null,
-        name: currentRow?.soporteNombre || null,
-        mimeType: currentRow?.soporteTipo || null,
-        path: currentRow?.soporteStoragePath || null
-      };
-      if (supportFile && typeof deps.uploadIncapacidadSupport === 'function') {
-        supportInfo = await deps.uploadIncapacidadSupport(supportFile, {
-          documento: target.documento,
-          employeeId: target.employeeId
-        });
-      }
-
-      const payload = {
-        fechaInicio,
-        fechaFin,
-        source
-      };
-
-      if (editingId) {
-        if (target.employeeId) payload.employeeId = target.employeeId;
-        if (target.documento) payload.documento = target.documento;
-        if (target.nombre) payload.nombre = target.nombre;
-        if (supportFile) {
-          payload.soporteUrl = supportInfo.url;
-          payload.soporteNombre = supportInfo.name;
-          payload.soporteTipo = supportInfo.mimeType;
-          payload.soporteStoragePath = supportInfo.path;
-        }
-        await deps.updateIncapacidad?.(editingId, payload);
-        setMessage(createMsg, 'Incapacidad actualizada correctamente.', 'ok');
-      } else {
-        payload.employeeId = target.employeeId;
-        payload.documento = target.documento;
-        payload.nombre = target.nombre;
-        payload.canalRegistro = currentRow?.canalRegistro || 'portal_web';
-        payload.soporteUrl = supportInfo.url;
-        payload.soporteNombre = supportInfo.name;
-        payload.soporteTipo = supportInfo.mimeType;
-        payload.soporteStoragePath = supportInfo.path;
-        await deps.createIncapacidad?.(payload);
-        setMessage(createMsg, 'Incapacidad registrada correctamente.', 'ok');
-      }
-      resetForm();
-      setTab('list');
-      if (hasQueried) await runQuery();
-    } catch (error) {
-      setMessage(createMsg, `Error: ${error?.message || error}`, 'error');
-    } finally {
-      saveBtn.disabled = false;
-      resetBtn.disabled = false;
-    }
-  }
-
-  function resetForm() {
-    editingId = null;
-    if (employeeInput) employeeInput.value = '';
-    if (sourceSelect) sourceSelect.value = defaultSource();
-    if (startInput) startInput.value = '';
-    if (endInput) endInput.value = '';
-    if (fileInput) fileInput.value = '';
-    if (saveBtn) saveBtn.textContent = 'Registrar incapacidad';
-    if (resetBtn) resetBtn.textContent = 'Limpiar';
-    refreshIdentityHint();
   }
 
   async function openIncapacityModal(row = null) {
@@ -892,47 +686,6 @@ export const CargarDatos = (mount, deps = {}) => {
     }
   }
 };
-
-function buildCreateFields(portalMode, canManageAll) {
-  const fields = [];
-  if (canManageAll) {
-    fields.push(
-      el('div', {}, [
-        el('label', { className: 'label', htmlFor: 'incEmployeeSearch' }, ['Empleado']),
-        el('input', {
-          id: 'incEmployeeSearch',
-          className: 'input',
-          list: 'incEmployeeList',
-          placeholder: 'Nombre o documento del empleado'
-        }),
-        el('datalist', { id: 'incEmployeeList' }, [])
-      ])
-    );
-  }
-  fields.push(
-    el('div', {}, [
-      el('label', { className: 'label', htmlFor: 'incSource' }, ['Tipo']),
-      el('select', { id: 'incSource', className: 'select' }, SOURCE_OPTIONS.map((value, index) =>
-        el('option', { value, selected: index === 0 }, [value])
-      ))
-    ]),
-    el('div', {}, [
-      el('label', { className: 'label', htmlFor: 'incStart' }, ['Fecha inicio']),
-      el('input', { id: 'incStart', className: 'input', type: 'date' })
-    ]),
-    el('div', {}, [
-      el('label', { className: 'label', htmlFor: 'incEnd' }, ['Fecha terminacion']),
-      el('input', { id: 'incEnd', className: 'input', type: 'date' })
-    ]),
-    el('div', {}, [
-      el('label', { className: 'label', htmlFor: 'incSupport' }, ['Soporte']),
-      el('input', { id: 'incSupport', className: 'input', type: 'file', accept: 'application/pdf,image/png,image/jpeg,image/webp' })
-    ]),
-    el('button', { id: 'incSaveBtn', className: 'btn btn--primary', type: 'button' }, [portalMode ? 'Registrar incapacidad' : 'Registrar incapacidad']),
-    el('button', { id: 'incResetBtn', className: 'btn', type: 'button' }, ['Limpiar'])
-  );
-  return fields;
-}
 
 function buildSourceOptions(novedades = []) {
   const byCode = new Map();

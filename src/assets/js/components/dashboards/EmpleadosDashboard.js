@@ -18,6 +18,7 @@ const METRICS = [
 
 export const EmpleadosDashboard = (mount, deps = {}) => {
   const today = todayBogota();
+  const monthStart = monthStartBogota(today);
   const actions = visibleActions(ACTIONS);
   const metricsNode = el('div', { className: 'module-dashboard__metrics' },
     METRICS.map((metric) => metricTile(metric.label, '...', metric.tone))
@@ -86,23 +87,35 @@ export const EmpleadosDashboard = (mount, deps = {}) => {
     renderIncapacityChart(ui, incapacityChartMount, state.incapacities, today);
   };
 
+  let active = true;
   let unEmployees = null;
   let unSupervisors = null;
   let unSupernumerarios = null;
   let unIncapacities = null;
+  const setEmployees = (rows) => {
+    if (!active) return;
+    state.employees = Array.isArray(rows) ? rows : [];
+    refreshPeople();
+  };
+  const setIncapacities = (rows) => {
+    if (!active) return;
+    state.incapacities = Array.isArray(rows) ? rows : [];
+    refreshIncapacities();
+  };
 
   try {
-    unEmployees = deps.streamEmployees?.((rows) => {
-      state.employees = Array.isArray(rows) ? rows : [];
-      refreshPeople();
-    }) || null;
+    if (typeof deps.listEmployeeDashboardPeople === 'function') {
+      deps.listEmployeeDashboardPeople(today).then(setEmployees).catch(() => setEmployees([]));
+    } else if (typeof deps.listCurrentEmployees === 'function') {
+      deps.listCurrentEmployees(today).then(setEmployees).catch(() => setEmployees([]));
+    } else {
+      unEmployees = deps.streamEmployees?.(setEmployees) || null;
+    }
   } catch (_) {
-    state.employees = [];
-    refreshPeople();
+    setEmployees([]);
   }
-  if (!deps.streamEmployees) {
-    state.employees = [];
-    refreshPeople();
+  if (!deps.listEmployeeDashboardPeople && !deps.listCurrentEmployees && !deps.streamEmployees) {
+    setEmployees([]);
   }
   try {
     unSupervisors = deps.streamSupervisors?.((rows) => {
@@ -131,27 +144,27 @@ export const EmpleadosDashboard = (mount, deps = {}) => {
     refreshPeople();
   }
   try {
-    unIncapacities = deps.streamIncapacidades?.((rows) => {
-      state.incapacities = Array.isArray(rows) ? rows : [];
-      refreshIncapacities();
-    }) || null;
+    if (typeof deps.listIncapacidadesRange === 'function') {
+      deps.listIncapacidadesRange(monthStart, today).then(setIncapacities).catch(() => setIncapacities([]));
+    } else {
+      unIncapacities = deps.streamIncapacidades?.(setIncapacities) || null;
+    }
   } catch (_) {
-    state.incapacities = [];
-    refreshIncapacities();
+    setIncapacities([]);
   }
-  if (!deps.streamIncapacidades) {
-    state.incapacities = [];
-    refreshIncapacities();
+  if (!deps.listIncapacidadesRange && !deps.streamIncapacidades) {
+    setIncapacities([]);
   }
 
-  if (!deps.streamEmployees || !deps.streamSupervisors || !deps.streamSupernumerarios) {
+  if ((!deps.listEmployeeDashboardPeople && !deps.listCurrentEmployees && !deps.streamEmployees) || !deps.streamSupervisors || !deps.streamSupernumerarios) {
     renderPeopleChart(ui, peopleChartMount, state);
   }
-  if (!deps.streamIncapacidades) {
+  if (!deps.listIncapacidadesRange && !deps.streamIncapacidades) {
     incapacityChartMount.replaceChildren(el('p', { className: 'text-muted' }, ['No hay conexion para incapacidades.']));
   }
 
   return () => {
+    active = false;
     try { unEmployees?.(); } catch {}
     try { unSupervisors?.(); } catch {}
     try { unSupernumerarios?.(); } catch {}

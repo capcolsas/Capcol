@@ -266,7 +266,10 @@ Despues de ejecutar las fases, confirmar que `supabase_realtime` incluya al meno
 - Supernumerarios: validar ocupacion por fecha, incapacidades activas y listado por cargo vigente.
 - Webhook WhatsApp: `GET /api/webhooks/whatsapp`.
 - Mensaje real de WhatsApp con registro de asistencia/novedad.
-- Cron del backend segun `whatsapp-backend/vercel.json`.
+- Cron del backend en Supabase:
+  - ejecutar `supabase/schema_operations_phase28_supabase_cron.sql`.
+  - reemplazar `backend_base_url` por el dominio publico del backend.
+  - reemplazar `cron_secret` por el mismo `CRON_SECRET` configurado en Vercel.
 
 ## Scripts de soporte
 Estos scripts no son fases obligatorias para una base limpia; usarlos solo para diagnostico o recuperacion:

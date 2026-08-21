@@ -1,5 +1,5 @@
 import { PERMS } from '../../permissions.js';
-import { countStream, isActive, renderModuleDashboard } from './ModuleDashboardUtils.js';
+import { countActiveMetric, renderModuleDashboard } from './ModuleDashboardUtils.js';
 
 export const AdministracionDashboard = (mount, deps = {}) => renderModuleDashboard(mount, deps, {
   title: 'Administracion',
@@ -20,8 +20,8 @@ export const AdministracionDashboard = (mount, deps = {}) => renderModuleDashboa
     { label: 'Tablets QR', route: '/tablets-qr', perm: PERMS.VIEW_QR_DEVICES, detail: 'Dispositivos registrados.' }
   ],
   metrics: [
-    { label: 'Sedes activas', tone: 'green', load: async (deps) => countStream(deps.streamSedes, isActive) },
-    { label: 'Cargos activos', tone: 'blue', load: async (deps) => countStream(deps.streamCargos, isActive) },
-    { label: 'Novedades activas', tone: 'indigo', load: async (deps) => countStream(deps.streamNovedades, isActive) }
+    { label: 'Sedes activas', tone: 'green', load: async (deps) => countActiveMetric(deps, 'countActiveSedes', deps.streamSedes) },
+    { label: 'Cargos activos', tone: 'blue', load: async (deps) => countActiveMetric(deps, 'countActiveCargos', deps.streamCargos) },
+    { label: 'Novedades activas', tone: 'indigo', load: async (deps) => countActiveMetric(deps, 'countActiveNovedades', deps.streamNovedades) }
   ]
 });

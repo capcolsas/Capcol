@@ -6,21 +6,26 @@ export const PermissionsAudit = (mount, deps = {}) => {
   if (!isSuperAdmin() && !can(PERMS.VIEW_AUDIT)) {
     mount.replaceChildren(
       el('section', { className: 'main-card' }, [
-        el('h2', {}, ['Auditoria de permisos']),
-        el('p', {}, ['No tienes permiso para consultar la auditoria de permisos.'])
+        el('h2', {}, ['Auditoria']),
+        el('p', {}, ['No tienes permiso para consultar la auditoria.'])
       ])
     );
     return;
   }
 
   let unAudit = null;
-  let auditItems = [];
-  let auditPaginator = null;
+  let unAuditClosures = null;
+  let activityItems = [];
+  let closureItems = [];
+  let activityPaginator = null;
+  let closurePaginator = null;
 
   const ui = el('section', { className: 'main-card' }, [
-    el('h2', {}, ['Auditoria de permisos']),
-    el('p', { className: 'text-muted' }, ['Consulta los ultimos cambios registrados sobre permisos y roles.']),
-    el('div', { id: 'auditList', className: 'mt-2' }, [])
+    el('h2', {}, ['Auditoria']),
+    el('div', { className: 'audit-columns mt-2' }, [
+      auditColumn('Actividades', 'Cambios de usuarios, permisos, catalogos, sedes, empleados y turnos.', 'auditActivityList'),
+      auditColumn('Cierres', 'Registros generados por cierres diarios y cierres de turno.', 'auditClosureList')
+    ])
   ]);
 
   function clearAuditStream() {
@@ -30,16 +35,48 @@ export const PermissionsAudit = (mount, deps = {}) => {
       } catch {}
       unAudit = null;
     }
+    if (typeof unAuditClosures === 'function') {
+      try {
+        unAuditClosures();
+      } catch {}
+      unAuditClosures = null;
+    }
   }
 
-  function renderAuditPage() {
-    const list = qs('#auditList', ui);
+  function renderActivityPage() {
+    const list = qs('#auditActivityList', ui);
     if (!list) return;
-    if (!auditPaginator || !ui.contains(auditPaginator.controls)) {
-      auditPaginator = createTablePagination(ui, { id: 'permissionsAudit', after: '#auditList', onChange: renderAuditPage });
+    if (!activityPaginator || !ui.contains(activityPaginator.controls)) {
+      activityPaginator = createTablePagination(ui, { id: 'permissionsAuditActivity', after: '#auditActivityList', onChange: renderActivityPage });
     }
-    const pageItems = auditPaginator.slice(auditItems);
-    list.replaceChildren(...pageItems.map((it) => renderAuditItem(it)));
+    const pageItems = activityPaginator.slice(activityItems);
+    list.replaceChildren(...(pageItems.length
+      ? pageItems.map((it) => renderAuditItem(it))
+      : [el('p', { className: 'text-muted' }, ['Sin actividades normales para mostrar.'])]
+    ));
+  }
+
+  function renderClosurePage() {
+    const list = qs('#auditClosureList', ui);
+    if (!list) return;
+    if (!closurePaginator || !ui.contains(closurePaginator.controls)) {
+      closurePaginator = createTablePagination(ui, { id: 'permissionsAuditClosures', after: '#auditClosureList', onChange: renderClosurePage });
+    }
+    const pageItems = closurePaginator.slice(closureItems);
+    list.replaceChildren(...(pageItems.length
+      ? pageItems.map((it) => renderAuditItem(it))
+      : [el('p', { className: 'text-muted' }, ['Sin cierres registrados para mostrar.'])]
+    ));
+  }
+
+  function auditColumn(title, subtitle, listId) {
+    return el('article', { className: 'audit-column' }, [
+      el('div', { className: 'audit-column__header' }, [
+        el('strong', {}, [title]),
+        el('span', { className: 'text-muted' }, [subtitle])
+      ]),
+      el('div', { id: listId, className: 'audit-column__list' }, [])
+    ]);
   }
 
   function renderAuditItem(it) {
@@ -47,7 +84,7 @@ export const PermissionsAudit = (mount, deps = {}) => {
     const note = String(it.note || '').trim();
     const beforeText = formatAuditValue(it.before);
     const afterText = formatAuditValue(it.after);
-    return el('div', { className: 'card', style: 'margin-top:.5rem' }, [
+    return el('div', { className: 'card audit-item-card' }, [
       el('div', {}, [el('strong', {}, [it.action || 'accion']), ' - ', new Date(date).toLocaleString()]),
       el('div', { className: 'mt-1 text-muted' }, [`Actor: ${it.actorEmail || it.actorUid || '-'}`]),
       el('div', { className: 'mt-1' }, [`Target: ${it.targetType || '-'}/${it.targetId || '-'}`]),
@@ -83,11 +120,36 @@ export const PermissionsAudit = (mount, deps = {}) => {
   }
 
   mount.replaceChildren(ui);
-  unAudit =
-    deps.streamAuditLogs?.((items) => {
-      auditItems = items || [];
-      renderAuditPage();
-    }) || null;
+  if (deps.streamAuditLogsByKind) {
+    unAudit = deps.streamAuditLogsByKind('activity', (items) => {
+      activityItems = items || [];
+      activityPaginator?.reset?.();
+      renderActivityPage();
+    }, 200) || null;
+    unAuditClosures = deps.streamAuditLogsByKind('closure', (items) => {
+      closureItems = items || [];
+      closurePaginator?.reset?.();
+      renderClosurePage();
+    }, 200) || null;
+  } else {
+    unAudit =
+      deps.streamAuditLogs?.((items) => {
+        const rows = items || [];
+        activityItems = rows.filter((row) => !isClosureAudit(row));
+        closureItems = rows.filter(isClosureAudit);
+        activityPaginator?.reset?.();
+        closurePaginator?.reset?.();
+        renderActivityPage();
+        renderClosurePage();
+      }) || null;
+  }
+
+  renderActivityPage();
+  renderClosurePage();
 
   return () => clearAuditStream();
 };
+
+function isClosureAudit(row = {}) {
+  return ['daily_closure', 'shift_closure'].includes(String(row.targetType || '').trim());
+}

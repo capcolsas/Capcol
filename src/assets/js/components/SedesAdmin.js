@@ -4,38 +4,10 @@ import { showActionModal } from '../utils/actionModal.js';
 import { createTablePagination } from '../utils/pagination.js';
 import { can, PERMS } from '../permissions.js';
 export const SedesAdmin=(mount,deps={})=>{
+  const canEdit=can(PERMS.EDIT_SEDES);
   const ui=el('section',{className:'main-card'},[
     el('h2',{},['Sedes']),
-    el('div',{className:'tabs mt-2'},[
-      el('button',{id:'tabCreateBtn',className:'tab',type:'button'},['Crear']),
-      el('button',{id:'tabListBtn',className:'tab is-active',type:'button'},['Consultar'])
-    ]),
-    el('div',{id:'tabCreate',className:'hidden'},[
-      el('div',{className:'form-row mt-2'},[
-        el('div',{},[ el('label',{className:'label'},['Codigo (automatico)']), el('input',{id:'sCode',className:'input',placeholder:'Se generara al crear',disabled:true}) ]),
-        el('div',{},[ el('label',{className:'label'},['Nombre']), el('input',{id:'sName',className:'input',placeholder:'Nombre de la sede'}) ]),
-        el('div',{},[ el('label',{className:'label'},['Dependencia (buscar)']), el('input',{id:'sDepSearch',className:'input',list:'sDepList',placeholder:'Nombre o codigo de dependencia'}) ]),
-        el('div',{},[ el('label',{className:'label'},['Zona (buscar)']), el('input',{id:'sZoneSearch',className:'input',list:'sZoneList',placeholder:'Nombre o codigo de zona'}) ]),
-        el('div',{},[ el('label',{className:'label'},['Nro de operarios']), el('input',{id:'sOps',className:'input',type:'number',min:'0',step:'1',inputMode:'numeric',placeholder:'0'}) ]),
-        el('div',{},[ el('label',{className:'label'},['Jornada']), el('select',{id:'sJornada',className:'select'},[
-          el('option',{value:'lun_vie'},['Lunes a viernes']),
-          el('option',{value:'lun_sab'},['Lunes a sabado']),
-          el('option',{value:'lun_dom'},['Lunes a domingo'])
-        ]) ]),
-        el('div',{},[ el('label',{className:'label'},['QR']), el('select',{id:'sQrEnabled',className:'select'},[
-          el('option',{value:'false'},['Inactivo']),
-          el('option',{value:'true'},['Activo'])
-        ]) ]),
-        el('div',{},[ el('label',{className:'label'},['Latitud QR']), el('input',{id:'sQrLat',className:'input',type:'number',step:'0.000001',placeholder:'Ej: 6.244203'}) ]),
-        el('div',{},[ el('label',{className:'label'},['Longitud QR']), el('input',{id:'sQrLng',className:'input',type:'number',step:'0.000001',placeholder:'Ej: -75.581212'}) ]),
-        el('div',{},[ el('label',{className:'label'},['Radio QR (m)']), el('input',{id:'sQrRadius',className:'input',type:'number',min:'1',step:'1',value:'500'}) ]),
-        el('button',{id:'btnCreate',className:'btn btn--primary'},['Crear sede']),
-        el('span',{id:'msgCreate',className:'text-muted'},[' '])
-      ]),
-      el('datalist',{id:'sDepList'},[]),
-      el('datalist',{id:'sZoneList'},[])
-    ]),
-    el('div',{id:'tabList'},[
+    el('div',{id:'listPanel'},[
       el('div',{className:'form-row'},[
         el('div',{},[ el('label',{className:'label'},['Buscar']), el('input',{id:'txtSearch',className:'input',placeholder:'Codigo, nombre, dependencia o zona...'}) ]),
         el('div',{},[ el('label',{className:'label'},['Estado']), el('select',{id:'selStatus',className:'select'},[ el('option',{value:''},['Todos']), el('option',{value:'activo'},['Activos']), el('option',{value:'inactivo'},['Inactivos']) ]) ]),
@@ -64,26 +36,7 @@ export const SedesAdmin=(mount,deps={})=>{
     ])
   ]);
 
-  const tabCreateBtn=qs('#tabCreateBtn',ui);
-  const tabListBtn=qs('#tabListBtn',ui);
-  const tabCreate=qs('#tabCreate',ui);
-  const tabList=qs('#tabList',ui);
-  qs('.tabs', ui)?.classList.add('hidden');
-  tabCreate.classList.add('hidden');
-  tabList.classList.remove('hidden');
-  function setTab(which){
-    const isCreate=which==='create';
-    tabCreateBtn.classList.toggle('is-active',isCreate);
-    tabListBtn.classList.toggle('is-active',!isCreate);
-    tabCreate.classList.toggle('hidden',!isCreate);
-    tabList.classList.toggle('hidden',isCreate);
-  }
-  tabCreateBtn.addEventListener('click',()=> setTab('create'));
-  tabListBtn.addEventListener('click',()=> setTab('list'));
-
   let depList=[]; let zoneList=[];
-  const depInput=qs('#sDepSearch',ui); const zoneInput=qs('#sZoneSearch',ui);
-  const depDatalist=qs('#sDepList',ui); const zoneDatalist=qs('#sZoneList',ui);
 
   function buildOptions(items, selected){
     const opts=[ el('option',{value:''},['Seleccione...']) ];
@@ -110,18 +63,6 @@ export const SedesAdmin=(mount,deps={})=>{
     }
     const byName=list.find(x=> String(x.nombre||'').toLowerCase()===raw.toLowerCase());
     return byName?.codigo||'';
-  }
-  function renderSelects(){
-    const depOpts=depList
-      .map((d)=> labelByCode(depList,d.codigo))
-      .filter((v,i,arr)=> v && arr.indexOf(v)===i)
-      .map((value)=> el('option',{value}));
-    depDatalist.replaceChildren(...depOpts);
-    const zoneOpts=zoneList
-      .map((z)=> labelByCode(zoneList,z.codigo))
-      .filter((v,i,arr)=> v && arr.indexOf(v)===i)
-      .map((value)=> el('option',{value}));
-    zoneDatalist.replaceChildren(...zoneOpts);
   }
   function catalogLabelByCode(list, code){
     const item=list.find((x)=>x.codigo===code);
@@ -207,55 +148,16 @@ export const SedesAdmin=(mount,deps={})=>{
       alert('Sede creada OK');
     }catch(e){ alert('Error: '+(e?.message||e)); }
   }
-  const btnOpenCreate=el('button',{id:'btnOpenCreate',className:'btn btn--primary right',type:'button'},['Crear sede']);
-  qs('#tabList .form-row',ui)?.append(btnOpenCreate);
-  btnOpenCreate.addEventListener('click',openCreateModal);
+  if(canEdit){
+    const btnOpenCreate=el('button',{id:'btnOpenCreate',className:'btn btn--primary right',type:'button'},['Crear sede']);
+    qs('#listPanel .form-row',ui)?.append(btnOpenCreate);
+    btnOpenCreate.addEventListener('click',openCreateModal);
+  }
   let snapshot=[]; const tbody=ui.querySelector('tbody'); const cards=qs('#sedeCards',ui);
   let sortKey=''; let sortDir=1;
-  const paginator=createTablePagination(ui,{id:'sedes',after:'#tabList .responsive-records',onChange:render});
+  const paginator=createTablePagination(ui,{id:'sedes',after:'#listPanel .responsive-records',onChange:render});
   let unDeps=()=>{};
   let unZones=()=>{};
-
-  qs('#btnCreate',ui).addEventListener('click',async()=>{
-    const name=qs('#sName',ui).value.trim();
-    const depCode=resolveCode(depList, depInput.value);
-    const zoneCode=resolveCode(zoneList, zoneInput.value);
-    const opsRaw=qs('#sOps',ui).value.trim();
-    const jornada=qs('#sJornada',ui).value;
-    const qrEnabled=qs('#sQrEnabled',ui).value==='true';
-    const qrLatitude=parseOptionalNumber(qs('#sQrLat',ui).value);
-    const qrLongitude=parseOptionalNumber(qs('#sQrLng',ui).value);
-    const qrRadiusMeters=parsePositiveInteger(qs('#sQrRadius',ui).value,500);
-    const msg=qs('#msgCreate',ui); msg.textContent=' ';
-    if(!name){ msg.textContent='Escribe el nombre de la sede.'; return; }
-    if(!depCode){ msg.textContent='Selecciona una dependencia.'; return; }
-    if(!zoneCode){ msg.textContent='Selecciona una zona.'; return; }
-    const ops=Number(opsRaw);
-    if(!Number.isFinite(ops) || ops<0 || !Number.isInteger(ops)){ msg.textContent='Ingresa un numero entero de operarios valido.'; return; }
-    if(qrEnabled && (!Number.isFinite(qrLatitude) || !Number.isFinite(qrLongitude))){ msg.textContent='Para activar QR debes configurar latitud y longitud.'; return; }
-    try{
-      const code=await deps.getNextSedeCode?.();
-      const dep=depList.find(d=>d.codigo===depCode);
-      const zone=zoneList.find(z=>z.codigo===zoneCode);
-      const id=await deps.createSede?.({
-        codigo:code,
-        nombre:name,
-        dependenciaCodigo:depCode,
-        dependenciaNombre:dep?.nombre||null,
-        zonaCodigo:zoneCode,
-        zonaNombre:zone?.nombre||null,
-        numeroOperarios:ops,
-        jornada:jornada||'lun_vie',
-        qrEnabled,
-        qrLatitude,
-        qrLongitude,
-        qrRadiusMeters
-      });
-      await deps.addAuditLog?.({ targetType:'sede', targetId:id, action:'create_sede', after:{ codigo:code, nombre:name, estado:'activo', dependenciaCodigo:depCode, zonaCodigo:zoneCode, numeroOperarios:ops, jornada:jornada||'lun_vie', qrEnabled, qrLatitude, qrLongitude, qrRadiusMeters } });
-      qs('#sName',ui).value=''; qs('#sOps',ui).value=''; qs('#sQrEnabled',ui).value='false'; qs('#sQrLat',ui).value=''; qs('#sQrLng',ui).value=''; qs('#sQrRadius',ui).value='500'; depInput.value=''; zoneInput.value=''; renderSelects();
-      msg.textContent='Sede creada OK'; setTab('list'); setTimeout(()=> msg.textContent=' ',1200);
-    }catch(e){ msg.textContent='Error: '+(e?.message||e); }
-  });
 
   const search=()=> qs('#txtSearch',ui).value.trim().toLowerCase();
   const filterStatus=()=> qs('#selStatus',ui).value;
@@ -544,9 +446,12 @@ export const SedesAdmin=(mount,deps={})=>{
     const btnQr=el('button',{className:'btn btn--icon',type:'button',title:canManageQrDevices && s.qrEnabled===true?'Registrar tablet QR':qrDisabledReason,'aria-label':'Registrar tablet QR'},[lucideInlineIcon('qr-code','QR')]);
     btnQr.disabled=s.qrEnabled!==true || !canManageQrDevices;
     btnQr.addEventListener('click',()=> openRegisterQrDeviceModal(s));
-    const btnMore=el('button',{className:'btn btn--icon',type:'button',title:'Mas opciones','aria-label':'Mas opciones'},[moreIcon()]);
-    btnMore.addEventListener('click',()=> openMoreOptionsModal(s));
-    box.append(btnMore,btnQr,btnInfo); return box;
+    if(canEdit){
+      const btnMore=el('button',{className:'btn btn--icon',type:'button',title:'Mas opciones','aria-label':'Mas opciones'},[moreIcon()]);
+      btnMore.addEventListener('click',()=> openMoreOptionsModal(s));
+      box.append(btnMore);
+    }
+    box.append(btnQr,btnInfo); return box;
   }
   qs('#txtSearch',ui).addEventListener('input',()=>{ paginator.reset(); render(); });
   qs('#selStatus',ui).addEventListener('change',()=>{ paginator.reset(); render(); });
@@ -554,8 +459,8 @@ export const SedesAdmin=(mount,deps={})=>{
   mount.replaceChildren(ui);
   let un=()=>{};
   try{
-    unDeps=deps.streamDependencies?.((arr)=>{ depList=(arr||[]).filter(d=>d.estado!=='inactivo'); renderSelects(); render(); }) || (()=>{});
-    unZones=deps.streamZones?.((arr)=>{ zoneList=(arr||[]).filter(z=>z.estado!=='inactivo'); renderSelects(); render(); }) || (()=>{});
+    unDeps=deps.streamDependencies?.((arr)=>{ depList=(arr||[]).filter(d=>d.estado!=='inactivo'); render(); }) || (()=>{});
+    unZones=deps.streamZones?.((arr)=>{ zoneList=(arr||[]).filter(z=>z.estado!=='inactivo'); render(); }) || (()=>{});
     un=deps.streamSedes?.((arr)=>{ snapshot=arr||[]; render(); }) || (()=>{});
   }catch(e){
     const msg=qs('#msg',ui); if(msg) msg.textContent='Error cargando sedes: '+(e?.message||e);

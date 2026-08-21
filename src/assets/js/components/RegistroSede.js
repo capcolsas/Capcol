@@ -95,6 +95,7 @@ export const RegistroSede = (mount, deps = {}) => {
               el('th', { 'data-sort-detail': 'fecha', style: 'cursor:pointer' }, ['Fecha']),
               el('th', { 'data-sort-detail': 'sede', style: 'cursor:pointer' }, ['Sede']),
               el('th', { 'data-sort-detail': 'zona', style: 'cursor:pointer' }, ['Zona']),
+              el('th', { 'data-sort-detail': 'turno', style: 'cursor:pointer' }, ['Turno']),
               el('th', { 'data-sort-detail': 'documento', style: 'cursor:pointer' }, ['Documento']),
               el('th', { 'data-sort-detail': 'nombre', style: 'cursor:pointer' }, ['Nombre']),
               el('th', { 'data-sort-detail': 'estado', style: 'cursor:pointer' }, ['Estado'])
@@ -119,6 +120,8 @@ export const RegistroSede = (mount, deps = {}) => {
   let totalsRows = [];
   let attendanceByKey = new Map();
   let contractedEmployeesBySede = new Map();
+  let scheduledShiftsBySede = new Map();
+  let shiftAssignmentsBySede = new Map();
   let replByEmpDate = new Map();
   let replacementSuperByDateDoc = new Set();
   let novedadRules = { byCode: new Map(), byName: new Map() };
@@ -207,6 +210,22 @@ export const RegistroSede = (mount, deps = {}) => {
         loadSupernumerariosSnapshot(date),
         deps.isOperationDayClosed?.(date) || false
       ]);
+      let scheduledShifts = [];
+      let shiftAssignments = [];
+      try {
+        scheduledShifts = typeof deps.listScheduledShiftsRange === 'function'
+          ? await deps.listScheduledShiftsRange(date, date, { estados: ['programado', 'abierto', 'cerrado'] })
+          : [];
+        const shiftIds = (scheduledShifts || []).map((row) => row.id).filter(Boolean);
+        shiftAssignments = typeof deps.listShiftAssignmentsForShifts === 'function' && shiftIds.length
+          ? await deps.listShiftAssignmentsForShifts(shiftIds)
+          : [];
+      } catch (shiftError) {
+        console.warn('No se pudieron cargar turnos para Registro Sede:', shiftError);
+        scheduledShifts = [];
+        shiftAssignments = [];
+      }
+      buildShiftAssignmentContext(scheduledShifts || [], shiftAssignments || []);
       novedadRules = buildNovedadReplacementRules(novedades || []);
 
       const sedeMetaByCode = new Map();
@@ -233,7 +252,10 @@ export const RegistroSede = (mount, deps = {}) => {
       const statusBySede = new Map((sedeStatus || []).map((s) => [String(s.sedeCodigo || ''), s]));
       const activeScheduledSedes = (sedes || [])
         .filter((s) => String(s.estado || 'activo').trim().toLowerCase() !== 'inactivo')
-        .filter((s) => isSedeScheduledForDate(s, date));
+        .filter((s) => {
+          const sedeCode = String(s.codigo || '').trim();
+          return isSedeScheduledForDate(s, date) || scheduledShiftsBySede.has(sedeCode);
+        });
       const activeSedeCodes = new Set(
         activeScheduledSedes
           .map((s) => String(s.codigo || '').trim())
@@ -292,7 +314,9 @@ export const RegistroSede = (mount, deps = {}) => {
           const key = `${date}|${sedeCode}`;
           const atts = dedupeAttendanceRows(attendanceByKey.get(key) || []);
           const status = statusBySede.get(sedeCode) || {};
-          const planeadosRaw = s.numeroOperarios ?? status.operariosPlaneados ?? status.operariosEsperados ?? 0;
+          const shiftsForSede = scheduledShiftsBySede.get(sedeCode) || [];
+          const shiftPlanned = shiftsForSede.reduce((sum, shift) => sum + parseOperatorCount(shift.operariosPlaneados), 0);
+          const planeadosRaw = shiftsForSede.length ? shiftPlanned : (s.numeroOperarios ?? status.operariosPlaneados ?? status.operariosEsperados ?? 0);
           const planeados = parseOperatorCount(planeadosRaw);
           const contratados = Number(contratadosBySede.get(sedeCode) || 0);
           const registrados = atts.length;
@@ -357,6 +381,43 @@ export const RegistroSede = (mount, deps = {}) => {
     } catch (e) {
       msg.textContent = 'Error: ' + (e?.message || e);
     }
+  }
+
+  function buildShiftAssignmentContext(shifts = [], assignments = []) {
+    scheduledShiftsBySede = new Map();
+    shiftAssignmentsBySede = new Map();
+    const shiftById = new Map();
+    (Array.isArray(shifts) ? shifts : []).forEach((shift) => {
+      const shiftId = String(shift.id || '').trim();
+      const sedeCode = String(shift.sedeCodigo || '').trim();
+      if (!shiftId || !sedeCode) return;
+      shiftById.set(shiftId, shift);
+      if (!scheduledShiftsBySede.has(sedeCode)) scheduledShiftsBySede.set(sedeCode, []);
+      scheduledShiftsBySede.get(sedeCode).push(shift);
+    });
+    (Array.isArray(assignments) ? assignments : [])
+      .filter((assignment) => String(assignment.estado || 'asignado') !== 'cancelado')
+      .forEach((assignment) => {
+        const shift = shiftById.get(String(assignment.scheduledShiftId || '').trim());
+        const sedeCode = String(shift?.sedeCodigo || assignment.sedeCodigo || '').trim();
+        if (!shift || !sedeCode) return;
+        if (!shiftAssignmentsBySede.has(sedeCode)) shiftAssignmentsBySede.set(sedeCode, []);
+        shiftAssignmentsBySede.get(sedeCode).push({
+          ...assignment,
+          shift,
+          turno: shiftLabel(shift)
+        });
+      });
+    scheduledShiftsBySede.forEach((rows) => {
+      rows.sort((a, b) => String(a.startsAt || '').localeCompare(String(b.startsAt || '')));
+    });
+    shiftAssignmentsBySede.forEach((rows) => {
+      rows.sort((a, b) => {
+        const byShift = String(a.shift?.startsAt || '').localeCompare(String(b.shift?.startsAt || ''));
+        if (byShift) return byShift;
+        return String(a.nombre || '').localeCompare(String(b.nombre || ''));
+      });
+    });
   }
 
   function renderDependency(date) {
@@ -494,6 +555,58 @@ export const RegistroSede = (mount, deps = {}) => {
     rows.forEach((d) => {
       const key = `${d.fecha}|${d.sedeCodigo}`;
       const atts = dedupeAttendanceRows(attendanceByKey.get(key) || []);
+      const shiftAssignments = shiftAssignmentsBySede.get(d.sedeCodigo) || [];
+      const shiftsForSede = scheduledShiftsBySede.get(d.sedeCodigo) || [];
+      if (shiftAssignments.length || shiftsForSede.length) {
+        const attendanceLookup = buildAttendanceLookup(atts);
+        const matchedAttendance = new Set();
+        const assignedCountByShift = countAssignmentsByShift(shiftAssignments);
+
+        shiftAssignments.forEach((assignment) => {
+          const attendance = findAttendanceForAssignment(assignment, attendanceLookup);
+          if (attendance) markAttendanceMatched(attendance, matchedAttendance);
+          detailRows.push({
+            fecha: d.fecha,
+            sede: d.sedeNombre,
+            zona: d.zonaNombre || 'Sin zona',
+            turno: assignment.turno || shiftLabel(assignment.shift),
+            documento: assignment.documento || attendance?.documento || '-',
+            nombre: assignment.nombre || attendance?.nombre || '-',
+            estado: attendance ? attendanceStateLabel(attendance) : 'Sin registro'
+          });
+        });
+
+        shiftsForSede.forEach((shift) => {
+          const planned = parseOperatorCount(shift.operariosPlaneados);
+          const assigned = Number(assignedCountByShift.get(String(shift.id || '').trim()) || 0);
+          const missingAssignments = Math.max(0, planned - assigned);
+          for (let i = 0; i < missingAssignments; i += 1) {
+            detailRows.push({
+              fecha: d.fecha,
+              sede: d.sedeNombre,
+              zona: d.zonaNombre || 'Sin zona',
+              turno: shiftLabel(shift),
+              documento: '-',
+              nombre: `Sin asignar ${i + 1}`,
+              estado: 'Sin asignar'
+            });
+          }
+        });
+
+        atts.forEach((attendance) => {
+          if (isAttendanceMatched(attendance, matchedAttendance)) return;
+          detailRows.push({
+            fecha: d.fecha,
+            sede: d.sedeNombre,
+            zona: d.zonaNombre || 'Sin zona',
+            turno: 'Sin turno asignado',
+            documento: attendance.documento || '-',
+            nombre: attendance.nombre || '-',
+            estado: attendanceStateLabel(attendance)
+          });
+        });
+        return;
+      }
       const contracted = contractedEmployeesBySede.get(d.sedeCodigo) || [];
       const registeredDocs = new Set(
         atts
@@ -516,6 +629,7 @@ export const RegistroSede = (mount, deps = {}) => {
           fecha: d.fecha,
           sede: d.sedeNombre,
           zona: d.zonaNombre || 'Sin zona',
+          turno: '-',
           documento: a.documento || '-',
           nombre: a.nombre || '-',
           estado
@@ -528,6 +642,7 @@ export const RegistroSede = (mount, deps = {}) => {
           fecha: d.fecha,
           sede: d.sedeNombre,
           zona: d.zonaNombre || 'Sin zona',
+          turno: '-',
           documento: c.documento || '-',
           nombre: c.nombre || '-',
           estado: 'Sin registro'
@@ -541,6 +656,7 @@ export const RegistroSede = (mount, deps = {}) => {
           fecha: d.fecha,
           sede: d.sedeNombre,
           zona: d.zonaNombre || 'Sin zona',
+          turno: '-',
           documento: '-',
           nombre: `No contratado ${i + 1}`,
           estado: 'Sin registro'
@@ -548,6 +664,86 @@ export const RegistroSede = (mount, deps = {}) => {
       }
     });
     return detailRows;
+  }
+
+  function buildAttendanceLookup(rows = []) {
+    const lookup = new Map();
+    (rows || []).forEach((row) => {
+      personKeys(row).forEach((key) => {
+        if (!lookup.has(key)) lookup.set(key, row);
+      });
+    });
+    return lookup;
+  }
+
+  function findAttendanceForAssignment(assignment = {}, lookup = new Map()) {
+    for (const key of personKeys(assignment)) {
+      if (lookup.has(key)) return lookup.get(key);
+    }
+    return null;
+  }
+
+  function markAttendanceMatched(row = {}, set = new Set()) {
+    personKeys(row).forEach((key) => set.add(key));
+  }
+
+  function isAttendanceMatched(row = {}, set = new Set()) {
+    return personKeys(row).some((key) => set.has(key));
+  }
+
+  function personKeys(row = {}) {
+    return [
+      ['id', row.employeeId || row.empleadoId],
+      ['doc', row.documento]
+    ]
+      .map(([prefix, value]) => {
+        const clean = String(value || '').trim();
+        return clean ? `${prefix}:${clean}` : '';
+      })
+      .filter(Boolean);
+  }
+
+  function countAssignmentsByShift(assignments = []) {
+    const counts = new Map();
+    (assignments || []).forEach((assignment) => {
+      const shiftId = String(assignment.scheduledShiftId || assignment.shift?.id || '').trim();
+      if (!shiftId) return;
+      counts.set(shiftId, Number(counts.get(shiftId) || 0) + 1);
+    });
+    return counts;
+  }
+
+  function shiftLabel(shift = {}) {
+    const name = String(shift.nombre || '').trim();
+    const time = `${formatBogotaTime(shift.startsAt)} - ${formatBogotaTime(shift.endsAt)}`;
+    return [name, time === '- - -' ? '' : time].filter(Boolean).join(' | ') || 'Turno';
+  }
+
+  function formatBogotaTime(value) {
+    if (!value) return '-';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '-';
+    return new Intl.DateTimeFormat('es-CO', {
+      timeZone: 'America/Bogota',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    }).format(date);
+  }
+
+  function attendanceStateLabel(a = {}) {
+    const rep = replByEmpDate.get(`${a.fecha || ''}|${a.empleadoId || ''}`);
+    if (rep) {
+      return rep.decision === 'reemplazo'
+        ? `Reemplazado por ${rep.supernumerarioNombre || rep.supernumerarioDocumento || '-'}`
+        : 'Ausentismo';
+    }
+    if (a.asistio === false) {
+      return attendanceRequiresReplacementForSummary(a, novedadRules)
+        ? 'Ausentismo'
+        : `Novedad: ${a.novedadNombre || a.novedad || '-'}`;
+    }
+    return 'Trabajo';
   }
 
   function renderDetailRows() {
@@ -558,6 +754,7 @@ export const RegistroSede = (mount, deps = {}) => {
       el('td', {}, [r.fecha || '-']),
       el('td', {}, [r.sede || '-']),
       el('td', {}, [r.zona || 'Sin zona']),
+      el('td', {}, [r.turno || '-']),
       el('td', {}, [r.documento || '-']),
       el('td', {}, [r.nombre || '-']),
       el('td', {}, [r.estado || '-'])
@@ -608,6 +805,7 @@ export const RegistroSede = (mount, deps = {}) => {
       meta: [
         ['Sede', row.sede || '-'],
         ['Zona', row.zona || 'Sin zona'],
+        ['Turno', row.turno || '-'],
         ['Estado', row.estado || '-']
       ]
     });

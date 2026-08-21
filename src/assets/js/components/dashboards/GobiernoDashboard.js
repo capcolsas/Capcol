@@ -54,7 +54,7 @@ export const GobiernoDashboard = (mount, deps = {}) => {
         el('div', { className: 'gov-role-chart__head' }, [
           el('div', {}, [
             el('strong', { className: 'gov-role-chart__title' }, ['Cierres del mes actual']),
-            el('span', { className: 'gov-role-chart__subtitle' }, ['Dias con cierre completado frente a dias pendientes.'])
+            el('span', { className: 'gov-role-chart__subtitle' }, ['Cierres diarios reales guardados por el proceso automatico.'])
           ]),
           el('span', { id: 'govClosureMonthTotal', className: 'badge' }, ['0/0 cerrados'])
         ]),
@@ -85,13 +85,20 @@ export const GobiernoDashboard = (mount, deps = {}) => {
     renderUsersByRoleChart(ui, chartMount, []);
   }
   try {
-    unsubscribeClosures = deps.streamDailyClosures?.((rows) => {
-      renderClosureMonthChart(ui, closureChartMount, rows, today);
-    }) || null;
+    const range = currentMonthToDateRange(today);
+    if (deps.streamDailyClosuresRange) {
+      unsubscribeClosures = deps.streamDailyClosuresRange(range.from, range.to, (rows) => {
+        renderClosureMonthChart(ui, closureChartMount, rows, today);
+      }) || null;
+    } else {
+      unsubscribeClosures = deps.streamDailyClosures?.((rows) => {
+        renderClosureMonthChart(ui, closureChartMount, rows, today);
+      }) || null;
+    }
   } catch (_) {
     renderClosureMonthChart(ui, closureChartMount, [], today);
   }
-  if (!deps.streamDailyClosures) {
+  if (!deps.streamDailyClosures && !deps.streamDailyClosuresRange) {
     closureChartMount.replaceChildren(el('p', { className: 'text-muted' }, ['No hay conexion para cierres diarios.']));
   }
 
@@ -168,14 +175,19 @@ function renderUsersByRoleChart(scope, mount, users = []) {
 
 function renderClosureMonthChart(scope, mount, closures = [], today = todayBogota()) {
   const days = daysInCurrentMonthToDate(today);
-  const closedDates = new Set(
-    (Array.isArray(closures) ? closures : [])
-      .filter(isClosedDay)
-      .map((row) => String(row?.fecha || '').slice(0, 10))
-      .filter(Boolean)
-  );
-  const closedCount = days.filter((day) => closedDates.has(day.date)).length;
-  const pendingCount = Math.max(0, days.length - closedCount);
+  const closedRows = (Array.isArray(closures) ? closures : [])
+    .filter(isClosedDay)
+    .map((row) => ({ ...row, fecha: String(row?.fecha || '').slice(0, 10) }))
+    .filter((row) => row.fecha);
+  const closedByDate = new Map();
+  closedRows.forEach((row) => {
+    const current = closedByDate.get(row.fecha);
+    if (!current || String(row.closedAt || '').localeCompare(String(current.closedAt || '')) > 0) {
+      closedByDate.set(row.fecha, row);
+    }
+  });
+  const closedCount = days.filter((day) => closedByDate.has(day.date)).length;
+  const unregisteredCount = Math.max(0, days.length - closedCount);
   const totalNode = scope.querySelector('#govClosureMonthTotal');
   if (totalNode) totalNode.textContent = `${formatNumber(closedCount)}/${formatNumber(days.length)} cerrados`;
 
@@ -187,15 +199,16 @@ function renderClosureMonthChart(scope, mount, closures = [], today = todayBogot
   mount.replaceChildren(
     el('div', { className: 'gov-closure-chart__summary' }, [
       closureSummaryItem('Completados', closedCount, 'closed'),
-      closureSummaryItem('Pendientes', pendingCount, 'pending')
+      closureSummaryItem('Sin registro', unregisteredCount, 'pending')
     ]),
     el('div', { className: 'gov-closure-chart__grid', 'aria-label': 'Estado de cierres del mes actual' },
       days.map((day) => {
-        const closed = closedDates.has(day.date);
+        const closure = closedByDate.get(day.date);
+        const closed = !!closure;
         return el('span', {
           className: `gov-closure-chart__day ${closed ? 'is-closed' : 'is-pending'}`,
-          title: `${day.date}: ${closed ? 'cierre completado' : 'sin cierre completado'}`,
-          'aria-label': `${day.date}: ${closed ? 'cierre completado' : 'sin cierre completado'}`
+          title: closureDayTitle(day.date, closure),
+          'aria-label': closureDayTitle(day.date, closure)
         }, [String(day.day)]);
       })
     )
@@ -211,6 +224,13 @@ function closureSummaryItem(label, value, state) {
 
 function isClosedDay(row = {}) {
   return row?.locked === true || String(row?.status || '').trim().toLowerCase() === 'closed';
+}
+
+function closureDayTitle(date, closure = null) {
+  if (!closure) return `${date}: sin registro de cierre`;
+  const source = `cierre por ${closure.closedByEmail || closure.closedByUid || 'proceso automatico'}`;
+  const closedAt = closure.closedAt ? ` (${formatDateTime(closure.closedAt)})` : '';
+  return `${date}: ${source}${closedAt}`;
 }
 
 function daysInCurrentMonthToDate(today) {
@@ -230,6 +250,16 @@ function daysInCurrentMonthToDate(today) {
   });
 }
 
+function currentMonthToDateRange(today) {
+  const value = String(today || todayBogota()).slice(0, 10);
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return { from: value, to: value };
+  return {
+    from: `${match[1]}-${match[2]}-01`,
+    to: value
+  };
+}
+
 function roleLabel(role) {
   return String(role || 'sin_rol')
     .replace(/_/g, ' ')
@@ -243,4 +273,14 @@ function todayBogota() {
 function formatNumber(value) {
   const number = Number(value || 0);
   return Number.isFinite(number) ? new Intl.NumberFormat('es-CO').format(number) : '-';
+}
+
+function formatDateTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value || '-');
+  return new Intl.DateTimeFormat('es-CO', {
+    timeZone: 'America/Bogota',
+    dateStyle: 'short',
+    timeStyle: 'short'
+  }).format(date);
 }

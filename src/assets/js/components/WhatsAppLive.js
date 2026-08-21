@@ -1,9 +1,11 @@
-import { el, qs, enableSectionToggles, infoIcon } from '../utils/dom.js';
+import { el, qs, enableSectionToggles, infoIcon, editIcon, cancelIcon } from '../utils/dom.js';
 import { showInfoModal } from '../utils/infoModal.js';
+import { can, PERMS } from '../permissions.js';
 
 const colombiaHolidayCache = new Map();
 
 export const WhatsAppLive = (mount, deps = {}) => {
+  const canManageOperation = can(PERMS.MANAGE_OPERATION_REGISTRY);
   const today = todayBogota();
   const closureDay = today;
   const ui = el('div', {}, [
@@ -113,8 +115,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
       el('div', { className: 'mt-2', style: 'display:flex;justify-content:space-between;gap:.5rem;align-items:center;flex-wrap:wrap;' }, [
         el('div', { id: 'waModeHint', className: 'text-muted', style: 'font-size:.86rem;' }, ['Vista completa del día']),
         el('div', { style: 'display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;' }, [
-          el('button', { id: 'btnManualRefresh', className: 'btn', type: 'button' }, ['Actualizar']),
-          el('button', { id: 'btnManualClose', className: 'btn btn--primary', type: 'button' }, ['Cerrar dia'])
+          el('button', { id: 'btnManualRefresh', className: 'btn', type: 'button' }, ['Actualizar'])
         ])
       ]),
       el('p', { id: 'waMsg', className: 'text-muted mt-2' }, ['Conectando...'])
@@ -166,7 +167,6 @@ export const WhatsAppLive = (mount, deps = {}) => {
   const btnNextPage = qs('#waNextPage', ui);
   const modeHint = qs('#waModeHint', ui);
   const btnManualRefresh = qs('#btnManualRefresh', ui);
-  const btnManualClose = qs('#btnManualClose', ui);
   const pendingBody = qs('#waPendingBody', ui);
   const pendingCards = qs('#waPendingCards', ui);
   const pendingSummary = qs('#waPendingSummary', ui);
@@ -212,6 +212,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
   let fallbackMode = false;
   let fallbackRefreshPromise = null;
   const pendingReplacementSelections = new Map();
+  const editingReplacementKeys = new Set();
 
   function replacementRowKey(r = {}) {
     const empId = String(r.empleadoId || r.employeeId || '').trim();
@@ -245,6 +246,22 @@ export const WhatsAppLive = (mount, deps = {}) => {
     pendingReplacementSelections.delete(replacementRowKey(row));
   }
 
+  function isEditingReplacement(row) {
+    return editingReplacementKeys.has(replacementRowKey(row));
+  }
+
+  function startEditingReplacement(row) {
+    editingReplacementKeys.add(replacementRowKey(row));
+    clearPendingReplacementSelection(row);
+    render();
+  }
+
+  function stopEditingReplacement(row) {
+    editingReplacementKeys.delete(replacementRowKey(row));
+    clearPendingReplacementSelection(row);
+    render();
+  }
+
   function classifyRow(row) {
     if (isSupernumerarioAttendance(row)) return 'super_replacement';
     if (activeIncapacityForRow(row)) return 'replace_yes';
@@ -266,8 +283,12 @@ export const WhatsAppLive = (mount, deps = {}) => {
     return 'none';
   }
 
-  function canAssignReplacement(row) {
+  function rowNeedsReplacement(row) {
     return classifyRow(row) === 'replace_yes' && rowHasScheduledService(row);
+  }
+
+  function canAssignReplacement(row) {
+    return canManageOperation && rowNeedsReplacement(row);
   }
 
   function isSupernumerarioAttendance(row) {
@@ -607,7 +628,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
 
     out = out.filter((r) => {
       if (cardFilter === 'all') return true;
-      const isNovelty = canAssignReplacement(r);
+      const isNovelty = rowNeedsReplacement(r);
       const key = replacementRowKey(r);
       const repl = replMap.get(key) || null;
       const decision = String(repl?.decision || '').trim();
@@ -848,11 +869,30 @@ export const WhatsAppLive = (mount, deps = {}) => {
   }
 
   async function saveReplacement(row, selectedDoc, btn, selectEl = null) {
+    if (!canManageOperation) {
+      msg.textContent = 'No tienes permiso para gestionar reemplazos o ausentismos.';
+      return;
+    }
     const selectedValue = String(selectedDoc || '').trim();
     const wantsAusentismo = selectedValue === '__ausentismo__' || !selectedValue;
-    const selected = wantsAusentismo
+    const currentRepl = replacementMap().get(replacementRowKey(row)) || null;
+    let selected = wantsAusentismo
       ? null
       : (supernumerarios || []).find((s) => String(s.documento || '').trim() === selectedValue) || null;
+    if (!selected && !wantsAusentismo) {
+      const currentDoc = String(currentRepl?.supernumerarioDocumento || '').trim();
+      if (String(currentRepl?.decision || '').trim() === 'reemplazo' && currentDoc && currentDoc === selectedValue) {
+        selected = {
+          id: currentRepl.supernumerarioId || null,
+          documento: currentDoc,
+          nombre: currentRepl.supernumerarioNombre || 'Reemplazo actual'
+        };
+      }
+    }
+    if (!selected && !wantsAusentismo) {
+      msg.textContent = 'Selecciona un supernumerario valido o confirma ausentismo.';
+      return;
+    }
     if (selected) {
       const used = usedReplacementDocsForDate(row.fecha, row.empleadoId);
       if (used.has(String(selected.documento || '').trim())) {
@@ -889,6 +929,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
         assignments: [assignment]
       });
       clearPendingReplacementSelection(row);
+      editingReplacementKeys.delete(replacementRowKey(row));
       replacements = mergeReplacements(replacements, [assignment]);
       statsReplacements = mergeReplacements(statsReplacements, [assignment]);
       await refreshEmployeeDailyStatusSnapshot({ silent: true });
@@ -1036,17 +1077,93 @@ export const WhatsAppLive = (mount, deps = {}) => {
   }
 
   function replacementStaticNode(view) {
+    if (isEditingReplacement(view.row)) return null;
     if (view.isSuperRow) return el('span', { style: 'color:#1d4ed8;' }, [view.replacementText]);
     if (!view.canAssign) return el('span', { className: 'text-muted' }, [view.replacementText]);
     const decision = String(view.repl?.decision || '').trim();
-    if (decision === 'ausentismo') return el('span', { style: 'color:#b91c1c;' }, [view.replacementText]);
-    if (decision === 'reemplazo') return el('span', { style: 'color:#15803d;' }, [view.replacementText]);
+    if (decision !== 'ausentismo' && decision !== 'reemplazo') return null;
+
+    const textStyle = decision === 'ausentismo'
+      ? 'color:#b91c1c;font-weight:600;min-width:0;word-break:break-word;'
+      : 'color:#15803d;font-weight:600;min-width:0;word-break:break-word;';
+    const btnEdit = el(
+      'button',
+      {
+        className: 'btn btn--icon',
+        type: 'button',
+        title: 'Editar decision',
+        'aria-label': 'Editar decision',
+        style: 'width:28px;height:28px;min-height:28px;padding:3px;flex:0 0 auto;'
+      },
+      [editIcon()]
+    );
+    btnEdit.addEventListener('click', () => startEditingReplacement(view.row));
+    return el('div', { style: 'display:flex;align-items:center;gap:6px;min-width:0;' }, [
+      el('span', { style: textStyle }, [view.replacementText]),
+      btnEdit
+    ]);
+  }
+
+  function replacementSelectOptions(view) {
+    const options = Array.isArray(view.opts) ? [...view.opts] : [];
+    const currentDoc = String(view.repl?.supernumerarioDocumento || '').trim();
+    const hasCurrent = currentDoc && options.some((o) => String(o.documento || '').trim() === currentDoc);
+    if (String(view.repl?.decision || '').trim() === 'reemplazo' && currentDoc && !hasCurrent) {
+      options.unshift({
+        id: view.repl?.supernumerarioId || null,
+        documento: currentDoc,
+        nombre: String(view.repl?.supernumerarioNombre || '').trim() || 'Reemplazo actual'
+      });
+    }
+    return options;
+  }
+
+  function replacementSaveLabel(row, view) {
+    const decision = String(view.repl?.decision || '').trim();
+    return decision || isEditingReplacement(row) ? 'Guardar cambio' : 'Confirmar';
+  }
+
+  function replacementCancelButton(row) {
+    if (!isEditingReplacement(row)) return null;
+    const btnCancel = el(
+      'button',
+      {
+        className: 'btn btn--icon',
+        type: 'button',
+        title: 'Cancelar edicion',
+        'aria-label': 'Cancelar edicion',
+        style: 'width:28px;height:28px;min-height:28px;padding:3px;'
+      },
+      [cancelIcon()]
+    );
+    btnCancel.addEventListener('click', () => stopEditingReplacement(row));
+    return btnCancel;
+  }
+
+  function replacementOptionLabel(option) {
+    return `${option.nombre || '-'} (${option.documento || '-'})`;
+  }
+
+  function replacementAusentismoLabel(view) {
+    return String(view.repl?.decision || '').trim() === 'ausentismo'
+      ? 'Ausentismo confirmado'
+      : 'Confirmar ausentismo';
+  }
+
+  function replacementInitialValue(row, view, select) {
+    const pendingSelection = pendingReplacementSelectionFor(row);
+    if (pendingSelection && [...select.options].some((option) => String(option.value || '').trim() === pendingSelection)) {
+      return pendingSelection;
+    }
+    if (view.repl?.decision === 'ausentismo') return '__ausentismo__';
+    if (view.repl?.supernumerarioDocumento) return String(view.repl.supernumerarioDocumento);
     return null;
   }
 
   function replacementNode(row, view) {
     const staticNode = replacementStaticNode(view);
     if (staticNode) return staticNode;
+    const options = replacementSelectOptions(view);
     const select = el(
       'select',
       {
@@ -1055,18 +1172,12 @@ export const WhatsAppLive = (mount, deps = {}) => {
         disabled: !view.canAssign
       },
       [
-        el('option', { value: '__ausentismo__' }, ['Confirmar ausentismo']),
-        ...view.opts.map((o) => el('option', { value: o.documento }, [`${o.nombre} (${o.documento || '-'})`]))
+        el('option', { value: '__ausentismo__' }, [replacementAusentismoLabel(view)]),
+        ...options.map((o) => el('option', { value: o.documento }, [replacementOptionLabel(o)]))
       ]
     );
-    const pendingSelection = pendingReplacementSelectionFor(row);
-    if (pendingSelection && [...select.options].some((option) => String(option.value || '').trim() === pendingSelection)) {
-      select.value = pendingSelection;
-    } else if (view.repl?.decision === 'ausentismo') {
-      select.value = '__ausentismo__';
-    } else if (view.repl?.supernumerarioDocumento) {
-      select.value = String(view.repl.supernumerarioDocumento);
-    }
+    const initialValue = replacementInitialValue(row, view, select);
+    if (initialValue) select.value = initialValue;
     const selectedLabel = () => select.options[select.selectedIndex]?.text || '';
     select.title = selectedLabel();
     const selectedPreview = el(
@@ -1082,7 +1193,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
         disabled: !view.canAssign,
         style: 'padding:3px 7px;font-size:.74rem;line-height:1.05;min-height:24px;'
       },
-      ['Confirmar']
+      [replacementSaveLabel(row, view)]
     );
     saveBtn.addEventListener('click', () => saveReplacement(row, select.value, saveBtn, select));
     select.addEventListener('change', () => {
@@ -1091,8 +1202,10 @@ export const WhatsAppLive = (mount, deps = {}) => {
       select.title = label;
       selectedPreview.textContent = label;
     });
+    const cancelBtn = replacementCancelButton(row);
+    const actions = cancelBtn ? [select, saveBtn, cancelBtn] : [select, saveBtn];
     return el('div', { style: 'display:grid;gap:4px;min-width:0;' }, [
-      el('div', { style: 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0;' }, [select, saveBtn]),
+      el('div', { style: 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0;' }, actions),
       selectedPreview
     ]);
   }
@@ -1185,7 +1298,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
     if (key === 'reemplazo') {
       const repl = replMap.get(replacementRowKey(row)) || null;
       const rowClass = classifyRow(row);
-      const opts = canAssignReplacement(row) ? optionsForRow(row) : [];
+      const opts = rowNeedsReplacement(row) ? optionsForRow(row) : [];
       return normalize(displayReplacementText(row, repl, rowClass, opts));
     }
     return '';
@@ -1197,7 +1310,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
       return `REEMPLAZO EN SEDE: ${sedeTxt}`;
     }
     if (rowClass === 'replace_yes' && !rowHasScheduledService(row)) return 'Solo reporte';
-    if (!canAssignReplacement(row)) return 'No aplica';
+    if (!rowNeedsReplacement(row)) return 'No aplica';
 
     const decision = String(repl?.decision || '').trim().toLowerCase();
     if (decision === 'ausentismo') return 'Ausentismo confirmado';
@@ -1206,6 +1319,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
       const repDoc = String(repl?.supernumerarioDocumento || '').trim();
       return repName && repDoc ? `${repName} (${repDoc})` : repName || repDoc || 'Reemplazo confirmado';
     }
+    if (!canManageOperation) return 'Pendiente de gestion';
 
     const first = Array.isArray(options) ? options[0] : null;
     if (first) return `Pendiente: ${String(first.nombre || '').trim()} (${String(first.documento || '-').trim()})`;
@@ -1280,9 +1394,9 @@ export const WhatsAppLive = (mount, deps = {}) => {
       if (kind !== 'replace_yes') return false;
       return String(repl?.decision || '').trim() !== 'reemplazo';
     }).length;
-    const noveltyTotal = operationalDayRows.filter((r) => canAssignReplacement(r)).length;
+    const noveltyTotal = operationalDayRows.filter((r) => rowNeedsReplacement(r)).length;
     const noveltyHandled = operationalDayRows.filter((r) => {
-      if (!canAssignReplacement(r)) return false;
+      if (!rowNeedsReplacement(r)) return false;
       const key = replacementRowKey(r);
       const repl = replMap.get(key);
       if (!repl) return false;
@@ -1460,42 +1574,6 @@ export const WhatsAppLive = (mount, deps = {}) => {
         msg.textContent = `Error cargando registro diario: ${err?.message || err}`;
       });
   });
-  btnManualClose?.addEventListener('click', async () => {
-    if (typeof deps.closeOperationDayManual !== 'function') {
-      msg.textContent = 'Cierre manual no disponible en este entorno.';
-      return;
-    }
-    const alreadyClosed = await deps.isOperationDayClosed?.(closureDay);
-    if (alreadyClosed) {
-      msg.textContent = `La fecha ${closureDay} ya esta cerrada.`;
-      return;
-    }
-    const ok = globalThis.confirm?.(
-      `Se cerrara el dia ${closureDay}. Este cierre bloquea cambios posteriores para esa fecha. Deseas continuar?`
-    );
-    if (!ok) return;
-    btnManualClose.disabled = true;
-    const oldTxt = btnManualClose.textContent;
-    btnManualClose.textContent = 'Cerrando...';
-    msg.textContent = 'Ejecutando cierre diario manual...';
-    try {
-      const res = await deps.closeOperationDayManual(closureDay);
-      const r = Array.isArray(res?.results) ? res.results[0] : null;
-      const status = String(r?.status || 'ok').trim();
-      if (status === 'closed' || status === 'already_closed') {
-        msg.textContent = `Consulta OK. Cierre diario ${status === 'closed' ? 'realizado' : 'ya existente'} para ${closureDay}.`;
-      } else {
-        msg.textContent = `Cierre ejecutado con estado: ${status}.`;
-      }
-      render();
-    } catch (err) {
-      msg.textContent = `Error en cierre manual: ${err?.message || err}`;
-    } finally {
-      btnManualClose.disabled = false;
-      btnManualClose.textContent = oldTxt;
-    }
-  });
-
   if (deps.streamSupernumerarios) {
     unSupernumerarios = deps.streamSupernumerarios((rows) => {
       supernumerarios = rows || [];
@@ -1508,11 +1586,12 @@ export const WhatsAppLive = (mount, deps = {}) => {
       render();
     });
   }
-  if (deps.streamEmployees) {
-    unEmployees = deps.streamEmployees((rows) => {
+  const employeeStream = typeof deps.streamCurrentEmployees === 'function' ? deps.streamCurrentEmployees : deps.streamEmployees;
+  if (employeeStream) {
+    unEmployees = employeeStream((rows) => {
       employees = rows || [];
       render();
-    });
+    }, null, null, today);
   }
   if (deps.streamSedes) {
     unSedes = deps.streamSedes((rows) => {

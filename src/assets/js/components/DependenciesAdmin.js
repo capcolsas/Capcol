@@ -2,22 +2,12 @@ import { el, qs, infoIcon, editIcon, activateIcon, deactivateIcon } from '../uti
 import { showInfoModal } from '../utils/infoModal.js';
 import { showActionModal } from '../utils/actionModal.js';
 import { createTablePagination } from '../utils/pagination.js';
+import { can, PERMS } from '../permissions.js';
 export const DependenciesAdmin=(mount,deps={})=>{
+  const canEdit=can(PERMS.EDIT_DEPENDENCIES);
   const ui=el('section',{className:'main-card'},[
     el('h2',{},['Dependencias']),
-    el('div',{className:'tabs mt-2'},[
-      el('button',{id:'tabCreateBtn',className:'tab',type:'button'},['Crear']),
-      el('button',{id:'tabListBtn',className:'tab is-active',type:'button'},['Consultar'])
-    ]),
-    el('div',{id:'tabCreate',className:'hidden'},[
-      el('div',{className:'form-row mt-2'},[
-        el('div',{},[ el('label',{className:'label'},['Codigo (automatico)']), el('input',{id:'dCode',className:'input',placeholder:'Se generara al crear',disabled:true}) ]),
-        el('div',{},[ el('label',{className:'label'},['Nombre']), el('input',{id:'dName',className:'input',placeholder:'Nombre de la dependencia'}) ]),
-        el('button',{id:'btnCreate',className:'btn btn--primary'},['Crear dependencia']),
-        el('span',{id:'msgCreate',className:'text-muted'},[' '])
-      ])
-    ]),
-    el('div',{id:'tabList'},[
+    el('div',{id:'listPanel'},[
       el('div',{className:'form-row'},[
         el('div',{},[ el('label',{className:'label'},['Buscar']), el('input',{id:'txtSearch',className:'input',placeholder:'Codigo o nombre...'}) ]),
         el('div',{},[ el('label',{className:'label'},['Estado']), el('select',{id:'selStatus',className:'select'},[ el('option',{value:''},['Todos']), el('option',{value:'activo'},['Activos']), el('option',{value:'inactivo'},['Inactivos']) ]) ]),
@@ -34,23 +24,6 @@ export const DependenciesAdmin=(mount,deps={})=>{
       el('p',{id:'msg',className:'text-muted mt-2'},[' '])
     ])
   ]);
-
-  const tabCreateBtn=qs('#tabCreateBtn',ui);
-  const tabListBtn=qs('#tabListBtn',ui);
-  const tabCreate=qs('#tabCreate',ui);
-  const tabList=qs('#tabList',ui);
-  qs('.tabs', ui)?.classList.add('hidden');
-  tabCreate.classList.add('hidden');
-  tabList.classList.remove('hidden');
-  function setTab(which){
-    const isCreate=which==='create';
-    tabCreateBtn.classList.toggle('is-active',isCreate);
-    tabListBtn.classList.toggle('is-active',!isCreate);
-    tabCreate.classList.toggle('hidden',!isCreate);
-    tabList.classList.toggle('hidden',isCreate);
-  }
-  tabCreateBtn.addEventListener('click',()=> setTab('create'));
-  tabListBtn.addEventListener('click',()=> setTab('list'));
 
   async function openCreateModal(){
     const modal=await showActionModal({
@@ -69,23 +42,15 @@ export const DependenciesAdmin=(mount,deps={})=>{
       alert('Dependencia creada OK');
     }catch(e){ alert('Error: '+(e?.message||e)); }
   }
-  const btnOpenCreate=el('button',{id:'btnOpenCreate',className:'btn btn--primary right',type:'button'},['Crear dependencia']);
-  qs('#tabList .form-row',ui)?.append(btnOpenCreate);
-  btnOpenCreate.addEventListener('click',openCreateModal);
+  if(canEdit){
+    const btnOpenCreate=el('button',{id:'btnOpenCreate',className:'btn btn--primary right',type:'button'},['Crear dependencia']);
+    qs('#listPanel .form-row',ui)?.append(btnOpenCreate);
+    btnOpenCreate.addEventListener('click',openCreateModal);
+  }
 
-  qs('#btnCreate',ui).addEventListener('click',async()=>{
-    const name=qs('#dName',ui).value.trim(); const msg=qs('#msgCreate',ui); msg.textContent=' ';
-    if(!name){ msg.textContent='Escribe el nombre de la dependencia.'; return; }
-    try{
-      const code=await deps.getNextDependencyCode?.();
-      const id=await deps.createDependency?.({ codigo:code, nombre:name });
-      await deps.addAuditLog?.({ targetType:'dependency', targetId:id, action:'create_dependency', after:{ codigo:code, nombre:name, estado:'activo' } });
-      qs('#dName',ui).value=''; msg.textContent='Dependencia creada OK'; setTab('list'); setTimeout(()=> msg.textContent=' ',1200);
-    }catch(e){ msg.textContent='Error: '+(e?.message||e); }
-  });
   let snapshot=[]; const tbody=ui.querySelector('tbody'); const cards=qs('#dependencyCards',ui);
   let sortKey=''; let sortDir=1;
-  const paginator=createTablePagination(ui,{id:'dependencies',after:'#tabList .responsive-records',onChange:render});
+  const paginator=createTablePagination(ui,{id:'dependencies',after:'#listPanel .responsive-records',onChange:render});
   const search=()=> qs('#txtSearch',ui).value.trim().toLowerCase();
   const filterStatus=()=> qs('#selStatus',ui).value;
   function sortVal(d,key){ if(key==='createdAt'){ try{ const x=d.createdAt?.toDate?d.createdAt.toDate(): (d.createdAt?new Date(d.createdAt):null); return x?x.getTime():0; }catch{return 0;} } return String(d[key]??'').toLowerCase(); }
@@ -104,7 +69,7 @@ export const DependenciesAdmin=(mount,deps={})=>{
       date: hasMod ? formatDate(d.lastModifiedAt) : formatDate(d.createdAt)
     };
   }
-  function actionsCell(d){ const box=el('div',{className:'row-actions'},[]); const btnEdit=el('button',{className:'btn btn--icon',title:'Editar','aria-label':'Editar'},[editIcon()]); btnEdit.addEventListener('click',()=> openEditModal(d)); const btnToggle=el('button',{className:'btn btn--icon '+(d.estado==='activo'?'btn--danger':'' ),title:d.estado==='activo'?'Desactivar':'Activar','aria-label':d.estado==='activo'?'Desactivar':'Activar'},[ d.estado==='activo'?deactivateIcon():activateIcon() ]); btnToggle.addEventListener('click',async()=>{ const target=d.estado==='activo'?'inactivo':'activo'; const modal=await showActionModal({ title:`${target==='inactivo'?'Desactivar':'Activar'} dependencia`, message:`Dependencia: ${d.nombre||'-'}`, confirmText:target==='inactivo'?'Desactivar':'Activar', fields:[{ id:'detail', label:'Detalle', type:'textarea', required:true, placeholder:'Escribe el motivo o detalle de esta accion' }] }); if(!modal.confirmed) return; try{ await deps.setDependencyStatus?.(d.id,target); await deps.addAuditLog?.({ targetType:'dependency', targetId:d.id, action: target==='activo'?'activate_dependency':'deactivate_dependency', before:{estado:d.estado}, after:{estado:target}, note: modal.values.detail||null }); }catch(e){ alert('Error: '+(e?.message||e)); } }); const btnInfo=el('button',{className:'btn btn--icon',title:'Ver informacion','aria-label':'Ver informacion'},[infoIcon()]); btnInfo.addEventListener('click',()=>{ const info=auditInfoData(d); showInfoModal('Informacion del registro',[`Evento: ${info.action}`,`Usuario: ${info.user}`,`Fecha: ${info.date}`]); }); box.append(btnEdit,btnToggle,btnInfo); return box; }
+  function actionsCell(d){ const box=el('div',{className:'row-actions'},[]); if(canEdit){ const btnEdit=el('button',{className:'btn btn--icon',title:'Editar','aria-label':'Editar'},[editIcon()]); btnEdit.addEventListener('click',()=> openEditModal(d)); const btnToggle=el('button',{className:'btn btn--icon '+(d.estado==='activo'?'btn--danger':'' ),title:d.estado==='activo'?'Desactivar':'Activar','aria-label':d.estado==='activo'?'Desactivar':'Activar'},[ d.estado==='activo'?deactivateIcon():activateIcon() ]); btnToggle.addEventListener('click',async()=>{ const target=d.estado==='activo'?'inactivo':'activo'; const modal=await showActionModal({ title:`${target==='inactivo'?'Desactivar':'Activar'} dependencia`, message:`Dependencia: ${d.nombre||'-'}`, confirmText:target==='inactivo'?'Desactivar':'Activar', fields:[{ id:'detail', label:'Detalle', type:'textarea', required:true, placeholder:'Escribe el motivo o detalle de esta accion' }] }); if(!modal.confirmed) return; try{ await deps.setDependencyStatus?.(d.id,target); await deps.addAuditLog?.({ targetType:'dependency', targetId:d.id, action: target==='activo'?'activate_dependency':'deactivate_dependency', before:{estado:d.estado}, after:{estado:target}, note: modal.values.detail||null }); }catch(e){ alert('Error: '+(e?.message||e)); } }); box.append(btnEdit,btnToggle); } const btnInfo=el('button',{className:'btn btn--icon',title:'Ver informacion','aria-label':'Ver informacion'},[infoIcon()]); btnInfo.addEventListener('click',()=>{ const info=auditInfoData(d); showInfoModal('Informacion del registro',[`Evento: ${info.action}`,`Usuario: ${info.user}`,`Fecha: ${info.date}`]); }); box.append(btnInfo); return box; }
   async function openEditModal(d){ const modal=await showActionModal({ title:'Editar dependencia', message:`Dependencia: ${d.nombre||'-'}`, confirmText:'Guardar cambios', fields:[{id:'code',label:'Codigo',type:'text',required:true,value:d.codigo||''},{id:'name',label:'Nombre',type:'text',required:true,value:d.nombre||''},{ id:'detail', label:'Detalle de la modificacion', type:'textarea', required:true, placeholder:'Describe brevemente el cambio realizado' }] }); if(!modal.confirmed) return; const newCode=String(modal.values.code||'').trim(); const newName=String(modal.values.name||'').trim(); if(!newCode||!newName) return alert('Completa codigo y nombre.'); try{ if(newCode!==d.codigo){ const dup=await deps.findDependencyByCode?.(newCode); if(dup && dup.id!==d.id) return alert('Ya existe una dependencia con ese codigo.'); } await deps.updateDependency?.(d.id,{ codigo:newCode, nombre:newName }); await deps.addAuditLog?.({ targetType:'dependency', targetId:d.id, action:'update_dependency', before:{ codigo:d.codigo, nombre:d.nombre }, after:{ codigo:newCode, nombre:newName }, note: modal.values.detail||null }); }catch(e){ alert('Error: '+(e?.message||e)); } }
   function recordCard(item,{title,subtitle,meta=[],actions}){ return el('article',{className:'record-card'},[ el('div',{className:'record-card__header'},[ el('div',{className:'record-card__identity'},[ el('strong',{className:'record-card__title'},[title]), el('span',{className:'record-card__subtitle'},[subtitle]) ]), statusBadge(item.estado) ]), el('dl',{className:'record-card__meta'},meta.map(([label,value])=> el('div',{className:'record-card__meta-item'},[el('dt',{},[label]),el('dd',{},[value||'-'])]))), el('div',{className:'record-card__actions'},[actions]) ]); }
   function startEdit(tr,d){ const cur={ codigo:d.codigo||'', nombre:d.nombre||'' }; const tds=tr.querySelectorAll('td'); tds[0].replaceChildren(el('input',{className:'input',value:cur.codigo,style:'max-width:160px'})); tds[1].replaceChildren(el('input',{className:'input',value:cur.nombre,style:'max-width:260px'})); tds[2].replaceChildren(statusBadge(d.estado));

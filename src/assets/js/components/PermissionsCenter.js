@@ -2,7 +2,7 @@ import { el } from '../utils/dom.js';
 import { showActionModal } from '../utils/actionModal.js';
 import { showInfoModal } from '../utils/infoModal.js';
 import { can, isSuperAdmin } from '../permissions.js';
-import { ALL_ROLES, ROLE_LABELS, ROLES, PERMS, permsForRole } from '../roles.js';
+import { ALL_ROLES, PERMISSION_ACTION_VIEW_MAP, ROLE_LABELS, ROLES, PERMS, permsForRole } from '../roles.js';
 import { getState } from '../state.js';
 
 const PERM_KEYS = [
@@ -30,6 +30,12 @@ const PERM_KEYS = [
   PERMS.EDIT_CARGOS,
   PERMS.VIEW_NOVEDADES,
   PERMS.EDIT_NOVEDADES,
+  PERMS.VIEW_SHIFT_PLANS,
+  PERMS.MANAGE_SHIFT_PLANS,
+  PERMS.VIEW_GENERATED_SHIFTS,
+  PERMS.MANAGE_GENERATED_SHIFTS,
+  PERMS.VIEW_SHIFT_REVIEW,
+  PERMS.MANAGE_SHIFT_REVIEW,
   PERMS.VIEW_OPERATION_REGISTRY,
   PERMS.MANAGE_OPERATION_REGISTRY,
   PERMS.IMPORT_DATA,
@@ -91,6 +97,12 @@ const PERM_LABELS = {
   [PERMS.EDIT_CARGOS]: 'Cargos - Edicion',
   [PERMS.VIEW_NOVEDADES]: 'Novedades - Consulta',
   [PERMS.EDIT_NOVEDADES]: 'Novedades - Edicion',
+  [PERMS.VIEW_SHIFT_PLANS]: 'Planes de turnos - Consulta',
+  [PERMS.MANAGE_SHIFT_PLANS]: 'Planes de turnos - Gestionar',
+  [PERMS.VIEW_GENERATED_SHIFTS]: 'Turnos generados - Consulta',
+  [PERMS.MANAGE_GENERATED_SHIFTS]: 'Turnos generados - Gestionar',
+  [PERMS.VIEW_SHIFT_REVIEW]: 'Revision de turnos - Consulta',
+  [PERMS.MANAGE_SHIFT_REVIEW]: 'Revision de turnos - Gestionar',
   [PERMS.VIEW_OPERATION_REGISTRY]: 'Registro diario/sede - Consulta',
   [PERMS.MANAGE_OPERATION_REGISTRY]: 'Registro diario/sede - Acciones',
   [PERMS.IMPORT_DATA]: 'Operacion - Registro',
@@ -150,6 +162,15 @@ const PERMISSION_SECTIONS = [
       { label: 'Novedades empleados', view: PERMS.VIEW_EMPLOYEE_NOVELTIES, action: PERMS.MANAGE_EMPLOYEE_SCHEDULES, actionLabel: 'Programar' },
       { label: 'Supervisores', view: PERMS.VIEW_SUPERVISORS, action: PERMS.EDIT_SUPERVISORS, actionLabel: 'Edicion' },
       { label: 'Incapacidades', view: PERMS.VIEW_INCAPACITIES, action: PERMS.MANAGE_INCAPACITIES, actionLabel: 'Gestionar' }
+    ]
+  },
+  {
+    title: 'Turnos',
+    description: 'Planes, turnos activos, asignaciones y revision de novedades por turno.',
+    items: [
+      { label: 'Planes de turnos', view: PERMS.VIEW_SHIFT_PLANS, action: PERMS.MANAGE_SHIFT_PLANS, actionLabel: 'Gestionar' },
+      { label: 'Turnos generados', view: PERMS.VIEW_GENERATED_SHIFTS, action: PERMS.MANAGE_GENERATED_SHIFTS, actionLabel: 'Gestionar' },
+      { label: 'Revision de turnos', view: PERMS.VIEW_SHIFT_REVIEW, action: PERMS.MANAGE_SHIFT_REVIEW, actionLabel: 'Gestionar' }
     ]
   },
   {
@@ -215,6 +236,12 @@ const LEGACY_FALLBACK_BY_NEW = {
   [PERMS.EDIT_CARGOS]: 'manageEmployees',
   [PERMS.VIEW_NOVEDADES]: 'manageEmployees',
   [PERMS.EDIT_NOVEDADES]: 'manageEmployees',
+  [PERMS.VIEW_SHIFT_PLANS]: PERMS.VIEW_OPERATION_REGISTRY,
+  [PERMS.MANAGE_SHIFT_PLANS]: PERMS.EDIT_SEDES,
+  [PERMS.VIEW_GENERATED_SHIFTS]: PERMS.VIEW_OPERATION_REGISTRY,
+  [PERMS.MANAGE_GENERATED_SHIFTS]: PERMS.MANAGE_OPERATION_REGISTRY,
+  [PERMS.VIEW_SHIFT_REVIEW]: PERMS.VIEW_OPERATION_REGISTRY,
+  [PERMS.MANAGE_SHIFT_REVIEW]: PERMS.MANAGE_OPERATION_REGISTRY,
   [PERMS.VIEW_SUPERVISORS]: 'manageSupervisors',
   [PERMS.EDIT_SUPERVISORS]: 'manageSupervisors',
   [PERMS.VIEW_OPERATION_REGISTRY]: PERMS.IMPORT_DATA,
@@ -260,6 +287,9 @@ function normalizePermissionRecord(raw = {}, role = null) {
     if (Object.prototype.hasOwnProperty.call(raw, newKey)) return;
     if (Object.prototype.hasOwnProperty.call(raw, legacyKey)) out[newKey] = raw[legacyKey] === true;
     else if (out[legacyKey] === true) out[newKey] = true;
+  });
+  Object.entries(PERMISSION_ACTION_VIEW_MAP).forEach(([actionKey, viewKey]) => {
+    if (out[actionKey] === true) out[viewKey] = true;
   });
   return out;
 }

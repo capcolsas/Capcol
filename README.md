@@ -53,7 +53,10 @@ Plataforma de gestion operativa y administrativa para el seguimiento de servicio
   - `EMPLOYEE_PORTAL_SESSION_HOURS`
   - `WHATSAPP_BACKEND_PUBLIC_URL` o `PUBLIC_BACKEND_URL`
   - `ATTENDANCE_QR_TOKEN_MINUTES`
-- Cron Vercel: `/api/cron/close-daily-operation`.
+- Cron demo en Supabase:
+  - ejecutar `supabase/schema_operations_phase28_supabase_cron.sql`.
+  - `/api/cron/close-shifts` cada 15 minutos.
+  - `/api/cron/close-daily-operation` diario a las 18:00 UTC como consolidacion legacy.
 
 ## Registro QR por sede
 - Migracion requerida: `supabase/schema_operations_phase16_qr_attendance.sql`.

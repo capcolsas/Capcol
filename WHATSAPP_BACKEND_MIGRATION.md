@@ -60,15 +60,15 @@ El proyecto `whatsapp-backend/` usa:
 - `includeFiles: "src/certificates/**"` para incluir assets privados de certificados.
 - `memory: 1024`.
 - `maxDuration: 300`.
-- Cron diario:
-  - path: `/api/cron/close-daily-operation`
-  - schedule: `10 5 * * *`
 - Rewrite global hacia `/api/index`.
+- Los crons de demo se programan desde Supabase con `supabase/schema_operations_phase28_supabase_cron.sql`.
+  - `/api/cron/close-shifts`: `*/15 * * * *`.
+  - `/api/cron/close-daily-operation`: `0 18 * * *`.
 
 Despues de migrar:
 1. Crear proyecto Vercel nuevo desde la carpeta `whatsapp-backend/`.
 2. Configurar todas las variables de entorno.
-3. Confirmar que el cron quede activo en la cuenta nueva.
+3. Ejecutar `supabase/schema_operations_phase28_supabase_cron.sql` con el dominio final y `CRON_SECRET`.
 4. Actualizar el dominio del backend en `src/assets/js/config.js`:
    - `EMPLOYEE_PORTAL_API_BASE`
 5. Actualizar `WHATSAPP_BACKEND_PUBLIC_URL` o `PUBLIC_BACKEND_URL` con el dominio final.
@@ -83,6 +83,8 @@ WhatsApp Cloud API:
 - `POST /webhooks/whatsapp`
 
 Cron:
+- `GET /cron/close-shifts`
+- `GET /api/cron/close-shifts`
 - `GET /cron/close-daily-operation`
 - `GET /api/cron/close-daily-operation`
 
@@ -316,7 +318,7 @@ Scripts SQL de diagnostico/recuperacion:
 8. Configurar `EMPLOYEE_PORTAL_API_BASE` en `src/assets/js/config.js`.
 9. Configurar `WHATSAPP_BACKEND_PUBLIC_URL` o `PUBLIC_BACKEND_URL`.
 10. Configurar webhook de Meta y token de verificacion.
-11. Confirmar que el cron de Vercel este activo.
+11. Ejecutar `supabase/schema_operations_phase28_supabase_cron.sql` y confirmar jobs en `cron.job`.
 12. Configurar origenes permitidos en `EMPLOYEE_PORTAL_ALLOWED_ORIGINS`.
 13. Validar certificados y assets privados en `whatsapp-backend/src/certificates/`.
 14. Probar un mensaje real de WhatsApp.
@@ -324,7 +326,7 @@ Scripts SQL de diagnostico/recuperacion:
 16. Probar carga de soporte de incapacidad.
 17. Probar generacion y verificacion de certificado.
 18. Probar creacion de tablet QR, generacion de QR y lectura desde `qr.html` o `app.html#/lector-qr`.
-19. Probar cierre diario manual llamando el cron con autorizacion.
+19. Probar endpoints cron autorizados: `/api/cron/close-shifts` y `/api/cron/close-daily-operation`.
 20. Revisar logs de Vercel y `whatsapp_incoming` despues de las pruebas.
 
 ## Validacion minima despues de desplegar

@@ -82,9 +82,13 @@ export const EmployeeNovelties = (mount, deps = {}) => {
   let sortKey = 'date';
   let sortDir = -1;
 
-  [dateFromInput, dateToInput, typeInput, searchInput].forEach((node) => {
+  [typeInput, searchInput].forEach((node) => {
     node?.addEventListener('input', () => { paginator.reset(); render(); });
     node?.addEventListener('change', () => { paginator.reset(); render(); });
+  });
+  [dateFromInput, dateToInput].forEach((node) => {
+    node?.addEventListener('input', () => scheduleRangeLoad());
+    node?.addEventListener('change', () => scheduleRangeLoad(0));
   });
   ui.querySelectorAll('th[data-sort]').forEach((th) => {
     th.addEventListener('click', () => {
@@ -102,18 +106,9 @@ export const EmployeeNovelties = (mount, deps = {}) => {
 
   mount.replaceChildren(ui);
 
-  const unAudit = deps.streamAuditLogs?.((rows) => {
-    auditRows = rows || [];
-    render();
-  }, 1000) || (() => {});
-  const unHistory = deps.streamEmployeeCargoHistoryAll?.((rows) => {
-    historyRows = rows || [];
-    render();
-  }) || (() => {});
-  const unEmployees = deps.streamEmployees?.((rows) => {
-    employees = rows || [];
-    render();
-  }) || (() => {});
+  let active = true;
+  let loadToken = 0;
+  let loadTimer = null;
   const unSedes = deps.streamSedes?.((rows) => {
     sedes = rows || [];
     render();
@@ -123,15 +118,100 @@ export const EmployeeNovelties = (mount, deps = {}) => {
     render();
   }) || (() => {});
 
+  scheduleRangeLoad(0);
   render();
 
   return () => {
-    unAudit?.();
-    unHistory?.();
-    unEmployees?.();
+    active = false;
+    clearTimeout(loadTimer);
     unSedes?.();
     unCargos?.();
   };
+
+  function scheduleRangeLoad(delay = 250) {
+    clearTimeout(loadTimer);
+    loadTimer = setTimeout(() => {
+      loadRangeData();
+    }, delay);
+  }
+
+  async function loadRangeData() {
+    const token = ++loadToken;
+    const from = String(dateFromInput?.value || today).trim() || today;
+    const to = String(dateToInput?.value || from).trim() || from;
+    meta.textContent = 'Cargando novedades...';
+    try {
+      const [audit, history] = await Promise.all([
+        typeof deps.listEmployeeAuditLogsRange === 'function'
+          ? deps.listEmployeeAuditLogsRange(from, to)
+          : streamOnce((ok) => deps.streamAuditLogs?.(ok, 1000)),
+        typeof deps.listEmployeeCargoHistoryRange === 'function'
+          ? deps.listEmployeeCargoHistoryRange(from, to)
+          : streamOnce((ok) => deps.streamEmployeeCargoHistoryAll?.(ok))
+      ]);
+      if (!active || token !== loadToken) return;
+      auditRows = audit || [];
+      historyRows = history || [];
+      employees = await loadEmployeesForVisibleRows(auditRows, historyRows);
+      if (!active || token !== loadToken) return;
+      paginator.reset();
+      render();
+    } catch (error) {
+      if (!active || token !== loadToken) return;
+      console.error('No se pudieron cargar novedades de empleados:', error);
+      auditRows = [];
+      historyRows = [];
+      employees = [];
+      paginator.reset();
+      render();
+    }
+  }
+
+  async function loadEmployeesForVisibleRows(audit = [], history = []) {
+    const ids = new Set();
+    const documentos = new Set();
+    audit.forEach((row) => {
+      const targetId = String(row?.targetId || '').trim();
+      const after = row?.after || {};
+      const before = row?.before || {};
+      const doc = String(after.documento || before.documento || '').trim();
+      if (targetId) ids.add(targetId);
+      if (doc) documentos.add(doc);
+    });
+    history.forEach((row) => {
+      const employeeId = String(row?.employeeId || '').trim();
+      const doc = String(row?.documento || '').trim();
+      if (employeeId) ids.add(employeeId);
+      if (doc) documentos.add(doc);
+    });
+    if (typeof deps.listEmployeesByIdentity === 'function') {
+      return deps.listEmployeesByIdentity({ ids: [...ids], documentos: [...documentos] });
+    }
+    if (typeof deps.streamEmployees === 'function') {
+      return streamOnce((ok) => deps.streamEmployees(ok));
+    }
+    return [];
+  }
+
+  function streamOnce(factory, timeoutMs = 10000) {
+    return new Promise((resolve) => {
+      let settled = false;
+      let unsub = () => {};
+      const finish = (rows) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        try { unsub?.(); } catch {}
+        resolve(Array.isArray(rows) ? rows : []);
+      };
+      const timer = setTimeout(() => finish([]), timeoutMs);
+      try {
+        unsub = factory((rows) => finish(rows)) || (() => {});
+      } catch (_) {
+        finish([]);
+      }
+    });
+  }
 
   function render() {
     const rows = filteredRows();
@@ -429,6 +509,7 @@ export const EmployeeNovelties = (mount, deps = {}) => {
         note: modal.values.detail || null
       });
       alert('Programacion actualizada.');
+      scheduleRangeLoad(0);
     } catch (error) {
       alert('Error: ' + (error?.message || error));
     }
@@ -459,6 +540,7 @@ export const EmployeeNovelties = (mount, deps = {}) => {
         note: modal.values.detail || null
       });
       alert('Programacion cancelada.');
+      scheduleRangeLoad(0);
     } catch (error) {
       alert('Error: ' + (error?.message || error));
     }

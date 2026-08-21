@@ -1,7 +1,9 @@
 import { el, qs } from '../utils/dom.js';
 import { getState, setState } from '../state.js';
+import { can, PERMS } from '../permissions.js';
 
 export const ImportReplacements=(mount,deps={})=>{
+  const canManageOperation=can(PERMS.MANAGE_OPERATION_REGISTRY);
   const flow=getState().pendingReplacementFlow||{};
   const candidates=Array.isArray(flow.candidates)? flow.candidates:[];
   const fecha=flow.fechaOperacion||'';
@@ -26,9 +28,9 @@ export const ImportReplacements=(mount,deps={})=>{
       ]),
       el('div',{id:'replacementCards',className:'record-card-list'},[])
     ]),
-    el('p',{id:'msg',className:'text-muted mt-2'},[candidates.length? 'Selecciona reemplazo o ausentismo por cada fila.':'No hay novedades por reemplazar en esta importacion.']),
+    el('p',{id:'msg',className:'text-muted mt-2'},[candidates.length ? (canManageOperation ? 'Selecciona reemplazo o ausentismo por cada fila.' : 'Modo consulta: no puedes guardar decisiones de reemplazo.') : 'No hay novedades por reemplazar en esta importacion.']),
     el('div',{className:'form-row mt-2'},[
-      el('button',{id:'btnSave',className:'btn btn--primary',type:'button',disabled:!candidates.length},['Guardar decisiones'])
+      el('button',{id:'btnSave',className:'btn btn--primary',type:'button',disabled:!candidates.length || !canManageOperation,title:canManageOperation?'':'Modo consulta: no puedes guardar decisiones.'},['Guardar decisiones'])
     ])
   ]);
 
@@ -74,7 +76,7 @@ export const ImportReplacements=(mount,deps={})=>{
 
   function decisionRow(c,idx){
     const tr=el('tr',{'data-idx':String(idx)},[]);
-    const decision=el('select',{className:'select'},[
+    const decision=el('select',{className:'select',disabled:!canManageOperation},[
       el('option',{value:''},['Seleccione...']),
       el('option',{value:'reemplazo'},['Reemplazo']),
       el('option',{value:'ausentismo'},['Ausentismo'])
@@ -83,7 +85,7 @@ export const ImportReplacements=(mount,deps={})=>{
       el('option',{value:''},['Seleccione supernumerario...'])
     ]);
     decision.addEventListener('change',()=>{
-      supSel.disabled=decision.value!=='reemplazo';
+      supSel.disabled=!canManageOperation || decision.value!=='reemplazo';
       if(supSel.disabled) supSel.value='';
     });
     const available=byDoc(c.documento);
@@ -104,7 +106,7 @@ export const ImportReplacements=(mount,deps={})=>{
   }
 
   function decisionCard(c,idx){
-    const decision=el('select',{className:'select'},[
+    const decision=el('select',{className:'select',disabled:!canManageOperation},[
       el('option',{value:''},['Seleccione...']),
       el('option',{value:'reemplazo'},['Reemplazo']),
       el('option',{value:'ausentismo'},['Ausentismo'])
@@ -113,7 +115,7 @@ export const ImportReplacements=(mount,deps={})=>{
       el('option',{value:''},['Seleccione supernumerario...'])
     ]);
     decision.addEventListener('change',()=>{
-      supSel.disabled=decision.value!=='reemplazo';
+      supSel.disabled=!canManageOperation || decision.value!=='reemplazo';
       if(supSel.disabled) supSel.value='';
     });
     const available=byDoc(c.documento);
@@ -146,6 +148,7 @@ export const ImportReplacements=(mount,deps={})=>{
   render();
 
   qs('#btnSave',ui).addEventListener('click',async()=>{
+    if(!canManageOperation){ qs('#msg',ui).textContent='No tienes permiso para guardar decisiones de reemplazo.'; return; }
     const source=window.matchMedia?.('(max-width: 900px)')?.matches ? cards : tbody;
     const rows=Array.from(source.querySelectorAll('[data-idx]'));
     const assignments=[];

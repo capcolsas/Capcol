@@ -93,6 +93,7 @@ export function createTablePagination(scope, {
 
   return {
     controls,
+    update,
     reset() { state.currentPage = 1; },
     slice,
     state

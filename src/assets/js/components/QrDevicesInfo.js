@@ -2,8 +2,10 @@ import { el, qs, infoIcon, moreIcon } from '../utils/dom.js';
 import { createTablePagination } from '../utils/pagination.js';
 import { showActionModal } from '../utils/actionModal.js';
 import { showInfoModal } from '../utils/infoModal.js';
+import { can, PERMS } from '../permissions.js';
 
 export const QrDevicesInfo = (mount, deps = {}) => {
+  const canManage = can(PERMS.MANAGE_QR_DEVICES);
   let rows = [];
   let searchTerm = '';
   let statusFilter = 'activo';
@@ -212,11 +214,14 @@ export const QrDevicesInfo = (mount, deps = {}) => {
 
   function actionsCell(row = {}) {
     const box = el('div', { className: 'row-actions' }, []);
-    const btnMore = el('button', { className: 'btn btn--icon', type: 'button', title: 'Mas opciones', 'aria-label': 'Mas opciones' }, [moreIcon()]);
-    btnMore.addEventListener('click', () => openMoreOptionsModal(row));
+    if (canManage) {
+      const btnMore = el('button', { className: 'btn btn--icon', type: 'button', title: 'Mas opciones', 'aria-label': 'Mas opciones' }, [moreIcon()]);
+      btnMore.addEventListener('click', () => openMoreOptionsModal(row));
+      box.append(btnMore);
+    }
     const btnInfo = el('button', { className: 'btn btn--icon', type: 'button', title: 'Ver informacion', 'aria-label': 'Ver informacion' }, [infoIcon()]);
     btnInfo.addEventListener('click', () => showDeviceInfo(row));
-    box.append(btnMore, btnInfo);
+    box.append(btnInfo);
     return box;
   }
 

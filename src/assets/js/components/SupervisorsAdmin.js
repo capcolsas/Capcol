@@ -2,23 +2,12 @@ import { el, qs, infoIcon, editIcon } from '../utils/dom.js';
 import { showInfoModal } from '../utils/infoModal.js';
 import { showActionModal } from '../utils/actionModal.js';
 import { createTablePagination } from '../utils/pagination.js';
+import { can, PERMS } from '../permissions.js';
 export const SupervisorsAdmin=(mount,deps={})=>{
+  const canEdit=can(PERMS.EDIT_SUPERVISORS);
   const ui=el('section',{className:'main-card'},[
     el('h2',{},['Supervisores']),
-    el('div',{className:'tabs mt-2'},[
-      el('button',{id:'tabCreateBtn',className:'tab',type:'button'},['Crear']),
-      el('button',{id:'tabListBtn',className:'tab is-active',type:'button'},['Consultar'])
-    ]),
-    el('div',{id:'tabCreate',className:'hidden'},[
-      el('div',{className:'form-row mt-2'},[
-        el('div',{},[ el('label',{className:'label'},['Codigo (automatico)']), el('input',{id:'sCode',className:'input',placeholder:'Se generara al crear',disabled:true}) ]),
-        el('div',{},[ el('label',{className:'label'},['Documento']), el('input',{id:'sDoc',className:'input',placeholder:'Documento del supervisor'}) ]),
-        el('div',{},[ el('label',{className:'label'},['Nombre']), el('input',{id:'sName',className:'input',placeholder:'Nombre del supervisor'}) ]),
-        el('div',{},[ el('label',{className:'label'},['Zona']), el('select',{id:'sZone',className:'select'},[]) ]),
-        el('div',{},[ el('label',{className:'label'},['Fecha ingreso']), el('input',{id:'sIngreso',className:'input',type:'date'}) ])
-      ])
-    ]),
-    el('div',{id:'tabList'},[
+    el('div',{id:'listPanel'},[
       el('div',{className:'form-row'},[
         el('div',{},[ el('label',{className:'label'},['Buscar']), el('input',{id:'txtSearch',className:'input',placeholder:'Codigo, documento, nombre o zona...'}) ]),
         el('div',{},[ el('label',{className:'label'},['Estado']), el('select',{id:'selStatus',className:'select'},[ el('option',{value:''},['Todos']), el('option',{value:'activo'},['Activos']), el('option',{value:'inactivo'},['Inactivos']) ]) ])
@@ -45,40 +34,10 @@ export const SupervisorsAdmin=(mount,deps={})=>{
     ])
   ]);
 
-  const tabCreateBtn=qs('#tabCreateBtn',ui);
-  const tabListBtn=qs('#tabListBtn',ui);
-  const tabCreate=qs('#tabCreate',ui);
-  const tabList=qs('#tabList',ui);
-  qs('.tabs', ui)?.classList.add('hidden');
-  tabCreate.classList.add('hidden');
-  tabList.classList.remove('hidden');
-  function setTab(which){
-    const isCreate=which==='create';
-    tabCreateBtn.classList.toggle('is-active',isCreate);
-    tabListBtn.classList.toggle('is-active',!isCreate);
-    tabCreate.classList.toggle('hidden',!isCreate);
-    tabList.classList.toggle('hidden',isCreate);
-  }
-  setTab('list');
-  tabListBtn.addEventListener('click',()=> setTab('list'));
-
   let zoneList=[];
-  const zoneSelect=qs('#sZone',ui);
-  function buildOptions(items, selected){
-    const opts=[ el('option',{value:''},['Seleccione...']) ];
-    items.forEach((item)=>{
-      const code=item.codigo||''; const label=item.nombre||code||'-';
-      opts.push(el('option',{value:code, selected: code && code===selected},[ `${label} (${code||'-'})` ]));
-    });
-    return opts;
-  }
-  function renderZoneSelect(){
-    const cur=zoneSelect.value;
-    zoneSelect.replaceChildren(...buildOptions(zoneList,cur));
-  }
   let snapshot=[]; const tbody=ui.querySelector('tbody'); const cards=qs('#supervisorCards',ui);
   let sortKey=''; let sortDir=1;
-  const paginator=createTablePagination(ui,{id:'supervisors',after:'#tabList .responsive-records',onChange:render});
+  const paginator=createTablePagination(ui,{id:'supervisors',after:'#listPanel .responsive-records',onChange:render});
   let unZones=()=>{};
   let unEmp=()=>{};
   let employees=[];
@@ -158,11 +117,14 @@ export const SupervisorsAdmin=(mount,deps={})=>{
   }
   function actionsCell(s){
     const box=el('div',{className:'row-actions'},[]);
-    const btnEditZone=el('button',{className:'btn btn--icon',type:'button',title:'Editar zona','aria-label':'Editar zona'},[editIcon()]);
-    btnEditZone.addEventListener('click',()=> startEditZone(s));
+    if(canEdit){
+      const btnEditZone=el('button',{className:'btn btn--icon',type:'button',title:'Editar zona','aria-label':'Editar zona'},[editIcon()]);
+      btnEditZone.addEventListener('click',()=> startEditZone(s));
+      box.append(btnEditZone);
+    }
     const btnInfo=el('button',{className:'btn btn--icon',title:'Ver informacion','aria-label':'Ver informacion'},[infoIcon()]);
     btnInfo.addEventListener('click',()=>{ const info=auditInfoData(s); showInfoModal('Informacion del registro',[`Evento: ${info.action}`,`Usuario: ${info.user}`,`Fecha: ${info.date}`]); });
-    box.append(btnEditZone,btnInfo); return box;
+    box.append(btnInfo); return box;
   }
   function supervisorCard(s){
     const linked=isLinkedByDoc(s.documento);
@@ -233,7 +195,7 @@ export const SupervisorsAdmin=(mount,deps={})=>{
       alert('Error: '+(err?.message||err));
     }
   }
-  unZones=deps.streamZones?.((arr)=>{ zoneList=(arr||[]).filter(z=>z.estado!=='inactivo'); renderZoneSelect(); render(); }) || (()=>{});
+    unZones=deps.streamZones?.((arr)=>{ zoneList=(arr||[]).filter(z=>z.estado!=='inactivo'); render(); }) || (()=>{});
   unEmp=deps.streamEmployees?.((arr)=>{ employees=arr||[]; render(); }) || (()=>{});
   const un=deps.streamSupervisors?.((arr)=>{ snapshot=arr||[]; render(); });
   qs('#txtSearch',ui).addEventListener('input',()=>{ paginator.reset(); render(); });

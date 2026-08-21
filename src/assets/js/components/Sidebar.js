@@ -49,6 +49,12 @@ export const Sidebar = (deps = {}) => {
     if (can(PERMS.VIEW_NOVEDADES)) adminLinks.push(navLink('Novedades', '/novedades'));
     if (adminLinks.length) sections.push(section('Administracion', adminLinks, 'administracion', '/administracion-dashboard'));
 
+    const shiftLinks = [];
+    if (can(PERMS.VIEW_SHIFT_PLANS)) shiftLinks.push(navLink('Planes de turnos', '/turnos-planes'));
+    if (can(PERMS.VIEW_GENERATED_SHIFTS)) shiftLinks.push(navLink('Turnos generados', '/turnos-generados'));
+    if (can(PERMS.VIEW_SHIFT_REVIEW)) shiftLinks.push(navLink('Revision de turnos', '/turnos-revision', { badgeId: 'sidebarShiftReviewBadge' }));
+    if (shiftLinks.length) sections.push(section('Turnos', shiftLinks, 'turnos', '/turnos-revision'));
+
     const employeeLinks = [];
     if (can(PERMS.VIEW_EMPLOYEES)) employeeLinks.push(navLink('Empleados', '/employees'));
     if (can(PERMS.VIEW_EMPLOYEE_NOVELTIES)) employeeLinks.push(navLink('Novedades empleados', '/employee-novelties'));
@@ -119,10 +125,12 @@ export const Sidebar = (deps = {}) => {
   const unsub = subscribe('theme', applyTheme);
   const unPendingBadge = bindPendingNoveltyBadge(container, deps);
   const unFreeSupernumerariosBadge = bindFreeSupernumerariosBadge(container, deps);
+  const unShiftReviewBadge = bindShiftReviewBadge(container, deps);
   container._cleanup = () => {
     unsub?.();
     unPendingBadge?.();
     unFreeSupernumerariosBadge?.();
+    unShiftReviewBadge?.();
   };
 
   return container;
@@ -348,8 +356,9 @@ function bindPendingNoveltyBadge(container, deps = {}) {
   if (typeof deps.streamDailyMetricsByDate === 'function') {
     unsubs.push(deps.streamDailyMetricsByDate(todayBogota(), scheduleRefresh, scheduleRefresh));
   }
-  if (typeof deps.streamEmployees === 'function') {
-    unsubs.push(deps.streamEmployees((rows) => { employees = rows || []; scheduleRefresh(); }));
+  const employeeStream = typeof deps.streamCurrentEmployees === 'function' ? deps.streamCurrentEmployees : deps.streamEmployees;
+  if (typeof employeeStream === 'function') {
+    unsubs.push(employeeStream((rows) => { employees = rows || []; scheduleRefresh(); }, null, null, todayBogota()));
   }
   if (typeof deps.streamSedes === 'function') {
     unsubs.push(deps.streamSedes((rows) => { sedes = rows || []; scheduleRefresh(); }));
@@ -453,6 +462,64 @@ function bindFreeSupernumerariosBadge(container, deps = {}) {
     if (refreshTimer) clearTimeout(refreshTimer);
     unsubs.forEach((un) => un?.());
   };
+}
+
+function bindShiftReviewBadge(container, deps = {}) {
+  const badge = qs('#sidebarShiftReviewBadge', container);
+  if (!badge || typeof deps.listEmployeeShiftStatusRange !== 'function') return () => {};
+
+  let active = true;
+  let refreshTimer = null;
+  let intervalId = null;
+
+  const setCount = (count) => {
+    if (!active) return;
+    const value = Math.max(0, Number(count || 0));
+    badge.hidden = value <= 0;
+    badge.textContent = value > 99 ? '99+' : String(value);
+    const label = `${value} pendiente${value === 1 ? '' : 's'} de revision de turnos`;
+    badge.setAttribute('aria-label', label);
+    const link = badge.closest('.sidebar__nav-link');
+    if (link) {
+      link.title = value > 0 ? `Revision de turnos - ${label}` : 'Revision de turnos';
+      link.setAttribute('aria-label', link.title);
+    }
+  };
+
+  const refresh = async () => {
+    const dateTo = todayBogota();
+    const dateFrom = addIsoDays(dateTo, -30);
+    try {
+      const rows = await deps.listEmployeeShiftStatusRange(dateFrom, dateTo);
+      if (!active) return;
+      setCount((rows || []).filter(isPendingShiftReviewForBadge).length);
+    } catch (error) {
+      if (!active) return;
+      setCount(0);
+      console.warn('No se pudo actualizar la burbuja de revision de turnos:', error);
+    }
+  };
+
+  const scheduleRefresh = () => {
+    if (refreshTimer) clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(refresh, 250);
+  };
+
+  refresh();
+  intervalId = setInterval(scheduleRefresh, 60000);
+
+  return () => {
+    active = false;
+    if (refreshTimer) clearTimeout(refreshTimer);
+    if (intervalId) clearInterval(intervalId);
+  };
+}
+
+function isPendingShiftReviewForBadge(row = {}) {
+  const status = String(row?.estadoTurno || '').trim();
+  if (status === 'ajustado' && row?.requiresReview !== true) return false;
+  return row?.requiresReview === true
+    || ['post_cierre_pendiente', 'salida_pendiente', 'retiro_anticipado', 'trabajado_tardio'].includes(status);
 }
 
 function isAvailableSupernumerarioForBadge(row = {}, day = '') {
@@ -659,6 +726,15 @@ function todayBogota() {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Bogota' }).format(new Date());
 }
 
+function addIsoDays(isoDate, days) {
+  const raw = String(isoDate || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  const date = new Date(`${raw}T00:00:00Z`);
+  if (Number.isNaN(date.getTime())) return raw;
+  date.setUTCDate(date.getUTCDate() + Number(days || 0));
+  return date.toISOString().slice(0, 10);
+}
+
 function getSectionPref(key) {
   try {
     return localStorage.getItem(`sidebar_sec_${key}`) === '1';
@@ -681,6 +757,7 @@ function getSectionIconMeta(key) {
   const map = {
     gobierno: { icon: 'shield-check', fallback: 'GO' },
     administracion: { icon: 'building-2', fallback: 'AD' },
+    turnos: { icon: 'calendar-clock', fallback: 'TU' },
     empleados: { icon: 'users', fallback: 'EM' },
     operacion: { icon: 'clipboard-check', fallback: 'OP' },
     reportes: { icon: 'file-bar-chart', fallback: 'RP' },
@@ -691,6 +768,7 @@ function getSectionIconMeta(key) {
 
 function getSubsectionIconMeta(key) {
   const map = {
+    turnos: { icon: 'calendar-clock', fallback: 'TU' },
     reportes_diarios: { icon: 'calendar-days', fallback: 'D' },
     reportes_consolidados: { icon: 'files', fallback: 'C' }
   };
@@ -716,6 +794,10 @@ function getNavIconMeta(route) {
     '/imports': { icon: 'message-circle', fallback: 'WA' },
     '/whatsapp-live': { icon: 'message-circle', fallback: 'WA' },
     '/registros-vivo': { icon: 'message-circle', fallback: 'WA' },
+    '/turnos': { icon: 'calendar-clock', fallback: 'TU' },
+    '/turnos-planes': { icon: 'calendar-clock', fallback: 'TP' },
+    '/turnos-generados': { icon: 'calendar-check', fallback: 'TG' },
+    '/turnos-revision': { icon: 'clipboard-check', fallback: 'RT' },
     '/registro-sede': { icon: 'clipboard-list', fallback: 'RS' },
     '/lector-qr': { icon: 'scan-line', fallback: 'QR' },
     '/tablets-qr': { icon: 'tablet', fallback: 'TQ' },

@@ -2,28 +2,12 @@ import { el, qs, infoIcon, moreIcon, viewIcon } from '../utils/dom.js';
 import { showInfoModal } from '../utils/infoModal.js';
 import { showActionModal } from '../utils/actionModal.js';
 import { createTablePagination } from '../utils/pagination.js';
+import { can, PERMS } from '../permissions.js';
 export const EmployeesAdmin=(mount,deps={})=>{
+  const canEdit=can(PERMS.EDIT_EMPLOYEES);
   const ui=el('section',{className:'main-card'},[
     el('h2',{},['Empleados']),
-    el('div',{className:'tabs mt-2'},[
-      el('button',{id:'tabCreateBtn',className:'tab',type:'button'},['Crear']),
-      el('button',{id:'tabListBtn',className:'tab is-active',type:'button'},['Consultar'])
-    ]),
-    el('div',{id:'tabCreate',className:'hidden'},[
-      el('div',{className:'form-row mt-2'},[
-        el('div',{},[ el('label',{className:'label'},['Codigo (automatico)']), el('input',{id:'eCode',className:'input',placeholder:'Se generara al crear',disabled:true}) ]),
-        el('div',{},[ el('label',{className:'label'},['Documento']), el('input',{id:'eDoc',className:'input',placeholder:'Documento del empleado'}) ]),
-        el('div',{},[ el('label',{className:'label'},['Nombre completo']), el('input',{id:'eName',className:'input',placeholder:'Nombre completo'}) ]),
-        el('div',{},[ el('label',{className:'label'},['Telefono']), el('input',{id:'ePhone',className:'input',placeholder:'Telefono'}) ]),
-        el('div',{},[ el('label',{className:'label'},['Cargo']), el('select',{id:'eCargo',className:'select'},[]) ]),
-        el('div',{},[ el('label',{className:'label'},['Sede (buscar)']), el('input',{id:'eSedeSearch',className:'input',list:'eSedeList',placeholder:'Nombre o codigo de sede'}) ]),
-        el('div',{},[ el('label',{className:'label'},['Fecha ingreso']), el('input',{id:'eIngreso',className:'input',type:'date'}) ]),
-        el('button',{id:'btnCreate',className:'btn btn--primary'},['Crear empleado']),
-        el('span',{id:'msgCreate',className:'text-muted'},[' '])
-      ]),
-      el('datalist',{id:'eSedeList'},[])
-    ]),
-    el('div',{id:'tabList'},[
+    el('div',{id:'listPanel'},[
       el('div',{className:'form-row'},[
         el('div',{},[ el('label',{className:'label'},['Buscar']), el('input',{id:'txtSearch',className:'input',placeholder:'Codigo, documento, nombre o sede...'}) ]),
         el('div',{},[ el('label',{className:'label'},['Sede']), el('select',{id:'selSede',className:'select'},[ el('option',{value:''},['Todas']) ]) ]),
@@ -50,28 +34,12 @@ export const EmployeesAdmin=(mount,deps={})=>{
         el('div',{id:'employeeCards',className:'record-card-list'},[])
       ]),
       el('p',{id:'msg',className:'text-muted mt-2'},[' '])
-    ])
+    ]),
+    el('datalist',{id:'eSedeList'},[])
   ]);
 
-  const tabCreateBtn=qs('#tabCreateBtn',ui);
-  const tabListBtn=qs('#tabListBtn',ui);
-  const tabCreate=qs('#tabCreate',ui);
-  const tabList=qs('#tabList',ui);
-  qs('.tabs', ui)?.classList.add('hidden');
-  tabCreate.classList.add('hidden');
-  tabList.classList.remove('hidden');
-  function setTab(which){
-    const isCreate=which==='create';
-    tabCreateBtn.classList.toggle('is-active',isCreate);
-    tabListBtn.classList.toggle('is-active',!isCreate);
-    tabCreate.classList.toggle('hidden',!isCreate);
-    tabList.classList.toggle('hidden',isCreate);
-  }
-  tabCreateBtn.addEventListener('click',()=> setTab('create'));
-  tabListBtn.addEventListener('click',()=> setTab('list'));
-
   let sedeList=[]; let cargoList=[];
-  const sedeInput=qs('#eSedeSearch',ui); const sedeListNode=qs('#eSedeList',ui); const cargoSelect=qs('#eCargo',ui);
+  const sedeListNode=qs('#eSedeList',ui);
   function buildOptions(items, selected){
     const opts=[ el('option',{value:''},['Seleccione...']) ];
     items.forEach((item)=>{
@@ -121,10 +89,6 @@ export const EmployeesAdmin=(mount,deps={})=>{
     }
     const byName=sedeList.find(s=> String(s.nombre||'').toLowerCase()===raw.toLowerCase());
     return byName?.codigo||'';
-  }
-  function renderCargoSelect(){
-    const cur=cargoSelect.value;
-    cargoSelect.replaceChildren(...buildOptions(cargoList,cur));
   }
   function sedeOptions(){
     return sedeList
@@ -195,12 +159,16 @@ export const EmployeesAdmin=(mount,deps={})=>{
       alert('Empleado creado OK');
     }catch(e){ alert('Error: '+(e?.message||e)); }
   }
-  const btnOpenCreate=el('button',{id:'btnOpenCreate',className:'btn btn--primary right',type:'button'},['Crear empleado']);
-  qs('#tabList .form-row',ui)?.append(btnOpenCreate);
-  btnOpenCreate.addEventListener('click',openCreateModal);
-  let snapshot=[]; let historyRows=[]; const tbody=ui.querySelector('tbody'); const cards=qs('#employeeCards',ui);
+  if(canEdit){
+    const btnOpenCreate=el('button',{id:'btnOpenCreate',className:'btn btn--primary right',type:'button'},['Crear empleado']);
+    qs('#listPanel .form-row',ui)?.append(btnOpenCreate);
+    btnOpenCreate.addEventListener('click',openCreateModal);
+  }
+  let snapshot=[]; let historyRows=[]; let totalRows=0; let loading=false; const tbody=ui.querySelector('tbody'); const cards=qs('#employeeCards',ui);
   let sortKey=''; let sortDir=1;
-  const paginator=createTablePagination(ui,{id:'employees',after:'#tabList .responsive-records',onChange:render});
+  const paginator=createTablePagination(ui,{id:'employees',after:'#listPanel .responsive-records',onChange:()=> scheduleLoadPage(0)});
+  let loadTimer=null;
+  let loadToken=0;
   let unSedes=()=>{};
   let unCargos=()=>{};
   let unSup=()=>{};
@@ -216,51 +184,6 @@ export const EmployeesAdmin=(mount,deps={})=>{
     const inSupn=supernumerarios.some((s)=> s.estado!=='inactivo' && String(s.documento||'').trim()===d);
     return inSup || inSupn;
   };
-
-  qs('#btnCreate',ui).addEventListener('click',async()=>{
-    const doc=qs('#eDoc',ui).value.trim();
-    const name=qs('#eName',ui).value.trim();
-    const phone=qs('#ePhone',ui).value.trim();
-    const cargoCode=qs('#eCargo',ui).value;
-    const sedeCode=resolveSedeCode(sedeInput.value);
-    const ingreso=qs('#eIngreso',ui).value;
-    const msg=qs('#msgCreate',ui); msg.textContent=' ';
-    if(!doc){ msg.textContent='Escribe el documento.'; return; }
-    if(!name){ msg.textContent='Escribe el nombre completo.'; return; }
-    if(!phone){ msg.textContent='Escribe el telefono.'; return; }
-    if(!cargoCode){ msg.textContent='Selecciona un cargo.'; return; }
-    if(!sedeCode){ msg.textContent='Selecciona una sede.'; return; }
-    if(!ingreso){ msg.textContent='Selecciona la fecha de ingreso.'; return; }
-    try{
-      const dupDoc=await deps.findEmployeeByDocument?.(doc);
-      if(dupDoc) {
-        if(String(dupDoc.estado||'').trim().toLowerCase()==='inactivo') {
-          msg.textContent='Ya existe un empleado inactivo con ese documento. Se abrira el reingreso.';
-          await openRehireEmployeeModal(dupDoc,{ nombre:name, telefono:phone, cargoCodigo:cargoCode, sedeCodigo:sedeCode, fechaIngreso:ingreso });
-          return;
-        }
-        msg.textContent='Ya existe un empleado activo con ese documento.';
-        return;
-      }
-      const code=await deps.getNextEmployeeCode?.();
-      const cargo=cargoList.find(c=>c.codigo===cargoCode);
-      const sede=sedeList.find(s=>s.codigo===sedeCode);
-      const id=await deps.createEmployee?.({
-        codigo:code,
-        documento:doc,
-        nombre:name,
-        telefono:phone,
-        cargoCodigo:cargoCode,
-        cargoNombre:cargo?.nombre||null,
-        sedeCodigo:sedeCode,
-        sedeNombre:sede?.nombre||null,
-        fechaIngreso: new Date(`${ingreso}T00:00:00`)
-      });
-      await deps.addAuditLog?.({ targetType:'employee', targetId:id, action:'create_employee', after:{ codigo:code, documento:doc, nombre:name, sedeCodigo:sedeCode, estado:'activo' } });
-      qs('#eDoc',ui).value=''; qs('#eName',ui).value=''; qs('#ePhone',ui).value=''; qs('#eIngreso',ui).value=''; sedeInput.value=''; renderCargoSelect(); renderSedeSelect();
-      msg.textContent='Empleado creado OK'; setTab('list'); setTimeout(()=> msg.textContent=' ',1200);
-    }catch(e){ msg.textContent='Error: '+(e?.message||e); }
-  });
 
   const search=()=> qs('#txtSearch',ui).value.trim().toLowerCase();
   const filterSede=()=> qs('#selSede',ui)?.value||'';
@@ -303,35 +226,105 @@ export const EmployeesAdmin=(mount,deps={})=>{
         const key=th.getAttribute('data-sort');
         if(sortKey===key) sortDir=sortDir*-1; else { sortKey=key; sortDir=1; }
         paginator.reset();
-        render();
+        scheduleLoadPage(0);
       });
     });
   }
-  function render(){
+  function currentPageOffset(){
+    return paginator.state.showAll ? 0 : (Math.max(1,paginator.state.currentPage)-1)*Math.max(1,paginator.state.pageSize);
+  }
+  function updateServerPagination(){
+    const pageSize=paginator.state.showAll ? Math.max(totalRows,1) : Math.max(1,paginator.state.pageSize);
+    const totalPages=Math.max(1,Math.ceil(totalRows/pageSize));
+    paginator.update?.(totalRows,snapshot.length,currentPageOffset(),totalPages);
+  }
+  function scheduleLoadPage(delay=250){
+    clearTimeout(loadTimer);
+    loadTimer=setTimeout(()=> loadPage(),delay);
+  }
+  async function loadPage(){
+    const token=++loadToken;
+    loading=true;
+    render();
+    try{
+      const result=typeof deps.listEmployeesAdminPage==='function'
+        ? await deps.listEmployeesAdminPage({
+          search:search(),
+          sedeCodigo:filterSede(),
+          estado:filterStatus(),
+          sortKey,
+          sortDir,
+          page:paginator.state.currentPage,
+          pageSize:paginator.state.pageSize,
+          showAll:paginator.state.showAll
+        })
+        : await loadEmployeesPageFallback();
+      if(token!==loadToken) return;
+      snapshot=result.rows||[];
+      totalRows=Number(result.total||snapshot.length||0);
+      const pageSize=paginator.state.showAll ? Math.max(totalRows,1) : Math.max(1,paginator.state.pageSize);
+      const totalPages=Math.max(1,Math.ceil(totalRows/pageSize));
+      if(totalRows>0 && !snapshot.length && paginator.state.currentPage>totalPages){
+        paginator.state.currentPage=totalPages;
+        loading=false;
+        scheduleLoadPage(0);
+        return;
+      }
+      historyRows=await loadHistoryForPage(snapshot);
+    }catch(e){
+      if(token!==loadToken) return;
+      snapshot=[];
+      historyRows=[];
+      totalRows=0;
+      const msg=qs('#msg',ui); if(msg) msg.textContent='Error cargando empleados: '+(e?.message||e);
+    }finally{
+      if(token===loadToken){
+        loading=false;
+        render();
+      }
+    }
+  }
+  async function loadEmployeesPageFallback(){
+    const rows=await streamOnce((ok)=> deps.streamEmployees?.(ok));
     const term=search(); const sedeCode=filterSede(); const st=filterStatus();
-    const data=snapshot.filter(e=>{
-      const view=employeeAssignmentView(e);
-      const currentSedeCode=String(view.current?.sedeCodigo||'').trim();
-      const text=[
-        e.codigo,
-        e.documento,
-        e.nombre,
-        view.current?.cargoNombre,
-        cargoNameByCode(view.current?.cargoCodigo),
-        view.current?.sedeNombre,
-        sedeNameByCode(view.current?.sedeCodigo),
-        view.programmed?.cargoNombre,
-        cargoNameByCode(view.programmed?.cargoCodigo),
-        view.programmed?.sedeNombre,
-        sedeNameByCode(view.programmed?.sedeCodigo)
-      ].join(' ').toLowerCase();
-      return (!term || text.includes(term)) && (!sedeCode || currentSedeCode===sedeCode) && (!st || e.estado===st);
+    const filtered=rows.filter(e=>{
+      const text=[e.codigo,e.documento,e.nombre,e.telefono,e.cargoNombre,e.cargoCodigo,e.sedeNombre,e.sedeCodigo].join(' ').toLowerCase();
+      return (!term || text.includes(term)) && (!sedeCode || String(e.sedeCodigo||'')===sedeCode) && (!st || e.estado===st);
     });
-    const sorted=sortData(data);
-    const pageRows=paginator.slice(sorted);
+    const sorted=sortData(filtered);
+    const pageSize=paginator.state.showAll ? Math.max(sorted.length,1) : Math.max(1,paginator.state.pageSize);
+    const start=paginator.state.showAll ? 0 : (Math.max(1,paginator.state.currentPage)-1)*pageSize;
+    return { rows:sorted.slice(start,start+pageSize), total:sorted.length };
+  }
+  async function loadHistoryForPage(rows=[]){
+    const ids=rows.map((row)=>String(row?.id||'').trim()).filter(Boolean);
+    const documentos=rows.map((row)=>String(row?.documento||'').trim()).filter(Boolean);
+    if(typeof deps.listEmployeeCargoHistoryForEmployees==='function'){
+      return deps.listEmployeeCargoHistoryForEmployees({ ids, documentos });
+    }
+    return streamOnce((ok)=> deps.streamEmployeeCargoHistoryAll?.(ok));
+  }
+  function streamOnce(factory,timeoutMs=10000){
+    return new Promise((resolve)=>{
+      let settled=false;
+      let unsub=()=>{};
+      const finish=(rows)=>{
+        if(settled) return;
+        settled=true;
+        clearTimeout(timer);
+        try{ unsub?.(); }catch{}
+        resolve(Array.isArray(rows)?rows:[]);
+      };
+      const timer=setTimeout(()=>finish([]),timeoutMs);
+      try{ unsub=factory((rows)=>finish(rows))||(()=>{}); }catch{ finish([]); }
+    });
+  }
+  function render(){
+    const pageRows=snapshot;
+    updateServerPagination();
     tbody.replaceChildren(...pageRows.map(e=> row(e)));
     cards.replaceChildren(...(pageRows.length ? pageRows.map(e=> employeeCard(e)) : [el('p',{className:'text-muted record-card__empty'},['Sin empleados para mostrar.'])]));
-    const msg=qs('#msg',ui); if(msg) msg.textContent=`Total registros filtrados: ${data.length}`;
+    const msg=qs('#msg',ui); if(msg) msg.textContent=loading ? 'Cargando empleados...' : `Total registros filtrados: ${totalRows}`;
     updateSortIndicators();
   }
   function row(e){
@@ -714,10 +707,29 @@ export const EmployeesAdmin=(mount,deps={})=>{
       ]
     });
     if(!modal.confirmed) return;
-    const retiro=String(modal.values.retiroDate||'').trim();
+    let retiro=String(modal.values.retiroDate||'').trim();
     if(!validInputDate(retiro)) return alert('Fecha invalida. Usa formato AAAA-MM-DD.');
     const ingreso=toInputDate(e.fechaIngreso);
     if(ingreso && retiro<ingreso) return alert('La fecha de retiro no puede ser anterior a la fecha de ingreso.');
+    const originalRetiro=retiro;
+    const lastAttendance=await resolveLastAttendanceForRetirement(e);
+    if(lastAttendance?.fecha && retiro<lastAttendance.fecha){
+      const sedeLabel=lastAttendance.sedeNombre||lastAttendance.sedeCodigo||'una sede';
+      const adjust=await showActionModal({
+        title:'Ajustar fecha de retiro',
+        message:[
+          `La fecha seleccionada (${formatInputDate(retiro)}) queda antes del ultimo registro de asistencia.`,
+          `Ultima asistencia: ${formatInputDate(lastAttendance.fecha)} en ${sedeLabel}.`,
+          'Para conservar el historico operativo, el retiro debe quedar como minimo en esa fecha.'
+        ].join('\n'),
+        confirmText:'Usar ultima asistencia',
+        fields:[
+          { id:'finalDate', label:'Fecha final de retiro', type:'text', readonly:true, value:lastAttendance.fecha }
+        ]
+      });
+      if(!adjust.confirmed) return;
+      retiro=lastAttendance.fecha;
+    }
     const programmed=programmedAssignmentsAfterDate(e,retiro);
     if(programmed.length){
       const confirmCancel=await showActionModal({
@@ -741,8 +753,17 @@ export const EmployeesAdmin=(mount,deps={})=>{
         if(row?.id) await deps.cancelProgrammedEmployeeAssignment?.(row.id);
       }
       await deps.setEmployeeStatus?.(e.id,'inactivo',{ fechaRetiro:retiroDate, cancelProgrammedAssignments:true });
-      await deps.addAuditLog?.({ targetType:'employee', targetId:e.id, action:'retire_employee', before:{estado:e.estado, fechaRetiro:e.fechaRetiro||null}, after:{estado:'inactivo', fechaRetiro:retiro, cancelledProgrammedAssignments:programmed.map((row)=>({ id:row.id, fechaIngreso:row.fechaIngreso, sedeCodigo:row.sedeCodigo, sedeNombre:row.sedeNombre, cargoCodigo:row.cargoCodigo, cargoNombre:row.cargoNombre }))}, note:modal.values.detail||null });
+      await deps.addAuditLog?.({ targetType:'employee', targetId:e.id, action:'retire_employee', before:{estado:e.estado, fechaRetiro:e.fechaRetiro||null}, after:{estado:'inactivo', fechaRetiro:retiro, fechaRetiroSolicitada:originalRetiro!==retiro?originalRetiro:null, ultimaAsistencia:lastAttendance||null, cancelledProgrammedAssignments:programmed.map((row)=>({ id:row.id, fechaIngreso:row.fechaIngreso, sedeCodigo:row.sedeCodigo, sedeNombre:row.sedeNombre, cargoCodigo:row.cargoCodigo, cargoNombre:row.cargoNombre }))}, note:modal.values.detail||null });
     }catch(err){ alert('Error: '+(err?.message||err)); }
+  }
+  async function resolveLastAttendanceForRetirement(e){
+    if(typeof deps.getEmployeeLastAttendanceDay!=='function') return null;
+    try{
+      return await deps.getEmployeeLastAttendanceDay({ id:e.id, documento:e.documento });
+    }catch(error){
+      console.error('No se pudo consultar ultima asistencia del empleado:', error);
+      return null;
+    }
   }
   async function openRehireEmployeeModal(e, defaults={}){
     if(String(e?.estado||'').trim().toLowerCase()!=='inactivo') return alert('Solo puedes reingresar empleados inactivos.');
@@ -792,13 +813,16 @@ export const EmployeesAdmin=(mount,deps={})=>{
   }
   function actionsCell(e){
     const box=el('div',{className:'row-actions'},[]);
-    const btnMore=el('button',{className:'btn btn--icon',type:'button',title:'Mas opciones','aria-label':'Mas opciones'},[moreIcon()]);
-    btnMore.addEventListener('click',()=> openMoreOptionsModal(e));
+    if(canEdit){
+      const btnMore=el('button',{className:'btn btn--icon',type:'button',title:'Mas opciones','aria-label':'Mas opciones'},[moreIcon()]);
+      btnMore.addEventListener('click',()=> openMoreOptionsModal(e));
+      box.append(btnMore);
+    }
     const btnView=el('button',{className:'btn btn--icon',type:'button',title:'Ver ficha','aria-label':'Ver ficha'},[viewIcon()]);
     btnView.addEventListener('click',()=>{ openEmployeeDetailModal(e); });
     const btnInfo=el('button',{className:'btn btn--icon',type:'button',title:'Ver informacion','aria-label':'Ver informacion'},[infoIcon()]);
     btnInfo.addEventListener('click',()=>{ openCargoHistoryModal(e); });
-    box.append(btnMore,btnView,btnInfo);
+    box.append(btnView,btnInfo);
     return box;
   }
   function openEmployeeDetailModal(e){
@@ -897,21 +921,21 @@ export const EmployeesAdmin=(mount,deps={})=>{
     ].filter(Boolean).sort();
     return dates.length ? dates[dates.length-1] : '';
   }
-  qs('#txtSearch',ui).addEventListener('input',()=>{ paginator.reset(); render(); });
-  qs('#selSede',ui).addEventListener('change',()=>{ paginator.reset(); render(); });
-  qs('#selStatus',ui).addEventListener('change',()=>{ paginator.reset(); render(); });
+  qs('#txtSearch',ui).addEventListener('input',()=>{ paginator.reset(); scheduleLoadPage(); });
+  qs('#selSede',ui).addEventListener('change',()=>{ paginator.reset(); scheduleLoadPage(0); });
+  qs('#selStatus',ui).addEventListener('change',()=>{ paginator.reset(); scheduleLoadPage(0); });
   initSorting();
   mount.replaceChildren(ui);
-  let un=()=>{};
+  let unWatch=()=>{};
   try{
     unSedes=deps.streamSedes?.((arr)=>{ sedeList=(arr||[]).filter(s=>s.estado!=='inactivo'); renderSedeSelect(); renderSedeFilter(); render(); }) || (()=>{});
-    unCargos=deps.streamCargos?.((arr)=>{ cargoList=(arr||[]).filter(c=>c.estado!=='inactivo'); renderCargoSelect(); render(); }) || (()=>{});
+    unCargos=deps.streamCargos?.((arr)=>{ cargoList=(arr||[]).filter(c=>c.estado!=='inactivo'); render(); }) || (()=>{});
     unSup=deps.streamSupervisors?.((arr)=>{ supervisors=arr||[]; render(); }) || (()=>{});
     unSupn=deps.streamSupernumerarios?.((arr)=>{ supernumerarios=arr||[]; render(); }) || (()=>{});
-    unHistory=deps.streamEmployeeCargoHistoryAll?.((arr)=>{ historyRows=arr||[]; render(); }) || (()=>{});
-    un=deps.streamEmployees?.((arr)=>{ snapshot=arr||[]; render(); }) || (()=>{});
+    unWatch=deps.watchEmployeesAdminChanges?.(()=> scheduleLoadPage(0)) || (()=>{});
+    scheduleLoadPage(0);
   }catch(e){
     const msg=qs('#msg',ui); if(msg) msg.textContent='Error cargando empleados: '+(e?.message||e);
   }
-  return ()=>{ un?.(); unSedes?.(); unCargos?.(); unSup?.(); unSupn?.(); unHistory?.(); };
+  return ()=>{ clearTimeout(loadTimer); unWatch?.(); unSedes?.(); unCargos?.(); unSup?.(); unSupn?.(); unHistory?.(); };
 };

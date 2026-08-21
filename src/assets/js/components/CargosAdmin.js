@@ -2,7 +2,9 @@ import { el, qs, infoIcon, editIcon, activateIcon, deactivateIcon } from '../uti
 import { showInfoModal } from '../utils/infoModal.js';
 import { showActionModal } from '../utils/actionModal.js';
 import { createTablePagination } from '../utils/pagination.js';
+import { can, PERMS } from '../permissions.js';
 export const CargosAdmin=(mount,deps={})=>{
+  const canEdit=can(PERMS.EDIT_CARGOS);
   const crudOptions=[
     { value:'empleado', label:'Solo Empleados' },
     { value:'supervisor', label:'Supervisor' },
@@ -31,23 +33,7 @@ export const CargosAdmin=(mount,deps={})=>{
   };
   const ui=el('section',{className:'main-card'},[
     el('h2',{},['Cargos']),
-    el('div',{className:'tabs mt-2'},[
-      el('button',{id:'tabCreateBtn',className:'tab',type:'button'},['Crear']),
-      el('button',{id:'tabListBtn',className:'tab is-active',type:'button'},['Consultar'])
-    ]),
-    el('div',{id:'tabCreate',className:'hidden'},[
-      el('div',{className:'form-row mt-2'},[
-        el('div',{},[ el('label',{className:'label'},['Codigo (automatico)']), el('input',{id:'cCode',className:'input',placeholder:'Se generara al crear',disabled:true}) ]),
-        el('div',{},[ el('label',{className:'label'},['Cargo']), el('input',{id:'cName',className:'input',placeholder:'Nombre del cargo'}) ]),
-        el('div',{},[ el('label',{className:'label'},['Salario']), el('input',{id:'cSalary',className:'input',type:'number',min:'0',step:'1',inputMode:'numeric',placeholder:'0'}) ]),
-        el('div',{},[ el('label',{className:'label'},['Vincular en CRUD']), el('select',{id:'cCrud',className:'select'},[
-          ...crudOptions.map((o)=> el('option',{ value:o.value },[o.label]))
-        ]) ]),
-        el('button',{id:'btnCreate',className:'btn btn--primary'},['Crear cargo']),
-        el('span',{id:'msgCreate',className:'text-muted'},[' '])
-      ])
-    ]),
-    el('div',{id:'tabList'},[
+    el('div',{id:'listPanel'},[
       el('div',{className:'form-row'},[
         el('div',{},[ el('label',{className:'label'},['Buscar']), el('input',{id:'txtSearch',className:'input',placeholder:'Codigo o cargo...'}) ]),
         el('div',{},[ el('label',{className:'label'},['Estado']), el('select',{id:'selStatus',className:'select'},[ el('option',{value:''},['Todos']), el('option',{value:'activo'},['Activos']), el('option',{value:'inactivo'},['Inactivos']) ]) ]),
@@ -64,23 +50,6 @@ export const CargosAdmin=(mount,deps={})=>{
       el('p',{id:'msg',className:'text-muted mt-2'},[' '])
     ])
   ]);
-
-  const tabCreateBtn=qs('#tabCreateBtn',ui);
-  const tabListBtn=qs('#tabListBtn',ui);
-  const tabCreate=qs('#tabCreate',ui);
-  const tabList=qs('#tabList',ui);
-  qs('.tabs', ui)?.classList.add('hidden');
-  tabCreate.classList.add('hidden');
-  tabList.classList.remove('hidden');
-  function setTab(which){
-    const isCreate=which==='create';
-    tabCreateBtn.classList.toggle('is-active',isCreate);
-    tabListBtn.classList.toggle('is-active',!isCreate);
-    tabCreate.classList.toggle('hidden',!isCreate);
-    tabList.classList.toggle('hidden',isCreate);
-  }
-  tabCreateBtn.addEventListener('click',()=> setTab('create'));
-  tabListBtn.addEventListener('click',()=> setTab('list'));
 
   async function openCreateModal(){
     const modal=await showActionModal({
@@ -112,28 +81,15 @@ export const CargosAdmin=(mount,deps={})=>{
       alert('Cargo creado OK');
     }catch(e){ alert('Error: '+(e?.message||e)); }
   }
-  const btnOpenCreate=el('button',{id:'btnOpenCreate',className:'btn btn--primary right',type:'button'},['Crear cargo']);
-  qs('#tabList .form-row',ui)?.append(btnOpenCreate);
-  btnOpenCreate.addEventListener('click',openCreateModal);
+  if(canEdit){
+    const btnOpenCreate=el('button',{id:'btnOpenCreate',className:'btn btn--primary right',type:'button'},['Crear cargo']);
+    qs('#listPanel .form-row',ui)?.append(btnOpenCreate);
+    btnOpenCreate.addEventListener('click',openCreateModal);
+  }
 
-  qs('#btnCreate',ui).addEventListener('click',async()=>{
-    const name=qs('#cName',ui).value.trim();
-    const salario=parseSalary(qs('#cSalary',ui).value);
-    const alineacionCrud=qs('#cCrud',ui).value || 'empleado';
-    const msg=qs('#msgCreate',ui); msg.textContent=' ';
-    if(!name){ msg.textContent='Escribe el cargo.'; return; }
-    if(Number.isNaN(salario)){ msg.textContent='El salario debe ser un numero valido.'; return; }
-    try{
-      const code=await deps.getNextCargoCode?.();
-      const id=await deps.createCargo?.({ codigo:code, nombre:name, salario, alineacionCrud });
-      await deps.addAuditLog?.({ targetType:'cargo', targetId:id, action:'create_cargo', after:{ codigo:code, nombre:name, salario, alineacionCrud, estado:'activo' } });
-      qs('#cName',ui).value=''; qs('#cSalary',ui).value=''; qs('#cCrud',ui).value='empleado';
-      msg.textContent='Cargo creado OK'; setTab('list'); setTimeout(()=> msg.textContent=' ',1200);
-    }catch(e){ msg.textContent='Error: '+(e?.message||e); }
-  });
   let snapshot=[]; const tbody=ui.querySelector('tbody'); const cards=qs('#cargoCards',ui);
   let sortKey=''; let sortDir=1;
-  const paginator=createTablePagination(ui,{id:'cargos',after:'#tabList .responsive-records',onChange:render});
+  const paginator=createTablePagination(ui,{id:'cargos',after:'#listPanel .responsive-records',onChange:render});
   const search=()=> qs('#txtSearch',ui).value.trim().toLowerCase();
   const filterStatus=()=> qs('#selStatus',ui).value;
   function sortVal(c,key){ if(key==='createdAt'){ try{ const x=c.createdAt?.toDate?c.createdAt.toDate(): (c.createdAt?new Date(c.createdAt):null); return x?x.getTime():0; }catch{return 0;} } if(key==='salario') return Number(c.salario)||0; return String(c[key]??'').toLowerCase(); }
@@ -152,7 +108,7 @@ export const CargosAdmin=(mount,deps={})=>{
       date: hasMod ? formatDate(c.lastModifiedAt) : formatDate(c.createdAt)
     };
   }
-  function actionsCell(c){ const box=el('div',{className:'row-actions'},[]); const btnEdit=el('button',{className:'btn btn--icon',title:'Editar','aria-label':'Editar'},[editIcon()]); btnEdit.addEventListener('click',()=> openEditModal(c)); const btnToggle=el('button',{className:'btn btn--icon '+(c.estado==='activo'?'btn--danger':'' ),title:c.estado==='activo'?'Desactivar':'Activar','aria-label':c.estado==='activo'?'Desactivar':'Activar'},[ c.estado==='activo'?deactivateIcon():activateIcon() ]); btnToggle.addEventListener('click',async()=>{ const target=c.estado==='activo'?'inactivo':'activo'; const modal=await showActionModal({ title:`${target==='inactivo'?'Desactivar':'Activar'} cargo`, message:`Cargo: ${c.nombre||'-'}`, confirmText:target==='inactivo'?'Desactivar':'Activar', fields:[{ id:'detail', label:'Detalle', type:'textarea', required:true, placeholder:'Escribe el motivo o detalle de esta accion' }] }); if(!modal.confirmed) return; try{ await deps.setCargoStatus?.(c.id,target); await deps.addAuditLog?.({ targetType:'cargo', targetId:c.id, action: target==='activo'?'activate_cargo':'deactivate_cargo', before:{estado:c.estado}, after:{estado:target}, note: modal.values.detail||null }); }catch(e){ alert('Error: '+(e?.message||e)); } }); const btnInfo=el('button',{className:'btn btn--icon',title:'Ver informacion','aria-label':'Ver informacion'},[infoIcon()]); btnInfo.addEventListener('click',()=>{ const info=auditInfoData(c); showInfoModal('Informacion del registro',[`Evento: ${info.action}`,`Usuario: ${info.user}`,`Fecha: ${info.date}`]); }); box.append(btnEdit,btnToggle,btnInfo); return box; }
+  function actionsCell(c){ const box=el('div',{className:'row-actions'},[]); if(canEdit){ const btnEdit=el('button',{className:'btn btn--icon',title:'Editar','aria-label':'Editar'},[editIcon()]); btnEdit.addEventListener('click',()=> openEditModal(c)); const btnToggle=el('button',{className:'btn btn--icon '+(c.estado==='activo'?'btn--danger':'' ),title:c.estado==='activo'?'Desactivar':'Activar','aria-label':c.estado==='activo'?'Desactivar':'Activar'},[ c.estado==='activo'?deactivateIcon():activateIcon() ]); btnToggle.addEventListener('click',async()=>{ const target=c.estado==='activo'?'inactivo':'activo'; const modal=await showActionModal({ title:`${target==='inactivo'?'Desactivar':'Activar'} cargo`, message:`Cargo: ${c.nombre||'-'}`, confirmText:target==='inactivo'?'Desactivar':'Activar', fields:[{ id:'detail', label:'Detalle', type:'textarea', required:true, placeholder:'Escribe el motivo o detalle de esta accion' }] }); if(!modal.confirmed) return; try{ await deps.setCargoStatus?.(c.id,target); await deps.addAuditLog?.({ targetType:'cargo', targetId:c.id, action: target==='activo'?'activate_cargo':'deactivate_cargo', before:{estado:c.estado}, after:{estado:target}, note: modal.values.detail||null }); }catch(e){ alert('Error: '+(e?.message||e)); } }); box.append(btnEdit,btnToggle); } const btnInfo=el('button',{className:'btn btn--icon',title:'Ver informacion','aria-label':'Ver informacion'},[infoIcon()]); btnInfo.addEventListener('click',()=>{ const info=auditInfoData(c); showInfoModal('Informacion del registro',[`Evento: ${info.action}`,`Usuario: ${info.user}`,`Fecha: ${info.date}`]); }); box.append(btnInfo); return box; }
   async function openEditModal(c){ const modal=await showActionModal({ title:'Editar cargo', message:`Cargo: ${c.nombre||'-'}`, confirmText:'Guardar cambios', fields:[{id:'code',label:'Codigo',type:'text',required:true,value:c.codigo||''},{id:'name',label:'Cargo',type:'text',required:true,value:c.nombre||''},{id:'salary',label:'Salario',type:'number',min:'0',step:'1',value:salaryInputValue(c.salario)},{id:'crud',label:'Vincular en CRUD',type:'select',value:c.alineacionCrud||'empleado',options:crudOptions.map((o)=>({value:o.value,label:o.label}))},{ id:'detail', label:'Detalle de la modificacion', type:'textarea', required:true, placeholder:'Describe brevemente el cambio realizado' }] }); if(!modal.confirmed) return; const newCode=String(modal.values.code||'').trim(); const newName=String(modal.values.name||'').trim(); const newSalary=parseSalary(modal.values.salary); const newCrud=String(modal.values.crud||'empleado').trim()||'empleado'; if(!newCode||!newName) return alert('Completa codigo y cargo.'); if(Number.isNaN(newSalary)) return alert('El salario debe ser un numero valido.'); try{ if(newCode!==c.codigo){ const dup=await deps.findCargoByCode?.(newCode); if(dup && dup.id!==c.id) return alert('Ya existe un cargo con ese codigo.'); } await deps.updateCargo?.(c.id,{ codigo:newCode, nombre:newName, salario:newSalary, alineacionCrud:newCrud }); await deps.addAuditLog?.({ targetType:'cargo', targetId:c.id, action:'update_cargo', before:{ codigo:c.codigo, nombre:c.nombre, salario:c.salario??null, alineacionCrud:c.alineacionCrud||'empleado' }, after:{ codigo:newCode, nombre:newName, salario:newSalary, alineacionCrud:newCrud }, note: modal.values.detail||null }); }catch(e){ alert('Error: '+(e?.message||e)); } }
   function recordCard(item,{title,subtitle,meta=[],actions}){ return el('article',{className:'record-card'},[ el('div',{className:'record-card__header'},[ el('div',{className:'record-card__identity'},[ el('strong',{className:'record-card__title'},[title]), el('span',{className:'record-card__subtitle'},[subtitle]) ]), statusBadge(item.estado) ]), el('dl',{className:'record-card__meta'},meta.map(([label,value])=> el('div',{className:'record-card__meta-item'},[el('dt',{},[label]),el('dd',{},[value||'-'])]))), el('div',{className:'record-card__actions'},[actions]) ]); }
   function startEdit(tr,c){

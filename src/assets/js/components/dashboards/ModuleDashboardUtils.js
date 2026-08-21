@@ -56,6 +56,11 @@ export function countStream(streamFn, predicate = null) {
   return streamOnce(streamFn).then((rows) => predicate ? rows.filter(predicate).length : rows.length);
 }
 
+export function countActiveMetric(deps = {}, counterName = '', fallbackStream = null) {
+  if (counterName && typeof deps[counterName] === 'function') return deps[counterName]();
+  return countStream(fallbackStream, isActive);
+}
+
 export async function countIncapacitiesToday(deps = {}) {
   const today = todayBogota();
   const rows = await deps.listIncapacidadesRange?.(today, today);

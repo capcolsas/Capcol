@@ -252,11 +252,13 @@ export const EmployeesReport = (mount, deps = {}) => {
         btnGenerate.disabled = true;
         btnGenerate.textContent = 'Generando...';
       }
-      if (typeof deps.streamEmployees !== 'function' || typeof deps.streamSedes !== 'function' || typeof deps.streamCargos !== 'function') {
+      if ((typeof deps.listCurrentEmployees !== 'function' && typeof deps.streamEmployees !== 'function') || typeof deps.streamSedes !== 'function' || typeof deps.streamCargos !== 'function') {
         throw new Error('No estan disponibles las consultas necesarias para el reporte.');
       }
       const [rawEmployees, rawSedes, rawCargos] = await Promise.all([
-        streamOnce((ok, fail) => deps.streamEmployees(ok, fail)),
+        typeof deps.listCurrentEmployees === 'function'
+          ? deps.listCurrentEmployees(todayBogota())
+          : streamOnce((ok, fail) => deps.streamEmployees(ok, fail)),
         streamOnce((ok, fail) => deps.streamSedes(ok, fail)),
         streamOnce((ok, fail) => deps.streamCargos(ok, fail))
       ]);

@@ -1,5 +1,5 @@
 import { getState } from './state.js';
-import { ROLES, PERMS, permsForRole } from './roles.js';
+import { PERMISSION_ACTION_VIEW_MAP, ROLES, PERMS, permsForRole } from './roles.js';
 
 const LEGACY_FALLBACK_BY_NEW = {
   [PERMS.VIEW_PERMISSIONS]: PERMS.MANAGE_PERMISSIONS,
@@ -23,6 +23,12 @@ const LEGACY_FALLBACK_BY_NEW = {
   [PERMS.EDIT_CARGOS]: 'manageEmployees',
   [PERMS.VIEW_NOVEDADES]: 'manageEmployees',
   [PERMS.EDIT_NOVEDADES]: 'manageEmployees',
+  [PERMS.VIEW_SHIFT_PLANS]: PERMS.VIEW_OPERATION_REGISTRY,
+  [PERMS.MANAGE_SHIFT_PLANS]: PERMS.EDIT_SEDES,
+  [PERMS.VIEW_GENERATED_SHIFTS]: PERMS.VIEW_OPERATION_REGISTRY,
+  [PERMS.MANAGE_GENERATED_SHIFTS]: PERMS.MANAGE_OPERATION_REGISTRY,
+  [PERMS.VIEW_SHIFT_REVIEW]: PERMS.VIEW_OPERATION_REGISTRY,
+  [PERMS.MANAGE_SHIFT_REVIEW]: PERMS.MANAGE_OPERATION_REGISTRY,
   [PERMS.VIEW_SUPERVISORS]: 'manageSupervisors',
   [PERMS.EDIT_SUPERVISORS]: 'manageSupervisors',
   [PERMS.VIEW_OPERATION_REGISTRY]: PERMS.IMPORT_DATA,
@@ -87,6 +93,9 @@ export function getEffectivePermissions() {
     if (Object.prototype.hasOwnProperty.call(overrides, newKey)) return;
     if (Object.prototype.hasOwnProperty.call(overrides, legacyKey)) merged[newKey] = overrides[legacyKey] === true;
     else if (merged[legacyKey] === true) merged[newKey] = true;
+  });
+  Object.entries(PERMISSION_ACTION_VIEW_MAP).forEach(([actionKey, viewKey]) => {
+    if (merged[actionKey] === true) merged[viewKey] = true;
   });
   return merged;
 }

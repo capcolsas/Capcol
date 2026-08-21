@@ -41,6 +41,7 @@ import { PermissionsCenter } from './components/PermissionsCenter.js';
 import { PermissionsAudit } from './components/PermissionsAudit.js';
 import { WhatsAppLive } from './components/WhatsAppLive.js';
 import { RegistroSede } from './components/RegistroSede.js';
+import { GeneratedShiftsAdmin, ShiftPlansAdmin, ShiftReviewAdmin } from './components/ShiftsAdmin.js';
 import { QrTabletScanner } from './components/QrTabletScanner.js';
 import { QrDailyRegistry } from './components/QrDailyRegistry.js';
 import { QrDevicesInfo } from './components/QrDevicesInfo.js';
@@ -100,23 +101,29 @@ const guardWrite=(perm,fn)=> async (...args)=>{
         addNote:fb.addNote, streamNotes:fb.streamNotes,
         streamRoleMatrix:fb.streamRoleMatrix, setRolePermissions:fb.setRolePermissions, streamUserOverrides:fb.streamUserOverrides,
         getUserOverrides:fb.getUserOverrides, setUserOverrides:fb.setUserOverrides, clearUserOverrides:fb.clearUserOverrides,
-        addAuditLog:fb.addAuditLog, streamAuditLogs:(cb,max)=>{ if(unsubAudit)unsubAudit(); unsubAudit=fb.streamAuditLogs(cb,max); return unsubAudit; },
+        addAuditLog:fb.addAuditLog, streamAuditLogs:(cb,max)=>{ if(unsubAudit)unsubAudit(); unsubAudit=fb.streamAuditLogs(cb,max); return unsubAudit; }, streamAuditLogsByKind:fb.streamAuditLogsByKind, listEmployeeAuditLogsRange:fb.listEmployeeAuditLogsRange,
         streamUsers:fb.streamUsers, setUserRole:guardWrite(PERMS.EDIT_USERS,fb.setUserRole), syncSupervisorAccessForUser:guardWrite(PERMS.EDIT_USERS,fb.syncSupervisorAccessForUser), setUserStatus:guardWrite(PERMS.EDIT_USERS,fb.setUserStatus), findUserByEmail:fb.findUserByEmail,
         streamZones:fb.streamZones, createZone:guardWrite(PERMS.EDIT_ZONES,fb.createZone), updateZone:guardWrite(PERMS.EDIT_ZONES,fb.updateZone), setZoneStatus:guardWrite(PERMS.EDIT_ZONES,fb.setZoneStatus), findZoneByCode:fb.findZoneByCode, getNextZoneCode:fb.getNextZoneCode,
         streamDependencies:fb.streamDependencies, createDependency:guardWrite(PERMS.EDIT_DEPENDENCIES,fb.createDependency), updateDependency:guardWrite(PERMS.EDIT_DEPENDENCIES,fb.updateDependency), setDependencyStatus:guardWrite(PERMS.EDIT_DEPENDENCIES,fb.setDependencyStatus), findDependencyByCode:fb.findDependencyByCode, getNextDependencyCode:fb.getNextDependencyCode,
-        streamSedes:fb.streamSedes, createSede:guardWrite(PERMS.EDIT_SEDES,fb.createSede), updateSede:guardWrite(PERMS.EDIT_SEDES,fb.updateSede), setSedeStatus:guardWrite(PERMS.EDIT_SEDES,fb.setSedeStatus), findSedeByCode:fb.findSedeByCode, getNextSedeCode:fb.getNextSedeCode,
+        streamSedes:fb.streamSedes, countActiveSedes:fb.countActiveSedes, createSede:guardWrite(PERMS.EDIT_SEDES,fb.createSede), updateSede:guardWrite(PERMS.EDIT_SEDES,fb.updateSede), setSedeStatus:guardWrite(PERMS.EDIT_SEDES,fb.setSedeStatus), findSedeByCode:fb.findSedeByCode, getNextSedeCode:fb.getNextSedeCode,
+        streamShiftTemplates:fb.streamShiftTemplates, listShiftTemplates:fb.listShiftTemplates, createShiftTemplate:guardWrite(PERMS.MANAGE_SHIFT_PLANS,fb.createShiftTemplate), updateShiftTemplate:guardWrite(PERMS.MANAGE_SHIFT_PLANS,fb.updateShiftTemplate), setShiftTemplateStatus:guardWrite(PERMS.MANAGE_SHIFT_PLANS,fb.setShiftTemplateStatus),
+        listShiftTemplateRules:fb.listShiftTemplateRules, streamShiftTemplateRules:fb.streamShiftTemplateRules, createShiftTemplateRule:guardWrite(PERMS.MANAGE_SHIFT_PLANS,fb.createShiftTemplateRule), updateShiftTemplateRule:guardWrite(PERMS.MANAGE_SHIFT_PLANS,fb.updateShiftTemplateRule), setShiftTemplateRuleStatus:guardWrite(PERMS.MANAGE_SHIFT_PLANS,fb.setShiftTemplateRuleStatus), saveShiftTemplateRules:guardWrite(PERMS.MANAGE_SHIFT_PLANS,fb.saveShiftTemplateRules),
+        streamScheduledShiftsByDate:fb.streamScheduledShiftsByDate, listScheduledShiftsRange:fb.listScheduledShiftsRange, listShiftSitePlanAssignments:fb.listShiftSitePlanAssignments, activateShiftPlanForSites:guardWrite(PERMS.MANAGE_GENERATED_SHIFTS,fb.activateShiftPlanForSites), renewActiveShiftPlans:guardWrite(PERMS.MANAGE_GENERATED_SHIFTS,fb.renewActiveShiftPlans), generateScheduledShiftsFromPlans:guardWrite(PERMS.MANAGE_GENERATED_SHIFTS,fb.generateScheduledShiftsFromPlans), createScheduledShift:guardWrite(PERMS.MANAGE_GENERATED_SHIFTS,fb.createScheduledShift), updateScheduledShift:guardWrite(PERMS.MANAGE_GENERATED_SHIFTS,fb.updateScheduledShift), setScheduledShiftStatus:guardWrite(PERMS.MANAGE_GENERATED_SHIFTS,fb.setScheduledShiftStatus),
+        listShiftAssignmentsByShift:fb.listShiftAssignmentsByShift, listShiftAssignmentsForShifts:fb.listShiftAssignmentsForShifts, streamShiftAssignmentsByShift:fb.streamShiftAssignmentsByShift, upsertShiftAssignments:guardWrite(PERMS.MANAGE_GENERATED_SHIFTS,fb.upsertShiftAssignments), updateShiftAssignment:guardWrite(PERMS.MANAGE_GENERATED_SHIFTS,fb.updateShiftAssignment), removeShiftAssignment:guardWrite(PERMS.MANAGE_GENERATED_SHIFTS,fb.removeShiftAssignment), removeShiftAssignments:guardWrite(PERMS.MANAGE_GENERATED_SHIFTS,fb.removeShiftAssignments),
+        listEmployeeShiftStatusRange:fb.listEmployeeShiftStatusRange, upsertEmployeeShiftStatus:guardWrite(PERMS.MANAGE_SHIFT_REVIEW,fb.upsertEmployeeShiftStatus), listShiftClosuresRange:fb.listShiftClosuresRange,
+        listPendingShiftAdjustments:fb.listPendingShiftAdjustments, createShiftAdjustment:guardWrite(PERMS.MANAGE_SHIFT_REVIEW,fb.createShiftAdjustment), updateShiftAdjustment:guardWrite(PERMS.MANAGE_SHIFT_REVIEW,fb.updateShiftAdjustment),
+        listShiftTimeAuthorizations:fb.listShiftTimeAuthorizations, createShiftTimeAuthorization:guardWrite(PERMS.MANAGE_SHIFT_REVIEW,fb.createShiftTimeAuthorization), updateShiftTimeAuthorization:guardWrite(PERMS.MANAGE_SHIFT_REVIEW,fb.updateShiftTimeAuthorization),
         createQrDevice:guardWrite(PERMS.MANAGE_QR_DEVICES,fb.createQrDevice), setQrDeviceStatus:guardWrite(PERMS.MANAGE_QR_DEVICES,fb.setQrDeviceStatus), listQrDevices:fb.listQrDevices, streamQrDevices:fb.streamQrDevices, scanAttendanceQr:guardWrite(PERMS.USE_QR_SCANNER,fb.scanAttendanceQr), listDailyQrRecords:fb.listDailyQrRecords, streamDailyQrRecords:fb.streamDailyQrRecords,
         createSedesBulk:guardWrite(PERMS.BULK_UPLOAD_SEDES,fb.createSedesBulk),
-        streamEmployees:fb.streamEmployees, streamActiveBaseEmployees:fb.streamActiveBaseEmployees, createEmployee:guardWrite(PERMS.EDIT_EMPLOYEES,fb.createEmployee), rehireEmployee:guardWrite(PERMS.EDIT_EMPLOYEES,fb.rehireEmployee), updateEmployee:guardWrite(PERMS.EDIT_EMPLOYEES,fb.updateEmployee), setEmployeeStatus:guardWrite(PERMS.EDIT_EMPLOYEES,fb.setEmployeeStatus), updateProgrammedEmployeeAssignment:guardWrite(PERMS.MANAGE_EMPLOYEE_SCHEDULES,fb.updateProgrammedEmployeeAssignment), cancelProgrammedEmployeeAssignment:guardWrite(PERMS.MANAGE_EMPLOYEE_SCHEDULES,fb.cancelProgrammedEmployeeAssignment), findEmployeeByCode:fb.findEmployeeByCode, findEmployeeByDocument:fb.findEmployeeByDocument, getNextEmployeeCode:fb.getNextEmployeeCode,
+        streamEmployees:fb.streamEmployees, countActiveEmployees:fb.countActiveEmployees, listEmployeesAdminPage:fb.listEmployeesAdminPage, watchEmployeesAdminChanges:fb.watchEmployeesAdminChanges, listCurrentEmployees:fb.listCurrentEmployees, listEmployeeDashboardPeople:fb.listEmployeeDashboardPeople, listEmployeesByIdentity:fb.listEmployeesByIdentity, getEmployeeLastAttendanceDay:fb.getEmployeeLastAttendanceDay, streamCurrentEmployees:fb.streamCurrentEmployees, streamActiveBaseEmployees:fb.streamActiveBaseEmployees, createEmployee:guardWrite(PERMS.EDIT_EMPLOYEES,fb.createEmployee), rehireEmployee:guardWrite(PERMS.EDIT_EMPLOYEES,fb.rehireEmployee), updateEmployee:guardWrite(PERMS.EDIT_EMPLOYEES,fb.updateEmployee), setEmployeeStatus:guardWrite(PERMS.EDIT_EMPLOYEES,fb.setEmployeeStatus), updateProgrammedEmployeeAssignment:guardWrite(PERMS.MANAGE_EMPLOYEE_SCHEDULES,fb.updateProgrammedEmployeeAssignment), cancelProgrammedEmployeeAssignment:guardWrite(PERMS.MANAGE_EMPLOYEE_SCHEDULES,fb.cancelProgrammedEmployeeAssignment), findEmployeeByCode:fb.findEmployeeByCode, findEmployeeByDocument:fb.findEmployeeByDocument, getNextEmployeeCode:fb.getNextEmployeeCode,
         generateEmployeeCertificate:fb.generateEmployeeCertificate,
-        streamEmployeeCargoHistory:fb.streamEmployeeCargoHistory, streamEmployeeCargoHistoryAll:fb.streamEmployeeCargoHistoryAll,
+        streamEmployeeCargoHistory:fb.streamEmployeeCargoHistory, streamEmployeeCargoHistoryAll:fb.streamEmployeeCargoHistoryAll, listEmployeeCargoHistoryRange:fb.listEmployeeCargoHistoryRange, listEmployeeCargoHistoryForEmployees:fb.listEmployeeCargoHistoryForEmployees,
         createEmployeesBulk:guardWrite(PERMS.BULK_UPLOAD_EMPLOYEES,fb.createEmployeesBulk),
         streamSupernumerarios:fb.streamSupernumerarios, listSupervisorAvailableSupernumerarios:fb.listSupervisorAvailableSupernumerarios, createSupernumerario:guardWrite(PERMS.EDIT_SUPERNUMERARIOS,fb.createSupernumerario), updateSupernumerario:guardWrite(PERMS.EDIT_SUPERNUMERARIOS,fb.updateSupernumerario), setSupernumerarioStatus:guardWrite(PERMS.EDIT_SUPERNUMERARIOS,fb.setSupernumerarioStatus), findSupernumerarioByCode:fb.findSupernumerarioByCode, findSupernumerarioByDocument:fb.findSupernumerarioByDocument, getNextSupernumerarioCode:fb.getNextSupernumerarioCode,
-        streamCargos:fb.streamCargos, createCargo:guardWrite(PERMS.EDIT_CARGOS,fb.createCargo), updateCargo:guardWrite(PERMS.EDIT_CARGOS,fb.updateCargo), setCargoStatus:guardWrite(PERMS.EDIT_CARGOS,fb.setCargoStatus), findCargoByCode:fb.findCargoByCode, getNextCargoCode:fb.getNextCargoCode,
-        streamNovedades:fb.streamNovedades, createNovedad:guardWrite(PERMS.EDIT_NOVEDADES,fb.createNovedad), updateNovedad:guardWrite(PERMS.EDIT_NOVEDADES,fb.updateNovedad), setNovedadStatus:guardWrite(PERMS.EDIT_NOVEDADES,fb.setNovedadStatus), findNovedadByCode:fb.findNovedadByCode, findNovedadByCodigoNovedad:fb.findNovedadByCodigoNovedad, getNextNovedadCode:fb.getNextNovedadCode,
+        streamCargos:fb.streamCargos, countActiveCargos:fb.countActiveCargos, createCargo:guardWrite(PERMS.EDIT_CARGOS,fb.createCargo), updateCargo:guardWrite(PERMS.EDIT_CARGOS,fb.updateCargo), setCargoStatus:guardWrite(PERMS.EDIT_CARGOS,fb.setCargoStatus), findCargoByCode:fb.findCargoByCode, getNextCargoCode:fb.getNextCargoCode,
+        streamNovedades:fb.streamNovedades, countActiveNovedades:fb.countActiveNovedades, createNovedad:guardWrite(PERMS.EDIT_NOVEDADES,fb.createNovedad), updateNovedad:guardWrite(PERMS.EDIT_NOVEDADES,fb.updateNovedad), setNovedadStatus:guardWrite(PERMS.EDIT_NOVEDADES,fb.setNovedadStatus), findNovedadByCode:fb.findNovedadByCode, findNovedadByCodigoNovedad:fb.findNovedadByCodigoNovedad, getNextNovedadCode:fb.getNextNovedadCode,
         streamSupervisors:fb.streamSupervisors, createSupervisor:guardWrite(PERMS.EDIT_SUPERVISORS,fb.createSupervisor), updateSupervisor:guardWrite(PERMS.EDIT_SUPERVISORS,fb.updateSupervisor), setSupervisorStatus:guardWrite(PERMS.EDIT_SUPERVISORS,fb.setSupervisorStatus), findSupervisorByCode:fb.findSupervisorByCode, findSupervisorByDocument:fb.findSupervisorByDocument, getNextSupervisorCode:fb.getNextSupervisorCode,
         confirmImportOperation:guardWrite(PERMS.MANAGE_OPERATION_REGISTRY,fb.confirmImportOperation), saveImportReplacements:guardWrite(PERMS.MANAGE_OPERATION_REGISTRY,fb.saveImportReplacements),
-        closeOperationDayManual:guardWrite(PERMS.MANAGE_OPERATION_REGISTRY,fb.closeOperationDayManual),
         isOperationDayClosed:fb.isOperationDayClosed, listClosedOperationDaysRange:fb.listClosedOperationDaysRange, listDailyClosuresRange:fb.listDailyClosuresRange,
         listDailySedeClosuresRange:fb.listDailySedeClosuresRange,
         listSedeStatusRange:fb.listSedeStatusRange, listAttendanceRange:fb.listAttendanceRange, listImportReplacementsRange:fb.listImportReplacementsRange, listSupernumerarioReplacementOccupancy:fb.listSupernumerarioReplacementOccupancy, listEmployeeDailyStatusRange:fb.listEmployeeDailyStatusRange,
@@ -129,7 +136,7 @@ const guardWrite=(perm,fn)=> async (...args)=>{
         updateIncapacidad:guardWrite(PERMS.MANAGE_INCAPACITIES,fb.updateIncapacidad),
         setIncapacidadStatus:guardWrite(PERMS.MANAGE_INCAPACITIES,fb.setIncapacidadStatus),
         listIncapacidadesRange:fb.listIncapacidadesRange,
-        streamImportHistory:fb.streamImportHistory, streamDailyClosures:fb.streamDailyClosures, streamWhatsAppIncoming:fb.streamWhatsAppIncoming,
+        streamImportHistory:fb.streamImportHistory, streamDailyClosures:fb.streamDailyClosures, streamDailyClosuresRange:fb.streamDailyClosuresRange, streamWhatsAppIncoming:fb.streamWhatsAppIncoming,
         streamAttendanceByDate:fb.streamAttendanceByDate, streamAttendanceRecent:fb.streamAttendanceRecent, streamImportReplacementsByDate:fb.streamImportReplacementsByDate
       };
 
@@ -211,12 +218,21 @@ const guardWrite=(perm,fn)=> async (...args)=>{
   addRoute('/cargos', ()=> requireAuth(()=> guard(PERMS.VIEW_CARGOS, ()=> CargosAdmin(root, deps))));
   addRoute('/novedades', ()=> requireAuth(()=> guard(PERMS.VIEW_NOVEDADES, ()=> NovedadesAdmin(root, deps))));
   addRoute('/supervisors', ()=> requireAuth(()=> guard(PERMS.VIEW_SUPERVISORS, ()=> SupervisorsAdmin(root, deps))));
+  addRoute('/turnos-planes', ()=> requireAuth(()=> guard(PERMS.VIEW_SHIFT_PLANS, ()=> ShiftPlansAdmin(root, deps))));
+  addRoute('/turnos-generados', ()=> requireAuth(()=> guard(PERMS.VIEW_GENERATED_SHIFTS, ()=> GeneratedShiftsAdmin(root, deps))));
+  addRoute('/turnos-revision', ()=> requireAuth(()=> guard(PERMS.VIEW_SHIFT_REVIEW, ()=> ShiftReviewAdmin(root, deps))));
 
   // Operación
   addRoute('/operacion-dashboard', ()=> requireAuth(()=> guardAny([PERMS.VIEW_OPERATION_REGISTRY, PERMS.VIEW_QR_DAILY_REGISTRY, PERMS.VIEW_SUPERNUMERARIOS, PERMS.VIEW_IMPORT_HISTORY], ()=> OperacionDashboard(root, deps))));
   addRoute('/imports', ()=> { navigate('/registros-vivo'); return null; });
   addRoute('/whatsapp-live', ()=> { navigate('/registros-vivo'); return null; });
   addRoute('/registros-vivo', ()=> requireAuth(()=> guard(PERMS.VIEW_OPERATION_REGISTRY, ()=> WhatsAppLive(root, deps))));
+  addRoute('/turnos', ()=> {
+    if (can(PERMS.VIEW_SHIFT_REVIEW)) { navigate('/turnos-revision'); return null; }
+    if (can(PERMS.VIEW_GENERATED_SHIFTS)) { navigate('/turnos-generados'); return null; }
+    if (can(PERMS.VIEW_SHIFT_PLANS)) { navigate('/turnos-planes'); return null; }
+    return block('No tienes permiso para acceder a esta sección.');
+  });
   addRoute('/registro-sede', ()=> requireAuth(()=> guard(PERMS.VIEW_OPERATION_REGISTRY, ()=> RegistroSede(root, deps))));
   addRoute('/lector-qr', ()=> requireAuth(()=> guard(PERMS.VIEW_QR_SCANNER, ()=> QrTabletScanner(root, deps))));
   addRoute('/tablets-qr', ()=> requireAuth(()=> guard(PERMS.VIEW_QR_DEVICES, ()=> QrDevicesInfo(root, deps))));

@@ -1,5 +1,5 @@
 import { PERMS } from '../../permissions.js';
-import { countStream, isActive, renderModuleDashboard } from './ModuleDashboardUtils.js';
+import { countActiveMetric, renderModuleDashboard } from './ModuleDashboardUtils.js';
 
 export const CargueMasivoDashboard = (mount, deps = {}) => renderModuleDashboard(mount, deps, {
   title: 'Cargue masivo',
@@ -16,8 +16,8 @@ export const CargueMasivoDashboard = (mount, deps = {}) => renderModuleDashboard
     { label: 'Cargue empleados', route: '/bulk-upload', perm: PERMS.VIEW_BULK_UPLOAD_EMPLOYEES, detail: 'Plantilla y validacion de empleados.' }
   ],
   metrics: [
-    { label: 'Sedes activas', tone: 'green', load: async (deps) => countStream(deps.streamSedes, isActive) },
-    { label: 'Empleados activos', tone: 'blue', load: async (deps) => countStream(deps.streamEmployees, isActive) },
+    { label: 'Sedes activas', tone: 'green', load: async (deps) => countActiveMetric(deps, 'countActiveSedes', deps.streamSedes) },
+    { label: 'Empleados activos', tone: 'blue', load: async (deps) => countActiveMetric(deps, 'countActiveEmployees', deps.streamEmployees) },
     { label: 'Rutas de cargue', tone: 'indigo', load: async (_, actions) => actions.length }
   ]
 });

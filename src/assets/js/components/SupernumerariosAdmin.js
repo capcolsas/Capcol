@@ -5,23 +5,7 @@ import { createTablePagination } from '../utils/pagination.js';
 export const SupernumerariosAdmin=(mount,deps={})=>{
   const ui=el('section',{className:'main-card'},[
     el('h2',{},['Supernumerarios']),
-    el('div',{className:'tabs mt-2'},[
-      el('button',{id:'tabCreateBtn',className:'tab',type:'button'},['Crear']),
-      el('button',{id:'tabListBtn',className:'tab is-active',type:'button'},['Consultar'])
-    ]),
-    el('div',{id:'tabCreate',className:'hidden'},[
-      el('div',{className:'form-row mt-2'},[
-        el('div',{},[ el('label',{className:'label'},['Codigo (automatico)']), el('input',{id:'eCode',className:'input',placeholder:'Se generara al crear',disabled:true}) ]),
-        el('div',{},[ el('label',{className:'label'},['Documento']), el('input',{id:'eDoc',className:'input',placeholder:'Documento del supernumerario'}) ]),
-        el('div',{},[ el('label',{className:'label'},['Nombre completo']), el('input',{id:'eName',className:'input',placeholder:'Nombre completo'}) ]),
-        el('div',{},[ el('label',{className:'label'},['Telefono']), el('input',{id:'ePhone',className:'input',placeholder:'Telefono'}) ]),
-        el('div',{},[ el('label',{className:'label'},['Cargo']), el('select',{id:'eCargo',className:'select'},[]) ]),
-        el('div',{},[ el('label',{className:'label'},['Sede (buscar)']), el('input',{id:'eSedeSearch',className:'input',list:'eSedeList',placeholder:'Nombre o codigo de sede'}) ]),
-        el('div',{},[ el('label',{className:'label'},['Fecha ingreso']), el('input',{id:'eIngreso',className:'input',type:'date'}) ])
-      ]),
-      el('datalist',{id:'eSedeList'},[])
-    ]),
-    el('div',{id:'tabList'},[
+    el('div',{id:'listPanel'},[
       el('div',{className:'form-row'},[
         el('div',{},[ el('label',{className:'label'},['Buscar']), el('input',{id:'txtSearch',className:'input',placeholder:'Codigo, documento, nombre, sede de hoy...'}) ]),
         el('div',{},[ el('label',{className:'label'},['Estado']), el('select',{id:'selStatus',className:'select'},[
@@ -51,28 +35,12 @@ export const SupernumerariosAdmin=(mount,deps={})=>{
         el('div',{id:'supernumerarioCards',className:'record-card-list'},[])
       ]),
       el('p',{id:'msg',className:'text-muted mt-2'},[' '])
-    ])
+    ]),
+    el('datalist',{id:'eSedeList'},[])
   ]);
 
-  const tabCreateBtn=qs('#tabCreateBtn',ui);
-  const tabListBtn=qs('#tabListBtn',ui);
-  const tabCreate=qs('#tabCreate',ui);
-  const tabList=qs('#tabList',ui);
-  qs('.tabs', ui)?.classList.add('hidden');
-  tabCreate.classList.add('hidden');
-  tabList.classList.remove('hidden');
-  function setTab(which){
-    const isCreate=which==='create';
-    tabCreateBtn.classList.toggle('is-active',isCreate);
-    tabListBtn.classList.toggle('is-active',!isCreate);
-    tabCreate.classList.toggle('hidden',!isCreate);
-    tabList.classList.toggle('hidden',isCreate);
-  }
-  setTab('list');
-  tabListBtn.addEventListener('click',()=> setTab('list'));
-
   let sedeList=[]; let cargoList=[];
-  const sedeInput=qs('#eSedeSearch',ui); const sedeListNode=qs('#eSedeList',ui); const cargoSelect=qs('#eCargo',ui);
+  const sedeListNode=qs('#eSedeList',ui);
   function buildOptions(items, selected){
     const opts=[ el('option',{value:''},['Seleccione...']) ];
     items.forEach((item)=>{
@@ -106,13 +74,9 @@ export const SupernumerariosAdmin=(mount,deps={})=>{
     const byName=sedeList.find(s=> String(s.nombre||'').toLowerCase()===raw.toLowerCase());
     return byName?.codigo||'';
   }
-  function renderCargoSelect(){
-    const cur=cargoSelect.value;
-    cargoSelect.replaceChildren(...buildOptions(cargoList,cur));
-  }
   let snapshot=[]; const tbody=ui.querySelector('tbody'); const cards=qs('#supernumerarioCards',ui);
   let sortKey=''; let sortDir=1;
-  const paginator=createTablePagination(ui,{id:'supernumerarios',after:'#tabList .responsive-records',onChange:render});
+  const paginator=createTablePagination(ui,{id:'supernumerarios',after:'#listPanel .responsive-records',onChange:render});
   const today=todayBogota();
   let unSedes=()=>{};
   let unCargos=()=>{};
@@ -473,7 +437,7 @@ export const SupernumerariosAdmin=(mount,deps={})=>{
   let un=()=>{};
   try{
     unSedes=deps.streamSedes?.((arr)=>{ sedeList=(arr||[]).filter(s=>s.estado!=='inactivo'); renderSedeSelect(); render(); }) || (()=>{});
-    unCargos=deps.streamCargos?.((arr)=>{ cargoList=(arr||[]).filter(c=>c.estado!=='inactivo'); renderCargoSelect(); render(); }) || (()=>{});
+    unCargos=deps.streamCargos?.((arr)=>{ cargoList=(arr||[]).filter(c=>c.estado!=='inactivo'); render(); }) || (()=>{});
     unEmp=deps.streamEmployees?.((arr)=>{ employees=arr||[]; render(); }) || (()=>{});
     unIncapacitados=deps.streamIncapacitadosByDate?.(today,(arr)=>{ incapacitados=arr||[]; render(); }) || (()=>{});
     if(typeof deps.streamImportReplacementsByDate==='function'){

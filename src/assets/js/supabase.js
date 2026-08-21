@@ -1,5 +1,6 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 import { EMPLOYEE_PORTAL_API_BASE, SUPABASE_ANON_KEY, SUPABASE_PROFILES_TABLE, SUPABASE_URL } from './config.js';
+import { addIsoDays, buildScheduledShiftCandidate, listIsoDatesInRange, shiftRuleAppliesOnDate, todayBogota } from './utils/shiftCalendar.js';
 
 function assertSupabaseConfig() {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
@@ -242,6 +243,14 @@ async function selectAllRows(table, {
   return rows;
 }
 
+async function selectSmallTableRows(table, options = {}) {
+  return selectAllRows(table, options);
+}
+
+async function selectAdminStreamRows(table, options = {}) {
+  return selectAllRows(table, options);
+}
+
 async function selectPagedRows(buildQuery) {
   const rows = [];
   let from = 0;
@@ -259,6 +268,19 @@ async function selectPagedRows(buildQuery) {
   }
 
   return rows;
+}
+
+async function countActiveRows(table) {
+  const { count, error } = await supabase
+    .from(table)
+    .select('id', { count: 'exact', head: true })
+    .or('estado.is.null,estado.eq.activo');
+  if (error) throw error;
+  return Number(count || 0);
+}
+
+function cleanPostgrestSearchTerm(value) {
+  return String(value || '').trim().replace(/[(),]/g, ' ').replace(/\s+/g, ' ');
 }
 
 function normalizeUser(user) {
@@ -546,6 +568,14 @@ function mapAttendanceRow(row = {}) {
     nombre: row.nombre || null,
     sedeCodigo: row.sede_codigo || null,
     sedeNombre: row.sede_nombre || null,
+    turnoId: row.turno_id || null,
+    fechaOperativa: row.fecha_operativa || null,
+    registroEstado: row.registro_estado || null,
+    requiresReview: row.requires_review === true,
+    earlyEntryMinutes: Number(row.early_entry_minutes || 0),
+    lateEntryMinutes: Number(row.late_entry_minutes || 0),
+    earlyEntryReason: row.early_entry_reason || null,
+    lateEntryReason: row.late_entry_reason || null,
     asistio: row.asistio === true,
     novedad: rawNovedad,
     novedadCodigo,
@@ -710,6 +740,219 @@ function mapIncapacidadRow(row = {}) {
     soporteTipo: row.soporte_tipo || null,
     soporteStoragePath: row.soporte_storage_path || null,
     whatsappMessageId: row.whatsapp_message_id || null,
+    origenTurnoId: row.origen_turno_id || null,
+    reportedAt: row.reported_at || null,
+    requiresReview: row.requires_review === true,
+    createdAt: row.created_at || null,
+    updatedAt: row.updated_at || null
+  };
+}
+
+function mapShiftTemplateRow(row = {}) {
+  return {
+    id: row.id,
+    nombre: row.nombre || null,
+    notasProgramacion: row.notas_programacion || null,
+    estado: row.estado || 'activo',
+    orden: Number(row.orden || 0),
+    createdByUid: row.created_by_uid || null,
+    createdByEmail: row.created_by_email || null,
+    createdAt: row.created_at || null,
+    updatedAt: row.updated_at || null
+  };
+}
+
+function mapShiftTemplateRuleRow(row = {}) {
+  return {
+    id: row.id,
+    templateId: row.template_id || null,
+    nombre: row.nombre || null,
+    tipoDia: row.tipo_dia || 'dia_semana',
+    diaSemana: row.dia_semana || null,
+    horaInicio: row.hora_inicio || null,
+    horaFin: row.hora_fin || null,
+    cruzaDia: row.cruza_dia === true,
+    frecuenciaTipo: row.frecuencia_tipo || 'todos',
+    frecuenciaSemanas: Number(row.frecuencia_semanas || 1),
+    fechaAncla: row.fecha_ancla || null,
+    semanaMes: row.semana_mes == null ? null : Number(row.semana_mes || 0),
+    festivoModo: row.festivo_modo || 'excluir',
+    ventanaEntradaAntesMinutos: Number(row.ventana_entrada_antes_minutos || 0),
+    ventanaEntradaDespuesMinutos: Number(row.ventana_entrada_despues_minutos || 0),
+    ventanaSalidaAntesMinutos: Number(row.ventana_salida_antes_minutos || 0),
+    ventanaSalidaDespuesMinutos: Number(row.ventana_salida_despues_minutos || 0),
+    ventanaNovedadHoras: Number(row.ventana_novedad_horas || 0),
+    estado: row.estado || 'activo',
+    orden: Number(row.orden || 0),
+    notas: row.notas || null,
+    createdByUid: row.created_by_uid || null,
+    createdByEmail: row.created_by_email || null,
+    createdAt: row.created_at || null,
+    updatedAt: row.updated_at || null
+  };
+}
+
+function mapShiftSitePlanAssignmentRow(row = {}) {
+  return {
+    id: row.id,
+    templateId: row.template_id || null,
+    sedeCodigo: row.sede_codigo || null,
+    sedeNombre: row.sede_nombre || null,
+    operariosPlaneados: Number(row.operarios_planeados || 0),
+    horizonDays: Number(row.horizon_days || 90),
+    estado: row.estado || 'activo',
+    activatedAt: row.activated_at || null,
+    inactivatedAt: row.inactivated_at || null,
+    createdByUid: row.created_by_uid || null,
+    createdByEmail: row.created_by_email || null,
+    createdAt: row.created_at || null,
+    updatedAt: row.updated_at || null
+  };
+}
+
+function mapScheduledShiftRow(row = {}) {
+  return {
+    id: row.id,
+    templateId: row.template_id || null,
+    templateRuleId: row.template_rule_id || null,
+    fechaOperativa: row.fecha_operativa || null,
+    sedeCodigo: row.sede_codigo || null,
+    sedeNombre: row.sede_nombre || null,
+    nombre: row.nombre || null,
+    startsAt: row.starts_at || null,
+    endsAt: row.ends_at || null,
+    estado: row.estado || 'programado',
+    operariosPlaneados: Number(row.operarios_planeados || 0),
+    openedAt: row.opened_at || null,
+    closedAt: row.closed_at || null,
+    closedByUid: row.closed_by_uid || null,
+    closedByEmail: row.closed_by_email || null,
+    createdAt: row.created_at || null,
+    updatedAt: row.updated_at || null
+  };
+}
+
+function mapShiftAssignmentRow(row = {}) {
+  return {
+    id: row.id,
+    scheduledShiftId: row.scheduled_shift_id || null,
+    employeeId: row.employee_id || null,
+    documento: row.documento || null,
+    nombre: row.nombre || null,
+    cargoCodigo: row.cargo_codigo || null,
+    cargoNombre: row.cargo_nombre || null,
+    sedeCodigo: row.sede_codigo || null,
+    estado: row.estado || 'asignado',
+    createdAt: row.created_at || null,
+    updatedAt: row.updated_at || null
+  };
+}
+
+function mapShiftTimeAuthorizationRow(row = {}) {
+  return {
+    id: row.id,
+    scheduledShiftId: row.scheduled_shift_id || null,
+    employeeId: row.employee_id || null,
+    documento: row.documento || null,
+    authorizationType: row.authorization_type || null,
+    authorizedFrom: row.authorized_from || null,
+    authorizedUntil: row.authorized_until || null,
+    minutesAuthorized: row.minutes_authorized == null ? null : Number(row.minutes_authorized || 0),
+    reason: row.reason || null,
+    estado: row.estado || 'pendiente',
+    requestedByUid: row.requested_by_uid || null,
+    requestedByEmail: row.requested_by_email || null,
+    approvedByUid: row.approved_by_uid || null,
+    approvedByEmail: row.approved_by_email || null,
+    approvedAt: row.approved_at || null,
+    createdAt: row.created_at || null,
+    updatedAt: row.updated_at || null
+  };
+}
+
+function mapEmployeeShiftStatusRow(row = {}) {
+  return {
+    id: row.id,
+    scheduledShiftId: row.scheduled_shift_id || null,
+    fechaOperativa: row.fecha_operativa || null,
+    employeeId: row.employee_id || null,
+    documento: row.documento || null,
+    nombre: row.nombre || null,
+    sedeCodigo: row.sede_codigo || null,
+    estadoTurno: row.estado_turno || 'programado',
+    asistio: row.asistio === true,
+    entradaAt: row.entrada_at || null,
+    salidaAt: row.salida_at || null,
+    novedadCodigo: row.novedad_codigo || null,
+    novedadNombre: row.novedad_nombre || null,
+    earlyEntryMinutes: Number(row.early_entry_minutes || 0),
+    lateEntryMinutes: Number(row.late_entry_minutes || 0),
+    earlyExitMinutes: Number(row.early_exit_minutes || 0),
+    lateExitMinutes: Number(row.late_exit_minutes || 0),
+    earlyEntryReason: row.early_entry_reason || null,
+    lateEntryReason: row.late_entry_reason || null,
+    earlyExitReason: row.early_exit_reason || null,
+    lateExitReason: row.late_exit_reason || null,
+    entryAuthorizationId: row.entry_authorization_id || null,
+    exitAuthorizationId: row.exit_authorization_id || null,
+    requiresReview: row.requires_review === true,
+    requiereReemplazo: row.requiere_reemplazo === true,
+    decisionCobertura: row.decision_cobertura || 'no_aplica',
+    reemplazadoPorEmployeeId: row.reemplazado_por_employee_id || null,
+    reemplazadoPorDocumento: row.reemplazado_por_documento || null,
+    reemplazadoPorNombre: row.reemplazado_por_nombre || null,
+    closed: row.closed === true,
+    sourceAttendanceId: row.source_attendance_id || null,
+    sourceExitId: row.source_exit_id || null,
+    sourceIncapacityId: row.source_incapacity_id || null,
+    sourceReplacementId: row.source_replacement_id || null,
+    createdAt: row.created_at || null,
+    updatedAt: row.updated_at || null
+  };
+}
+
+function mapShiftClosureRow(row = {}) {
+  return {
+    id: row.id,
+    scheduledShiftId: row.scheduled_shift_id || null,
+    fechaOperativa: row.fecha_operativa || null,
+    sedeCodigo: row.sede_codigo || null,
+    planeados: Number(row.planeados || 0),
+    asignados: Number(row.asignados || 0),
+    registrados: Number(row.registrados || 0),
+    ausencias: Number(row.ausencias || 0),
+    reemplazos: Number(row.reemplazos || 0),
+    faltantes: Number(row.faltantes || 0),
+    sobrantes: Number(row.sobrantes || 0),
+    entradasFueraVentana: Number(row.entradas_fuera_ventana || 0),
+    salidasFueraVentana: Number(row.salidas_fuera_ventana || 0),
+    salidasPendientes: Number(row.salidas_pendientes || 0),
+    autorizacionesPendientes: Number(row.autorizaciones_pendientes || 0),
+    ajustesPendientes: Number(row.ajustes_pendientes || 0),
+    closedByUid: row.closed_by_uid || null,
+    closedByEmail: row.closed_by_email || null,
+    closedAt: row.closed_at || null,
+    snapshot: row.snapshot || {},
+    createdAt: row.created_at || null,
+    updatedAt: row.updated_at || null
+  };
+}
+
+function mapShiftAdjustmentRow(row = {}) {
+  return {
+    id: row.id,
+    scheduledShiftId: row.scheduled_shift_id || null,
+    employeeId: row.employee_id || null,
+    documento: row.documento || null,
+    tipo: row.tipo || null,
+    estado: row.estado || 'pendiente',
+    beforeSnapshot: row.before_snapshot || {},
+    afterSnapshot: row.after_snapshot || {},
+    motivo: row.motivo || null,
+    reportedAt: row.reported_at || null,
+    approvedByUid: row.approved_by_uid || null,
+    approvedByEmail: row.approved_by_email || null,
+    approvedAt: row.approved_at || null,
     createdAt: row.created_at || null,
     updatedAt: row.updated_at || null
   };
@@ -724,6 +967,188 @@ function incapacityOverlapsRange(row = {}, dateFrom = '', dateTo = '') {
   if (from && end && end < from) return false;
   if (to && start && start > to) return false;
   return true;
+}
+
+function numberOrDefault(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function nullableNumber(value) {
+  if (value == null || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function shiftTemplatePayload(data = {}, { includeAudit = false } = {}) {
+  const payload = {};
+  if (data.nombre !== undefined) payload.nombre = String(data.nombre || '').trim() || null;
+  if (data.notasProgramacion !== undefined) payload.notas_programacion = String(data.notasProgramacion || '').trim() || null;
+  if (data.estado !== undefined) payload.estado = String(data.estado || 'activo').trim() || 'activo';
+  if (data.orden !== undefined) payload.orden = numberOrDefault(data.orden, 0);
+  if (includeAudit) Object.assign(payload, data.audit || {});
+  return payload;
+}
+
+function shiftTemplateRulePayload(data = {}, { includeAudit = false } = {}) {
+  const payload = {};
+  if (data.templateId !== undefined) payload.template_id = data.templateId || null;
+  if (data.nombre !== undefined) payload.nombre = String(data.nombre || '').trim() || null;
+  if (data.tipoDia !== undefined) payload.tipo_dia = String(data.tipoDia || 'dia_semana').trim() || 'dia_semana';
+  if (data.diaSemana !== undefined) payload.dia_semana = String(data.diaSemana || '').trim() || null;
+  if (data.horaInicio !== undefined) payload.hora_inicio = String(data.horaInicio || '').trim() || null;
+  if (data.horaFin !== undefined) payload.hora_fin = String(data.horaFin || '').trim() || null;
+  if (data.cruzaDia !== undefined) payload.cruza_dia = data.cruzaDia === true;
+  if (data.frecuenciaTipo !== undefined) payload.frecuencia_tipo = String(data.frecuenciaTipo || 'todos').trim() || 'todos';
+  if (data.frecuenciaSemanas !== undefined) payload.frecuencia_semanas = Math.max(1, numberOrDefault(data.frecuenciaSemanas, 1));
+  if (data.fechaAncla !== undefined) payload.fecha_ancla = String(data.fechaAncla || '').trim() || null;
+  if (data.semanaMes !== undefined) payload.semana_mes = nullableNumber(data.semanaMes);
+  if (data.festivoModo !== undefined) payload.festivo_modo = String(data.festivoModo || 'excluir').trim() || 'excluir';
+  if (data.ventanaEntradaAntesMinutos !== undefined) payload.ventana_entrada_antes_minutos = Math.max(0, numberOrDefault(data.ventanaEntradaAntesMinutos, 0));
+  if (data.ventanaEntradaDespuesMinutos !== undefined) payload.ventana_entrada_despues_minutos = Math.max(0, numberOrDefault(data.ventanaEntradaDespuesMinutos, 0));
+  if (data.ventanaSalidaAntesMinutos !== undefined) payload.ventana_salida_antes_minutos = Math.max(0, numberOrDefault(data.ventanaSalidaAntesMinutos, 0));
+  if (data.ventanaSalidaDespuesMinutos !== undefined) payload.ventana_salida_despues_minutos = Math.max(0, numberOrDefault(data.ventanaSalidaDespuesMinutos, 0));
+  if (data.ventanaNovedadHoras !== undefined) payload.ventana_novedad_horas = Math.max(0, numberOrDefault(data.ventanaNovedadHoras, 0));
+  if (data.estado !== undefined) payload.estado = String(data.estado || 'activo').trim() || 'activo';
+  if (data.orden !== undefined) payload.orden = numberOrDefault(data.orden, 0);
+  if (data.notas !== undefined) payload.notas = String(data.notas || '').trim() || null;
+  if (includeAudit) Object.assign(payload, data.audit || {});
+  return payload;
+}
+
+function scheduledShiftPayload(data = {}) {
+  const payload = {};
+  if (data.templateId !== undefined) payload.template_id = data.templateId || null;
+  if (data.templateRuleId !== undefined) payload.template_rule_id = data.templateRuleId || null;
+  if (data.fechaOperativa !== undefined) payload.fecha_operativa = String(data.fechaOperativa || '').trim() || null;
+  if (data.sedeCodigo !== undefined) payload.sede_codigo = String(data.sedeCodigo || '').trim() || null;
+  if (data.sedeNombre !== undefined) payload.sede_nombre = String(data.sedeNombre || '').trim() || null;
+  if (data.nombre !== undefined) payload.nombre = String(data.nombre || '').trim() || null;
+  if (data.startsAt !== undefined) payload.starts_at = data.startsAt || null;
+  if (data.endsAt !== undefined) payload.ends_at = data.endsAt || null;
+  if (data.estado !== undefined) payload.estado = String(data.estado || 'programado').trim() || 'programado';
+  if (data.operariosPlaneados !== undefined) payload.operarios_planeados = Math.max(0, numberOrDefault(data.operariosPlaneados, 0));
+  if (data.openedAt !== undefined) payload.opened_at = data.openedAt || null;
+  if (data.closedAt !== undefined) payload.closed_at = data.closedAt || null;
+  if (data.closedByUid !== undefined) payload.closed_by_uid = data.closedByUid || null;
+  if (data.closedByEmail !== undefined) payload.closed_by_email = data.closedByEmail || null;
+  return payload;
+}
+
+function shiftSitePlanAssignmentPayload(data = {}, audit = null) {
+  const payload = {};
+  if (data.templateId !== undefined) payload.template_id = data.templateId || null;
+  if (data.sedeCodigo !== undefined) payload.sede_codigo = String(data.sedeCodigo || '').trim() || null;
+  if (data.sedeNombre !== undefined) payload.sede_nombre = String(data.sedeNombre || '').trim() || null;
+  if (data.operariosPlaneados !== undefined) payload.operarios_planeados = Math.max(0, numberOrDefault(data.operariosPlaneados, 0));
+  if (data.horizonDays !== undefined) payload.horizon_days = Math.min(370, Math.max(1, numberOrDefault(data.horizonDays, 90)));
+  if (data.estado !== undefined) payload.estado = String(data.estado || 'activo').trim() || 'activo';
+  if (data.activatedAt !== undefined) payload.activated_at = data.activatedAt || null;
+  if (data.inactivatedAt !== undefined) payload.inactivated_at = data.inactivatedAt || null;
+  if (audit) Object.assign(payload, audit);
+  return payload;
+}
+
+function shiftAssignmentPayload(data = {}) {
+  const payload = {};
+  if (data.scheduledShiftId !== undefined) payload.scheduled_shift_id = data.scheduledShiftId || null;
+  if (data.employeeId !== undefined) payload.employee_id = data.employeeId || null;
+  if (data.documento !== undefined) payload.documento = String(data.documento || '').trim() || null;
+  if (data.nombre !== undefined) payload.nombre = String(data.nombre || '').trim() || null;
+  if (data.cargoCodigo !== undefined) payload.cargo_codigo = String(data.cargoCodigo || '').trim() || null;
+  if (data.cargoNombre !== undefined) payload.cargo_nombre = String(data.cargoNombre || '').trim() || null;
+  if (data.sedeCodigo !== undefined) payload.sede_codigo = String(data.sedeCodigo || '').trim() || null;
+  if (data.estado !== undefined) payload.estado = String(data.estado || 'asignado').trim() || 'asignado';
+  return payload;
+}
+
+function employeeShiftStatusPayload(data = {}) {
+  const payload = {};
+  if (data.id !== undefined) payload.id = data.id || null;
+  if (data.scheduledShiftId !== undefined) payload.scheduled_shift_id = data.scheduledShiftId || null;
+  if (data.fechaOperativa !== undefined) payload.fecha_operativa = String(data.fechaOperativa || '').trim() || null;
+  if (data.employeeId !== undefined) payload.employee_id = data.employeeId || null;
+  if (data.documento !== undefined) payload.documento = String(data.documento || '').trim() || null;
+  if (data.nombre !== undefined) payload.nombre = String(data.nombre || '').trim() || null;
+  if (data.sedeCodigo !== undefined) payload.sede_codigo = String(data.sedeCodigo || '').trim() || null;
+  if (data.estadoTurno !== undefined) payload.estado_turno = String(data.estadoTurno || 'programado').trim() || 'programado';
+  if (data.asistio !== undefined) payload.asistio = data.asistio === true;
+  if (data.entradaAt !== undefined) payload.entrada_at = data.entradaAt || null;
+  if (data.salidaAt !== undefined) payload.salida_at = data.salidaAt || null;
+  if (data.novedadCodigo !== undefined) payload.novedad_codigo = data.novedadCodigo || null;
+  if (data.novedadNombre !== undefined) payload.novedad_nombre = data.novedadNombre || null;
+  if (data.earlyEntryMinutes !== undefined) payload.early_entry_minutes = Math.max(0, numberOrDefault(data.earlyEntryMinutes, 0));
+  if (data.lateEntryMinutes !== undefined) payload.late_entry_minutes = Math.max(0, numberOrDefault(data.lateEntryMinutes, 0));
+  if (data.earlyExitMinutes !== undefined) payload.early_exit_minutes = Math.max(0, numberOrDefault(data.earlyExitMinutes, 0));
+  if (data.lateExitMinutes !== undefined) payload.late_exit_minutes = Math.max(0, numberOrDefault(data.lateExitMinutes, 0));
+  if (data.earlyEntryReason !== undefined) payload.early_entry_reason = String(data.earlyEntryReason || '').trim() || null;
+  if (data.lateEntryReason !== undefined) payload.late_entry_reason = String(data.lateEntryReason || '').trim() || null;
+  if (data.earlyExitReason !== undefined) payload.early_exit_reason = String(data.earlyExitReason || '').trim() || null;
+  if (data.lateExitReason !== undefined) payload.late_exit_reason = String(data.lateExitReason || '').trim() || null;
+  if (data.entryAuthorizationId !== undefined) payload.entry_authorization_id = data.entryAuthorizationId || null;
+  if (data.exitAuthorizationId !== undefined) payload.exit_authorization_id = data.exitAuthorizationId || null;
+  if (data.requiresReview !== undefined) payload.requires_review = data.requiresReview === true;
+  if (data.requiereReemplazo !== undefined) payload.requiere_reemplazo = data.requiereReemplazo === true;
+  if (data.decisionCobertura !== undefined) payload.decision_cobertura = data.decisionCobertura || 'no_aplica';
+  if (data.reemplazadoPorEmployeeId !== undefined) payload.reemplazado_por_employee_id = data.reemplazadoPorEmployeeId || null;
+  if (data.reemplazadoPorDocumento !== undefined) payload.reemplazado_por_documento = data.reemplazadoPorDocumento || null;
+  if (data.reemplazadoPorNombre !== undefined) payload.reemplazado_por_nombre = data.reemplazadoPorNombre || null;
+  if (data.closed !== undefined) payload.closed = data.closed === true;
+  if (data.sourceAttendanceId !== undefined) payload.source_attendance_id = data.sourceAttendanceId || null;
+  if (data.sourceExitId !== undefined) payload.source_exit_id = data.sourceExitId || null;
+  if (data.sourceIncapacityId !== undefined) payload.source_incapacity_id = data.sourceIncapacityId || null;
+  if (data.sourceReplacementId !== undefined) payload.source_replacement_id = data.sourceReplacementId || null;
+  return payload;
+}
+
+function shiftTimeAuthorizationPayload(data = {}, audit = null) {
+  const payload = {};
+  if (data.scheduledShiftId !== undefined) payload.scheduled_shift_id = data.scheduledShiftId || null;
+  if (data.employeeId !== undefined) payload.employee_id = data.employeeId || null;
+  if (data.documento !== undefined) payload.documento = String(data.documento || '').trim() || null;
+  if (data.authorizationType !== undefined) payload.authorization_type = data.authorizationType || null;
+  if (data.authorizedFrom !== undefined) payload.authorized_from = data.authorizedFrom || null;
+  if (data.authorizedUntil !== undefined) payload.authorized_until = data.authorizedUntil || null;
+  if (data.minutesAuthorized !== undefined) payload.minutes_authorized = nullableNumber(data.minutesAuthorized);
+  if (data.reason !== undefined) payload.reason = String(data.reason || '').trim() || null;
+  if (data.estado !== undefined) payload.estado = data.estado || 'pendiente';
+  if (data.requestedByUid !== undefined) payload.requested_by_uid = data.requestedByUid || null;
+  if (data.requestedByEmail !== undefined) payload.requested_by_email = data.requestedByEmail || null;
+  if (data.approvedByUid !== undefined) payload.approved_by_uid = data.approvedByUid || null;
+  if (data.approvedByEmail !== undefined) payload.approved_by_email = data.approvedByEmail || null;
+  if (data.approvedAt !== undefined) payload.approved_at = data.approvedAt || null;
+  if (audit && payload.requested_by_uid === undefined && payload.requested_by_email === undefined) {
+    payload.requested_by_uid = audit.created_by_uid || null;
+    payload.requested_by_email = audit.created_by_email || null;
+  }
+  if (audit && data.estado && data.estado !== 'pendiente' && payload.approved_by_uid === undefined && payload.approved_by_email === undefined) {
+    payload.approved_by_uid = audit.created_by_uid || null;
+    payload.approved_by_email = audit.created_by_email || null;
+    payload.approved_at = new Date().toISOString();
+  }
+  return payload;
+}
+
+function shiftAdjustmentPayload(data = {}, audit = null) {
+  const payload = {};
+  if (data.scheduledShiftId !== undefined) payload.scheduled_shift_id = data.scheduledShiftId || null;
+  if (data.employeeId !== undefined) payload.employee_id = data.employeeId || null;
+  if (data.documento !== undefined) payload.documento = String(data.documento || '').trim() || null;
+  if (data.tipo !== undefined) payload.tipo = data.tipo || null;
+  if (data.estado !== undefined) payload.estado = data.estado || 'pendiente';
+  if (data.beforeSnapshot !== undefined) payload.before_snapshot = data.beforeSnapshot || {};
+  if (data.afterSnapshot !== undefined) payload.after_snapshot = data.afterSnapshot || {};
+  if (data.motivo !== undefined) payload.motivo = String(data.motivo || '').trim() || null;
+  if (data.reportedAt !== undefined) payload.reported_at = data.reportedAt || null;
+  if (data.approvedByUid !== undefined) payload.approved_by_uid = data.approvedByUid || null;
+  if (data.approvedByEmail !== undefined) payload.approved_by_email = data.approvedByEmail || null;
+  if (data.approvedAt !== undefined) payload.approved_at = data.approvedAt || null;
+  if (audit && data.estado && data.estado !== 'pendiente' && payload.approved_by_uid === undefined && payload.approved_by_email === undefined) {
+    payload.approved_by_uid = audit.created_by_uid || null;
+    payload.approved_by_email = audit.created_by_email || null;
+    payload.approved_at = new Date().toISOString();
+  }
+  return payload;
 }
 
 function sanitizeStoragePathPart(value, fallback = 'general') {
@@ -887,6 +1312,57 @@ function isEmployeeActiveForDate(emp, selectedDate) {
   if (estado === 'inactivo') return Boolean(retiro && retiro >= day);
   if (retiro && retiro < day) return false;
   return true;
+}
+
+function employeesEffectiveOnDateQuery({ select = '*', fecha = todayBogotaISO(), order = 'created_at', ascending = false } = {}) {
+  const day = toISODate(fecha) || todayBogotaISO();
+  const startOfDay = `${day}T00:00:00`;
+  const endOfDay = `${day}T23:59:59`;
+  let query = supabase
+    .from('employees')
+    .select(select)
+    .or('estado.is.null,estado.neq.eliminado')
+    .or(`fecha_ingreso.is.null,fecha_ingreso.lte.${endOfDay}`)
+    .or(`fecha_retiro.is.null,fecha_retiro.gte.${startOfDay}`);
+  if (order) query = query.order(order, { ascending });
+  return query;
+}
+
+async function listEmployeesEffectiveOnDate(fecha = todayBogotaISO(), options = {}) {
+  const day = toISODate(fecha) || todayBogotaISO();
+  const rows = await selectPagedRows(() => employeesEffectiveOnDateQuery({ ...options, fecha: day }));
+  return (rows || []).filter((row) => isEmployeeActiveForDate(row, day));
+}
+
+function cargoCodesByAlignment(cargos = [], alignment = 'empleado') {
+  const target = normalizeCargoAlignment(alignment);
+  return (cargos || [])
+    .filter((cargo) => normalizeCargoAlignment(cargo?.alineacion_crud || cargo?.nombre) === target)
+    .map((cargo) => String(cargo?.codigo || '').trim())
+    .filter(Boolean);
+}
+
+async function listEmployeesByCargoAlignment(alignment, { fecha = null, select = '*', order = 'created_at', ascending = false } = {}) {
+  const { data: cargos, error: cargoError } = await supabase
+    .from('cargos')
+    .select('codigo, nombre, alineacion_crud');
+  if (cargoError) throw cargoError;
+
+  const codes = cargoCodesByAlignment(cargos || [], alignment);
+  const rows = await selectPagedRows(() => {
+    let query = fecha
+      ? employeesEffectiveOnDateQuery({ select, fecha, order: null })
+      : supabase.from('employees').select(select).or('estado.is.null,estado.neq.eliminado');
+    if (codes.length) query = query.in('cargo_codigo', codes);
+    if (order) query = query.order(order, { ascending });
+    return query;
+  });
+
+  const cargoMap = new Map((cargos || []).map((row) => [String(row.codigo || '').trim(), row]));
+  return (rows || []).filter((emp) => {
+    const cargo = cargoMap.get(String(emp.cargo_codigo || '').trim()) || null;
+    return normalizeCargoAlignment(cargo?.alineacion_crud || emp.cargo_nombre) === normalizeCargoAlignment(alignment);
+  });
 }
 
 const colombiaHolidayCache = new Map();
@@ -1098,7 +1574,7 @@ async function computeDailyClosureSnapshot(fecha) {
       .from('employee_daily_status')
       .select('sede_codigo, tipo_personal, servicio_programado, asistio, cuenta_pago_servicio')
       .eq('fecha', day),
-    selectAllRows('sedes', { select: '*' })
+    selectSmallTableRows('sedes', { select: '*' })
   ]);
   if (statusError) throw statusError;
 
@@ -1167,101 +1643,43 @@ function computeOperationalAbsenteeism(planeados, contratados, cubiertos) {
 async function computeDailySedeClosureSnapshot(fecha) {
   const day = String(fecha || '').trim();
   if (!day) return [];
-  const [{ data: attendance }, { data: replacements }, sedesRows, employeesRows, employeeHistoryRows, cargosRows, novedadesRows] = await Promise.all([
-    supabase.from('attendance').select('*').eq('fecha', day),
-    supabase.from('import_replacements').select('*').eq('fecha', day),
-    selectAllRows('sedes', { select: '*' }),
-    selectAllRows('employees', { select: '*' }),
-    selectAllRows('employee_cargo_history', { select: 'id, employee_id, cargo_codigo, cargo_nombre, sede_codigo, sede_nombre, fecha_ingreso, fecha_retiro, created_at' }),
-    selectAllRows('cargos', { select: 'codigo, alineacion_crud, nombre' }),
-    selectAllRows('novedades', { select: 'codigo, codigo_novedad, nombre, reemplazo' })
-  ]);
 
-  const attRows = (attendance || []).map(mapAttendanceRow);
-  const repRows = (replacements || []).map(mapImportReplacementRow);
-  const sedes = (sedesRows || [])
+  await refreshOperationalSnapshotsFromEmployeeDailyStatus(day);
+  const [{ data: statusRows, error: statusError }, sedesRows] = await Promise.all([
+    supabase.from('sede_status').select('*').eq('fecha', day),
+    selectSmallTableRows('sedes', { select: '*' })
+  ]);
+  if (statusError) throw statusError;
+
+  const statusBySede = new Map((statusRows || []).map((row) => [String(row?.sede_codigo || '').trim(), mapSedeStatusRow(row)]));
+  return (sedesRows || [])
     .map(mapSedeRow)
     .filter((sede) => String(sede?.estado || 'activo').trim().toLowerCase() !== 'inactivo')
-    .filter((sede) => isSedeScheduledForDate(sede, day));
-  const activeSedeCodes = new Set(sedes.map((row) => String(row?.codigo || '').trim()).filter(Boolean));
-  const cargoMap = new Map((cargosRows || []).map((row) => [String(row.codigo || '').trim(), row]));
-  const replacementRules = buildNovedadReplacementRules((novedadesRows || []).map(mapNovedadRow));
-  const replacementMap = new Map(repRows.map((row) => [metricReplacementKey(row), row]));
-  const replacementSuperDocs = new Set(
-    repRows
-      .filter((row) => String(row?.decision || '').trim().toLowerCase() === 'reemplazo')
-      .map((row) => `${String(row?.fecha || '').trim()}|${String(row?.supernumerarioDocumento || '').trim()}`)
-      .filter((value) => !value.endsWith('|'))
-  );
-
-  const employeeById = new Map();
-  const employeeByDoc = new Map();
-  const contractedBySede = new Map();
-  const supernumerarioDocs = new Set();
-  const historyByEmployeeId = buildEmployeeHistoryByEmployeeId(employeeHistoryRows);
-  (employeesRows || []).forEach((emp) => {
-    const mapped = mapEmployeeRow(emp);
-    const empId = String(mapped?.id || '').trim();
-    const doc = String(mapped?.documento || '').trim();
-    if (empId) employeeById.set(empId, mapped);
-    if (doc) employeeByDoc.set(doc, mapped);
-    const historyRows = historyByEmployeeId.get(empId) || [];
-    if (doc && isEmployeeSupernumerario(mapped, cargoMap) && isEmployeeAssignedToActiveSedeOnDate(mapped, day, activeSedeCodes, historyRows)) {
-      supernumerarioDocs.add(doc);
-    }
-    if (!isEmployeeAssignedToActiveSedeOnDate(mapped, day, activeSedeCodes, historyRows)) return;
-    if (isEmployeeSupernumerario(mapped, cargoMap)) return;
-    const assignment = resolveEmployeeAssignmentHistoryOnDate(mapped, day, historyRows);
-    const source = assignment || mapped;
-    const sedeCode = String(source?.sedeCodigo || source?.sede_codigo || '').trim();
-    if (!sedeCode) return;
-    if (!contractedBySede.has(sedeCode)) contractedBySede.set(sedeCode, new Set());
-    contractedBySede.get(sedeCode).add(doc || empId);
-  });
-
-  const registeredBySede = new Map();
-  dedupeAttendanceRows(attRows).forEach((row) => {
-    if (row?.asistio !== true) return;
-    const doc = String(row?.documento || '').trim();
-    if (doc && replacementSuperDocs.has(`${String(row?.fecha || '').trim()}|${doc}`)) return;
-    if (doc && supernumerarioDocs.has(doc)) return;
-    const empId = String(row?.empleadoId || '').trim();
-    const employee = (empId && employeeById.get(empId)) || (doc && employeeByDoc.get(doc)) || null;
-    if (isEmployeeSupernumerario(employee, cargoMap)) return;
-    const historyRows = employee ? (historyByEmployeeId.get(String(employee?.id || '').trim()) || []) : [];
-    const assignment = employee ? resolveEmployeeAssignmentHistoryOnDate(employee, day, historyRows) : null;
-    const source = assignment || employee;
-    const sedeCode = String(row?.sedeCodigo || source?.sedeCodigo || source?.sede_codigo || '').trim();
-    if (!sedeCode || !activeSedeCodes.has(sedeCode)) return;
-    if (!registeredBySede.has(sedeCode)) registeredBySede.set(sedeCode, new Set());
-    registeredBySede.get(sedeCode).add(doc || empId || String(row?.id || '').trim());
-  });
-
-  return sedes.map((sede) => {
-    const sedeCode = String(sede?.codigo || '').trim();
-    const planeados = Number(sede?.numeroOperarios ?? 0) || 0;
-    const baseContracted = Number(contractedBySede.get(sedeCode)?.size || 0);
-    const registrados = Number(registeredBySede.get(sedeCode)?.size || 0);
-    const externalRegistered = Math.max(0, registrados - baseContracted);
-    const contratados = Math.min(planeados, baseContracted + externalRegistered);
-    const faltantes = Math.max(0, planeados - contratados);
-    const sobrantes = Math.max(0, registrados - planeados);
-    return {
-      id: `${day}_${sedeCode}`,
-      fecha: day,
-      sede_codigo: sedeCode,
-      sede_nombre: sede?.nombre || sedeCode || null,
-      zona_codigo: sede?.zonaCodigo || null,
-      zona_nombre: sede?.zonaNombre || null,
-      dependencia_codigo: sede?.dependenciaCodigo || null,
-      dependencia_nombre: sede?.dependenciaNombre || null,
-      planeados,
-      contratados,
-      registrados,
-      faltantes,
-      sobrantes
-    };
-  });
+    .filter((sede) => isSedeScheduledForDate(sede, day))
+    .map((sede) => {
+      const sedeCode = String(sede?.codigo || '').trim();
+      const planeados = Number(sede?.numeroOperarios ?? 0) || 0;
+      const status = statusBySede.get(sedeCode) || {};
+      const contratados = Number(status.operariosEsperados || 0);
+      const registrados = Number(status.operariosPresentes || 0);
+      const faltantes = Number(status.faltantes || 0);
+      const sobrantes = Math.max(0, registrados - planeados);
+      return {
+        id: `${day}_${sedeCode}`,
+        fecha: day,
+        sede_codigo: sedeCode,
+        sede_nombre: sede?.nombre || sedeCode || null,
+        zona_codigo: sede?.zonaCodigo || null,
+        zona_nombre: sede?.zonaNombre || null,
+        dependencia_codigo: sede?.dependenciaCodigo || null,
+        dependencia_nombre: sede?.dependenciaNombre || null,
+        planeados,
+        contratados,
+        registrados,
+        faltantes,
+        sobrantes
+      };
+    });
 }
 
 async function getCargoCrudAlignmentByCode(cargoCodigo, cargoNombre = null) {
@@ -1642,17 +2060,6 @@ async function upsertSupervisorProfileFromEmployee(employee, override = {}) {
   return data;
 }
 
-function isMissingRpcError(error) {
-  const code = String(error?.code || '').trim();
-  if (code === 'PGRST202' || code === '42883') return true;
-  const message = [
-    error?.message,
-    error?.details,
-    error?.hint
-  ].filter(Boolean).join(' ');
-  return /could not find the function|function .* does not exist|schema cache/i.test(message);
-}
-
 function unwrapRpcSingleRow(data) {
   if (Array.isArray(data)) return data[0] || null;
   return data || null;
@@ -1690,90 +2097,11 @@ async function normalizeZeroDemandDailyMetrics(fecha) {
   return data || row;
 }
 
-async function removeInvalidScheduledEmployeeDailyStatusRows(fecha) {
-  const day = String(fecha || '').trim();
-  if (!day) return 0;
-
-  const [
-    { data: statusRows, error: statusError },
-    sedesRows,
-    employeesRows,
-    cargosRows,
-    employeeHistoryRows
-  ] = await Promise.all([
-    supabase
-      .from('employee_daily_status')
-      .select('id, employee_id')
-      .eq('fecha', day)
-      .eq('tipo_personal', 'empleado')
-      .eq('servicio_programado', true),
-    selectAllRows('sedes', { select: '*' }),
-    selectAllRows('employees', { select: '*' }),
-    selectAllRows('cargos', { select: 'codigo, alineacion_crud, nombre' }),
-    selectAllRows('employee_cargo_history', { select: 'id, employee_id, cargo_codigo, cargo_nombre, sede_codigo, fecha_ingreso, fecha_retiro, created_at' })
-  ]);
-  if (statusError) throw statusError;
-
-  const scheduledSedes = (sedesRows || [])
-    .map(mapSedeRow)
-    .filter((sede) => String(sede?.estado || 'activo').trim().toLowerCase() !== 'inactivo')
-    .filter((sede) => isSedeScheduledForDate(sede, day));
-  const activeSedeCodes = new Set(scheduledSedes.map((row) => String(row?.codigo || '').trim()).filter(Boolean));
-  activeSedeCodes.rows = scheduledSedes;
-  const cargoMap = new Map((cargosRows || []).map((row) => [String(row.codigo || '').trim(), row]));
-  const employeeById = new Map(
-    (employeesRows || [])
-      .map(mapEmployeeRow)
-      .map((row) => [String(row?.id || '').trim(), row])
-      .filter(([id]) => Boolean(id))
-  );
-  const historyByEmployeeId = new Map(
-    (employeeHistoryRows || [])
-      .map(mapCargoHistoryRow)
-      .reduce((acc, row) => {
-        const employeeId = String(row?.employeeId || '').trim();
-        if (!employeeId) return acc;
-        if (!acc.has(employeeId)) acc.set(employeeId, []);
-        acc.get(employeeId).push(row);
-        return acc;
-      }, new Map())
-  );
-
-  const invalidIds = (statusRows || [])
-    .filter((row) => {
-      const employeeId = String(row?.employee_id || '').trim();
-      const employee = employeeById.get(employeeId) || null;
-      if (!employee) return true;
-      const historyRows = historyByEmployeeId.get(employeeId) || [];
-      const assignment = resolveEmployeeAssignmentHistoryOnDate(employee, day, historyRows);
-      const source = assignment || employee;
-      const cargoCode = String(source?.cargoCodigo || source?.cargo_codigo || '').trim();
-      const cargo = cargoMap.get(cargoCode) || null;
-      const alignment = normalizeCargoAlignment(cargo?.alineacion_crud || source?.cargoNombre || source?.cargo_nombre || '');
-      if (alignment === 'supernumerario') return true;
-      return !isEmployeeAssignedToActiveSedeOnDate(employee, day, activeSedeCodes, historyRows);
-    })
-    .map((row) => String(row?.id || '').trim())
-    .filter(Boolean);
-
-  for (let index = 0; index < invalidIds.length; index += 200) {
-    const batch = invalidIds.slice(index, index + 200);
-    const { error } = await supabase.from('employee_daily_status').delete().in('id', batch);
-    if (error) throw error;
-  }
-
-  return invalidIds.length;
-}
-
 async function refreshEmployeeDailyStatusSnapshot(fecha) {
   const day = String(fecha || '').trim();
   if (!day) return null;
   const { data, error } = await supabase.rpc('refresh_employee_daily_status', { p_fecha: day });
-  if (error) {
-    if (isMissingRpcError(error)) return null;
-    throw error;
-  }
-  await removeInvalidScheduledEmployeeDailyStatusRows(day);
+  if (error) throw error;
   await notifyTableReload('employee_daily_status');
   return data ?? 0;
 }
@@ -1786,14 +2114,10 @@ async function refreshOperationalSnapshotsFromEmployeeDailyStatus(fecha) {
     return metrics ? { fecha: day, skipped: 'closed' } : null;
   }
 
-  const refreshed = await refreshEmployeeDailyStatusSnapshot(day);
-  if (refreshed === null) return null;
+  await refreshEmployeeDailyStatusSnapshot(day);
 
   const { data, error } = await supabase.rpc('refresh_operational_snapshots_from_employee_daily_status', { p_fecha: day });
-  if (error) {
-    if (isMissingRpcError(error)) return null;
-    throw error;
-  }
+  if (error) throw error;
   await normalizeZeroDemandDailyMetrics(day);
 
   await notifyTableReload('sede_status');
@@ -1811,8 +2135,7 @@ async function refreshOperationalState(fecha) {
     return getDailyMetricsRowByDate(day);
   }
 
-  await recomputeSedeStatusSnapshot(day);
-  return recomputeDailyMetrics(day);
+  return getDailyMetricsRowByDate(day);
 }
 
 async function recomputeDailyMetrics(fecha) {
@@ -1820,109 +2143,12 @@ async function recomputeDailyMetrics(fecha) {
   if (!day) return null;
   if (await isOperationDayClosed(day)) return getDailyMetricsRowByDate(day);
 
-  const refreshed = await refreshEmployeeDailyStatusSnapshot(day);
-  if (refreshed !== null) {
-    const { data, error } = await supabase.rpc('recompute_daily_metrics_from_employee_daily_status', { p_fecha: day });
-    if (error) {
-      if (!isMissingRpcError(error)) throw error;
-    } else {
-      await normalizeZeroDemandDailyMetrics(day);
-      await notifyTableReload('daily_metrics');
-      return (await getDailyMetricsRowByDate(day)) || unwrapRpcSingleRow(data);
-    }
-  }
-
-  const [{ data: attendance }, { data: replacements }, { data: closures }, sedesRows, employeesRows, employeeHistoryRows, cargosRows, novedadesRows] = await Promise.all([
-    supabase.from('attendance').select('*').eq('fecha', day),
-    supabase.from('import_replacements').select('*').eq('fecha', day),
-    supabase.from('daily_closures').select('*').eq('fecha', day).maybeSingle(),
-    selectAllRows('sedes', { select: '*' }),
-    selectAllRows('employees', { select: '*' }),
-    selectAllRows('employee_cargo_history', { select: 'id, employee_id, cargo_codigo, cargo_nombre, sede_codigo, sede_nombre, fecha_ingreso, fecha_retiro, created_at' }),
-    selectAllRows('cargos', { select: 'codigo, alineacion_crud, nombre' }),
-    selectAllRows('novedades', { select: 'codigo, codigo_novedad, nombre, reemplazo' })
-  ]);
-  const attRows = (attendance || []).map(mapAttendanceRow);
-  const repRows = (replacements || []).map(mapImportReplacementRow);
-  const sedes = (sedesRows || []).filter((s) => String(s?.estado || 'activo').trim().toLowerCase() !== 'inactivo');
-  const scheduledSedes = sedes.filter((sede) => isSedeScheduledForDate(sede, day));
-  const activeSedeCodes = new Set(
-    scheduledSedes
-      .map((row) => String(row?.codigo || '').trim())
-      .filter(Boolean)
-  );
-  activeSedeCodes.rows = scheduledSedes;
-  const cargoMap = new Map((cargosRows || []).map((row) => [String(row.codigo || '').trim(), row]));
-  const replacementRules = buildNovedadReplacementRules((novedadesRows || []).map(mapNovedadRow));
-  const replacementMap = new Map(repRows.map((row) => [metricReplacementKey(row), row]));
-  const replacementSuperDocs = new Set(
-    repRows
-      .filter((row) => String(row?.decision || '').trim().toLowerCase() === 'reemplazo')
-      .map((row) => `${String(row?.fecha || '').trim()}|${String(row?.supernumerarioDocumento || '').trim()}`)
-      .filter((value) => !value.endsWith('|'))
-  );
-  const employeeById = new Map();
-  const employeeByDoc = new Map();
-  const supernumerarioDocs = new Set();
-  const historyByEmployeeId = buildEmployeeHistoryByEmployeeId(employeeHistoryRows);
-  (employeesRows || []).forEach((emp) => {
-    const mapped = mapEmployeeRow(emp);
-    const empId = String(mapped?.id || '').trim();
-    const doc = String(mapped?.documento || '').trim();
-    if (empId) employeeById.set(empId, mapped);
-    if (doc) employeeByDoc.set(doc, mapped);
-    const historyRows = historyByEmployeeId.get(empId) || [];
-    if (doc && isEmployeeSupernumerario(mapped, cargoMap) && isEmployeeAssignedToActiveSedeOnDate(mapped, day, activeSedeCodes, historyRows)) {
-      supernumerarioDocs.add(doc);
-    }
-  });
-  const fallbackExpected = (employeesRows || []).filter((emp) => {
-    if (String(emp?.estado || '').trim().toLowerCase() !== 'activo') return false;
-    const employeeId = String(emp?.id || '').trim();
-    if (!isEmployeeAssignedToActiveSedeOnDate(emp, day, activeSedeCodes, historyByEmployeeId.get(employeeId) || [])) return false;
-    return !isEmployeeSupernumerario(emp, cargoMap);
-  }).length;
-  const planned = scheduledSedes.reduce((acc, sede) => {
-    const n = Number(sede?.numero_operarios ?? 0);
-    return acc + (Number.isFinite(n) && n > 0 ? n : 0);
-  }, 0);
-  const expected = fallbackExpected;
-  const baseAttendanceRows = dedupeAttendanceRows(attRows).filter((row) => {
-    const doc = String(row?.documento || '').trim();
-    if (doc && replacementSuperDocs.has(`${String(row?.fecha || '').trim()}|${doc}`)) return false;
-    if (doc && supernumerarioDocs.has(doc)) return false;
-    const empId = String(row?.empleadoId || '').trim();
-    const employee = (empId && employeeById.get(empId)) || (doc && employeeByDoc.get(doc)) || null;
-    return !isEmployeeSupernumerario(employee, cargoMap);
-  });
-  const uniqueDocs = new Set(baseAttendanceRows.map((row) => String(row.documento || row.empleadoId || '').trim()).filter(Boolean));
-  const actualAttendanceRows = dedupeAttendanceRows(attRows);
-  const actualAttendanceCount = actualAttendanceRows.filter((row) => row?.asistio === true).length;
-  const attendanceCount = planned === 0 && expected === 0
-    ? actualAttendanceCount
-    : baseAttendanceRows.filter((row) => metricAttendanceCountsAsService(row, replacementMap, replacementRules)).length;
-  const absenteeism = planned === 0 && expected === 0
-    ? 0
-    : baseAttendanceRows.filter((row) => metricAttendanceCountsAsAbsenteeism(row, replacementMap, replacementRules)).length;
-  const paidServices = attendanceCount;
-  const noContracted = Math.max(0, planned - expected);
-  const payload = {
-    id: day,
-    fecha: day,
-    planned,
-    expected,
-    unique_count: uniqueDocs.size,
-    missing: planned === 0 && expected === 0 ? 0 : Math.max(0, expected - attendanceCount),
-    attendance_count: attendanceCount,
-    absenteeism,
-    paid_services: paidServices,
-    no_contracted: noContracted,
-    closed: closures?.locked === true || String(closures?.status || '').trim() === 'closed'
-  };
-  const { data, error } = await supabase.from('daily_metrics').upsert(payload, { onConflict: 'id' }).select('*').single();
+  await refreshEmployeeDailyStatusSnapshot(day);
+  const { data, error } = await supabase.rpc('recompute_daily_metrics_from_employee_daily_status', { p_fecha: day });
   if (error) throw error;
+  await normalizeZeroDemandDailyMetrics(day);
   await notifyTableReload('daily_metrics');
-  return data;
+  return (await getDailyMetricsRowByDate(day)) || unwrapRpcSingleRow(data);
 }
 
 async function recomputeSedeStatusSnapshot(fecha) {
@@ -1930,113 +2156,11 @@ async function recomputeSedeStatusSnapshot(fecha) {
   if (!day) return;
   if (await isOperationDayClosed(day)) return null;
 
-  const refreshed = await refreshEmployeeDailyStatusSnapshot(day);
-  if (refreshed !== null) {
-    const { data, error } = await supabase.rpc('recompute_sede_status_from_employee_daily_status', { p_fecha: day });
-    if (error) {
-      if (!isMissingRpcError(error)) throw error;
-    } else {
-      await notifyTableReload('sede_status');
-      return data ?? null;
-    }
-  }
-
-  const [{ data: attendance }, { data: replacements }, sedesRows, employeesRows, employeeHistoryRows, cargosRows, novedadesRows] = await Promise.all([
-    supabase.from('attendance').select('*').eq('fecha', day),
-    supabase.from('import_replacements').select('*').eq('fecha', day),
-    selectAllRows('sedes', { select: '*' }),
-    selectAllRows('employees', { select: '*' }),
-    selectAllRows('employee_cargo_history', { select: 'id, employee_id, cargo_codigo, cargo_nombre, sede_codigo, sede_nombre, fecha_ingreso, fecha_retiro, created_at' }),
-    selectAllRows('cargos', { select: 'codigo, alineacion_crud, nombre' }),
-    selectAllRows('novedades', { select: 'codigo, codigo_novedad, nombre, reemplazo' })
-  ]);
-  const attRows = (attendance || []).map(mapAttendanceRow);
-  const repRows = (replacements || []).map(mapImportReplacementRow);
-  const sedes = (sedesRows || []).filter((s) => String(s?.estado || 'activo').trim().toLowerCase() !== 'inactivo');
-  const activeSedeCodes = new Set(sedes.map((row) => String(row?.codigo || '').trim()).filter(Boolean));
-  const cargoMap = new Map((cargosRows || []).map((row) => [String(row.codigo || '').trim(), row]));
-  const replacementRules = buildNovedadReplacementRules((novedadesRows || []).map(mapNovedadRow));
-  const replacementMap = new Map(repRows.map((row) => [metricReplacementKey(row), row]));
-  const replacementSuperDocs = new Set(
-    repRows
-      .filter((row) => String(row?.decision || '').trim().toLowerCase() === 'reemplazo')
-      .map((row) => `${String(row?.fecha || '').trim()}|${String(row?.supernumerarioDocumento || '').trim()}`)
-      .filter((value) => !value.endsWith('|'))
-  );
-  const employeeById = new Map();
-  const employeeByDoc = new Map();
-  const contractedBySede = new Map();
-  const supernumerarioDocs = new Set();
-  const historyByEmployeeId = buildEmployeeHistoryByEmployeeId(employeeHistoryRows);
-
-  (employeesRows || []).forEach((emp) => {
-    const empId = String(emp?.id || '').trim();
-    const doc = String(emp?.documento || '').trim();
-    if (empId) employeeById.set(empId, emp);
-    if (doc) employeeByDoc.set(doc, emp);
-    const historyRows = historyByEmployeeId.get(empId) || [];
-    if (doc && isEmployeeSupernumerario(emp, cargoMap) && isEmployeeAssignedToActiveSedeOnDate(emp, day, activeSedeCodes, historyRows)) {
-      supernumerarioDocs.add(doc);
-    }
-    if (!isEmployeeAssignedToActiveSedeOnDate(emp, day, activeSedeCodes, historyRows)) return;
-    if (isEmployeeSupernumerario(emp, cargoMap)) return;
-    const assignment = resolveEmployeeAssignmentHistoryOnDate(emp, day, historyRows);
-    const source = assignment || emp;
-    const sedeCode = String(source?.sedeCodigo || source?.sede_codigo || '').trim();
-    if (!contractedBySede.has(sedeCode)) contractedBySede.set(sedeCode, new Set());
-    contractedBySede.get(sedeCode).add(doc || empId);
-  });
-
-  const registeredBySede = new Map();
-  const novSinReemplazoBySede = new Map();
-  dedupeAttendanceRows(attRows).forEach((row) => {
-    const doc = String(row?.documento || '').trim();
-    if (doc && replacementSuperDocs.has(`${String(row?.fecha || '').trim()}|${doc}`)) return;
-    if (doc && supernumerarioDocs.has(doc)) return;
-    const empId = String(row?.empleadoId || '').trim();
-    const employee = (empId && employeeById.get(empId)) || (doc && employeeByDoc.get(doc)) || null;
-    const historyRows = employee ? (historyByEmployeeId.get(String(employee?.id || '').trim()) || []) : [];
-    const assignment = employee ? resolveEmployeeAssignmentHistoryOnDate(employee, day, historyRows) : null;
-    const source = assignment || employee;
-    const sedeCode = String(row?.sedeCodigo || source?.sedeCodigo || source?.sede_codigo || '').trim();
-    if (!sedeCode || !activeSedeCodes.has(sedeCode)) return;
-    if (row?.asistio === true) {
-      if (!registeredBySede.has(sedeCode)) registeredBySede.set(sedeCode, new Set());
-      registeredBySede.get(sedeCode).add(doc || empId || String(row?.id || '').trim());
-    }
-    const repl = replacementMap.get(metricReplacementKey(row)) || null;
-    const hasReplacement = String(repl?.decision || '').trim().toLowerCase() === 'reemplazo';
-    if (row?.asistio === false && metricAttendanceRequiresReplacement(row, replacementRules) && !hasReplacement) {
-      novSinReemplazoBySede.set(sedeCode, Number(novSinReemplazoBySede.get(sedeCode) || 0) + 1);
-    }
-  });
-
-  const payload = sedes.map((sede) => {
-    const sedeCode = String(sede?.codigo || '').trim();
-    const planned = Number(sede?.numero_operarios ?? 0) || 0;
-    const baseContracted = Number(contractedBySede.get(sedeCode)?.size || 0);
-    const registered = Number(registeredBySede.get(sedeCode)?.size || 0);
-    const externalRegistered = Math.max(0, registered - baseContracted);
-    const contracted = Math.min(planned, baseContracted + externalRegistered);
-    const noContracted = Math.max(0, planned - contracted);
-    const noRegistrado = Math.max(0, contracted - registered);
-    const novSinReemplazo = Number(novSinReemplazoBySede.get(sedeCode) || 0);
-    const operariosPresentes = Math.max(0, planned - noContracted - noRegistrado - novSinReemplazo);
-    return {
-      id: `${day}_${sedeCode}`,
-      fecha: day,
-      sede_codigo: sedeCode,
-      sede_nombre: sede?.nombre || sedeCode || null,
-      operarios_esperados: contracted,
-      operarios_presentes: operariosPresentes,
-      faltantes: noRegistrado
-    };
-  });
-
-  if (!payload.length) return;
-  const { error } = await supabase.from('sede_status').upsert(payload, { onConflict: 'id' });
+  await refreshEmployeeDailyStatusSnapshot(day);
+  const { data, error } = await supabase.rpc('recompute_sede_status_from_employee_daily_status', { p_fecha: day });
   if (error) throw error;
   await notifyTableReload('sede_status');
+  return data ?? null;
 }
 
 function addDaysToIsoDate(value, days = 1) {
@@ -2231,6 +2355,76 @@ async function assertNoEmployeeOperationalRecordsAfterRetirement(currentRow = {}
   }
 }
 
+export async function getEmployeeLastAttendanceDay(employee = {}) {
+  const employeeId = String(employee?.id || employee?.employeeId || '').trim();
+  const documento = normalizeDailyDocument(employee?.documento);
+  if (!employeeId && !documento) return null;
+
+  const attendanceQueries = [];
+  if (employeeId) {
+    attendanceQueries.push(
+      supabase
+        .from('attendance')
+        .select('fecha, sede_codigo, sede_nombre')
+        .eq('empleado_id', employeeId)
+        .order('fecha', { ascending: false })
+        .limit(1)
+    );
+  }
+  if (documento) {
+    attendanceQueries.push(
+      supabase
+        .from('attendance')
+        .select('fecha, sede_codigo, sede_nombre')
+        .eq('documento', documento)
+        .order('fecha', { ascending: false })
+        .limit(1)
+    );
+  }
+
+  const statusQueries = [];
+  if (employeeId) {
+    statusQueries.push(
+      supabase
+        .from('employee_daily_status')
+        .select('fecha, sede_codigo, sede_nombre_snapshot, asistio, source_attendance_id')
+        .eq('employee_id', employeeId)
+        .or('asistio.eq.true,source_attendance_id.not.is.null')
+        .order('fecha', { ascending: false })
+        .limit(1)
+    );
+  }
+  if (documento) {
+    statusQueries.push(
+      supabase
+        .from('employee_daily_status')
+        .select('fecha, sede_codigo, sede_nombre_snapshot, asistio, source_attendance_id')
+        .eq('documento', documento)
+        .or('asistio.eq.true,source_attendance_id.not.is.null')
+        .order('fecha', { ascending: false })
+        .limit(1)
+    );
+  }
+
+  const results = await Promise.all([...attendanceQueries, ...statusQueries]);
+  const rows = [];
+  for (const { data, error } of results) {
+    if (error) throw error;
+    rows.push(...(data || []));
+  }
+
+  const latest = rows
+    .map((row) => ({
+      fecha: toISODate(row?.fecha),
+      sedeCodigo: row?.sede_codigo || null,
+      sedeNombre: row?.sede_nombre || row?.sede_nombre_snapshot || null
+    }))
+    .filter((row) => row.fecha)
+    .sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')))[0] || null;
+
+  return latest;
+}
+
 function buildDailyRecordId(fecha, documento = null, empleadoId = null) {
   const day = String(fecha || '').trim();
   const doc = normalizeDailyDocument(documento);
@@ -2327,24 +2521,22 @@ async function propagateIncapacitiesToNextDay(day) {
 }
 
 async function getNextPrefixedCode(table, prefix, width = 4) {
-  const data = await selectAllRows(table, { select: 'codigo' });
-  let max = 0;
-  (data || []).forEach((row) => {
-    const num = extractPrefixedCodeNumber(row?.codigo, prefix);
-    if (num > max) max = num;
+  const rows = await reservePrefixedCodes(table, prefix, 1, width);
+  const code = String(rows[0]?.code || '').trim();
+  if (!code) throw new Error('No se pudo reservar el consecutivo.');
+  return code;
+}
+
+async function reservePrefixedCodes(table, prefix, count = 1, width = 4) {
+  const safeCount = Math.max(1, Number(count) || 1);
+  const { data, error } = await supabase.rpc('reserve_prefixed_codes', {
+    p_scope: table,
+    p_prefix: prefix,
+    p_count: safeCount,
+    p_width: width
   });
-  return `${prefix}-${String(max + 1).padStart(width, '0')}`;
-}
-
-function extractPrefixedCodeNumber(code, prefix) {
-  const normalized = String(code || '').trim();
-  const match = normalized.match(new RegExp(`^${prefix}-(\\d+)$`));
-  if (!match) return 0;
-  return Number(match[1] || 0);
-}
-
-function buildNextPrefixedCode(prefix, value, width = 4) {
-  return `${prefix}-${String(value).padStart(width, '0')}`;
+  if (error) throw error;
+  return Array.isArray(data) ? data : [];
 }
 
 function chunkArray(items = [], size = 250) {
@@ -2438,7 +2630,10 @@ function streamTable(table, mapper, onData, {
   let active = true;
   const emit = async () => {
     try {
-      const data = await selectAllRows(table, { select: '*', order, ascending: false });
+      const loader = table === 'employees' || table === 'incapacitados'
+        ? selectAdminStreamRows
+        : selectSmallTableRows;
+      const data = await loader(table, { select: '*', order, ascending: false });
       if (!active) return;
       onData((data || []).map((row) => mapper(row)));
     } catch (error) {
@@ -2693,7 +2888,7 @@ export function streamUsers(onData) {
   let active = true;
   const emit = async () => {
     try {
-      const rows = await selectAllRows(SUPABASE_PROFILES_TABLE, {
+      const rows = await selectSmallTableRows(SUPABASE_PROFILES_TABLE, {
         select: '*',
         order: 'email',
         ascending: true
@@ -2979,6 +3174,62 @@ export function streamAuditLogs(onData, max = 200) {
   };
 }
 
+export function streamAuditLogsByKind(kind = 'activity', onData, max = 100) {
+  let active = true;
+  const closureTargets = '(daily_closure,shift_closure)';
+  const emit = async () => {
+    let query = supabase
+      .from('audit_logs')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(max);
+    if (kind === 'closure') {
+      query = query.filter('target_type', 'in', closureTargets);
+    } else {
+      query = query.or(`target_type.is.null,target_type.not.in.${closureTargets}`);
+    }
+    const { data, error } = await query;
+    if (!active) return;
+    if (error) {
+      console.error(`No se pudo cargar audit_logs (${kind}):`, error);
+      onData([]);
+      return;
+    }
+    onData((data || []).map(mapAuditLogRow));
+  };
+
+  emit();
+
+  const unregister = registerTableReloader('audit_logs', emit);
+  const channel = supabase
+    .channel(`audit-logs-watch-${kind}`)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'audit_logs' }, emit)
+    .subscribe();
+
+  return () => {
+    active = false;
+    unregister();
+    supabase.removeChannel(channel);
+  };
+}
+
+export async function listEmployeeAuditLogsRange(dateFrom, dateTo, max = 1000) {
+  const from = toISODate(dateFrom) || todayBogotaISO();
+  const to = toISODate(dateTo) || from;
+  const start = `${from}T00:00:00`;
+  const end = `${to}T23:59:59`;
+  const { data, error } = await supabase
+    .from('audit_logs')
+    .select('*')
+    .eq('target_type', 'employee')
+    .gte('created_at', start)
+    .lte('created_at', end)
+    .order('created_at', { ascending: false })
+    .limit(Math.max(1, Math.min(Number(max || 1000), 5000)));
+  if (error) throw error;
+  return (data || []).map(mapAuditLogRow);
+}
+
 export function streamUserOverrides(uid, onData, onError = null, onStatus = null) {
   let active = true;
   const emit = async () => {
@@ -3114,10 +3365,14 @@ export function streamSedes(onData, onError = null, onStatus = null) {
   return streamTable('sedes', mapSedeRow, onData, { onError, onStatus });
 }
 
+export function countActiveSedes() {
+  return countActiveRows('sedes');
+}
+
 export async function listQrDevices() {
   const [devices, sites] = await Promise.all([
-    selectAllRows('sede_devices', { select: 'id,sede_codigo,sede_nombre,device_name,estado,last_seen_at,revoked_at,revoked_by_email,created_at,created_by_email,last_modified_at,last_modified_by_email', order: 'created_at', ascending: false }),
-    selectAllRows('sede_device_sites', { select: 'device_id,sede_codigo,sede_nombre', order: 'sede_nombre', ascending: true })
+    selectSmallTableRows('sede_devices', { select: 'id,sede_codigo,sede_nombre,device_name,estado,last_seen_at,revoked_at,revoked_by_email,created_at,created_by_email,last_modified_at,last_modified_by_email', order: 'created_at', ascending: false }),
+    selectSmallTableRows('sede_device_sites', { select: 'device_id,sede_codigo,sede_nombre', order: 'sede_nombre', ascending: true })
   ]);
   const sitesByDevice = new Map();
   (sites || []).forEach((site) => {
@@ -3146,6 +3401,897 @@ export function streamQrDevices(onData, onError = null, onStatus = null) {
   return () => {
     active = false;
   };
+}
+
+export function streamShiftTemplates(onData, onError = null, onStatus = null) {
+  return streamTable('shift_templates', mapShiftTemplateRow, onData, { order: 'orden', onError, onStatus });
+}
+
+export async function listShiftTemplates({ includeInactive = false } = {}) {
+  let query = supabase
+    .from('shift_templates')
+    .select('*')
+    .order('orden', { ascending: true })
+    .order('nombre', { ascending: true });
+  if (!includeInactive) query = query.eq('estado', 'activo');
+  const { data, error } = await query;
+  if (error) throw error;
+  return (data || []).map(mapShiftTemplateRow);
+}
+
+export async function createShiftTemplate(data = {}) {
+  const audit = await getCurrentAuditFields();
+  const payload = {
+    ...shiftTemplatePayload(data),
+    created_by_uid: audit.created_by_uid,
+    created_by_email: audit.created_by_email
+  };
+  const { data: row, error } = await supabase
+    .from('shift_templates')
+    .insert(payload)
+    .select('*')
+    .single();
+  if (error) throw error;
+  await notifyTableReload('shift_templates');
+  return mapShiftTemplateRow(row);
+}
+
+export async function updateShiftTemplate(id, data = {}) {
+  const templateId = String(id || '').trim();
+  if (!templateId) throw new Error('Falta el turno base para actualizar.');
+  const patch = shiftTemplatePayload(data);
+  const { data: row, error } = await supabase
+    .from('shift_templates')
+    .update(patch)
+    .eq('id', templateId)
+    .select('*')
+    .single();
+  if (error) throw error;
+  await notifyTableReload('shift_templates');
+  return mapShiftTemplateRow(row);
+}
+
+export async function setShiftTemplateStatus(id, estado = 'activo') {
+  return updateShiftTemplate(id, { estado });
+}
+
+export async function listShiftTemplateRules(templateId, { includeInactive = true } = {}) {
+  const targetTemplateId = String(templateId || '').trim();
+  if (!targetTemplateId) return [];
+  let query = supabase
+    .from('shift_template_rules')
+    .select('*')
+    .eq('template_id', targetTemplateId)
+    .order('tipo_dia', { ascending: true })
+    .order('dia_semana', { ascending: true })
+    .order('orden', { ascending: true })
+    .order('hora_inicio', { ascending: true });
+  if (!includeInactive) query = query.eq('estado', 'activo');
+  const { data, error } = await query;
+  if (error) throw error;
+  return (data || []).map(mapShiftTemplateRuleRow);
+}
+
+export function streamShiftTemplateRules(templateId, onData, onError = null, onStatus = null) {
+  const targetTemplateId = String(templateId || '').trim();
+  if (!targetTemplateId) {
+    onData([]);
+    return () => {};
+  }
+  let active = true;
+  const emit = async () => {
+    try {
+      const rows = await listShiftTemplateRules(targetTemplateId);
+      if (active) onData(rows);
+    } catch (error) {
+      if (!active) return;
+      console.error('No se pudo cargar shift_template_rules:', error);
+      onError?.(error, 'LOAD_ERROR');
+      onData([]);
+    }
+  };
+  const onChange = (payload) => {
+    const nextVal = String(payload?.new?.template_id || '').trim();
+    const prevVal = String(payload?.old?.template_id || '').trim();
+    if ((nextVal || prevVal) && nextVal !== targetTemplateId && prevVal !== targetTemplateId) return;
+    emit();
+  };
+  emit();
+  const unregister = registerTableReloader('shift_template_rules', emit);
+  const realtime = subscribeToRealtime(
+    supabase.channel(nextRealtimeChannelName(`shift-template-rules-${targetTemplateId}`)).on('postgres_changes', { event: '*', schema: 'public', table: 'shift_template_rules' }, onChange),
+    { label: `shift_template_rules:${targetTemplateId}`, onError, onStatus }
+  );
+  const channel = realtime.subscription;
+  return () => {
+    active = false;
+    unregister();
+    realtime.cancel();
+    supabase.removeChannel(channel);
+  };
+}
+
+export async function createShiftTemplateRule(data = {}) {
+  const audit = await getCurrentAuditFields();
+  const payload = {
+    ...shiftTemplateRulePayload(data),
+    created_by_uid: audit.created_by_uid,
+    created_by_email: audit.created_by_email
+  };
+  const { data: row, error } = await supabase
+    .from('shift_template_rules')
+    .insert(payload)
+    .select('*')
+    .single();
+  if (error) throw error;
+  await notifyTableReload('shift_template_rules');
+  return mapShiftTemplateRuleRow(row);
+}
+
+export async function updateShiftTemplateRule(id, data = {}) {
+  const ruleId = String(id || '').trim();
+  if (!ruleId) throw new Error('Falta la regla de turno para actualizar.');
+  const { data: row, error } = await supabase
+    .from('shift_template_rules')
+    .update(shiftTemplateRulePayload(data))
+    .eq('id', ruleId)
+    .select('*')
+    .single();
+  if (error) throw error;
+  await notifyTableReload('shift_template_rules');
+  return mapShiftTemplateRuleRow(row);
+}
+
+export async function setShiftTemplateRuleStatus(id, estado = 'activo') {
+  return updateShiftTemplateRule(id, { estado });
+}
+
+export async function saveShiftTemplateRules({ templateId = null, rules = [], inactiveRuleIds = [] } = {}) {
+  const targetTemplateId = String(templateId || '').trim();
+  if (!targetTemplateId) throw new Error('Falta el plan para guardar horarios.');
+  const audit = await getCurrentAuditFields();
+  const rows = (Array.isArray(rules) ? rules : [])
+    .map((row) => ({
+      id: String(row.id || '').trim() || null,
+      payload: shiftTemplateRulePayload({ ...row, templateId: targetTemplateId, estado: row.estado || 'activo' })
+    }))
+    .filter((row) => row.payload.template_id && row.payload.hora_inicio && row.payload.hora_fin);
+  const updates = rows
+    .filter((row) => row.id)
+    .map((row) => ({ id: row.id, ...row.payload }));
+  const inserts = rows
+    .filter((row) => !row.id)
+    .map((row) => ({
+      ...row.payload,
+      created_by_uid: audit.created_by_uid,
+      created_by_email: audit.created_by_email
+    }));
+  const inactiveIds = [...new Set((Array.isArray(inactiveRuleIds) ? inactiveRuleIds : [])
+    .map((id) => String(id || '').trim())
+    .filter(Boolean))];
+
+  for (const chunk of chunkArray(updates, 250)) {
+    const { error } = await supabase.from('shift_template_rules').upsert(chunk, { onConflict: 'id' });
+    if (error) throw error;
+  }
+  for (const chunk of chunkArray(inserts, 250)) {
+    const { error } = await supabase.from('shift_template_rules').insert(chunk);
+    if (error) throw error;
+  }
+  for (const chunk of chunkArray(inactiveIds, 250)) {
+    const { error } = await supabase
+      .from('shift_template_rules')
+      .update({ estado: 'inactivo' })
+      .in('id', chunk);
+    if (error) throw error;
+  }
+
+  await notifyTableReload('shift_template_rules');
+  return {
+    saved: updates.length + inserts.length,
+    inserted: inserts.length,
+    updated: updates.length,
+    inactivated: inactiveIds.length
+  };
+}
+
+export async function listShiftSitePlanAssignments({ includeInactive = false, templateId = null, sedeCodigo = null } = {}) {
+  let query = supabase
+    .from('shift_site_plan_assignments')
+    .select('*')
+    .order('sede_nombre', { ascending: true })
+    .order('activated_at', { ascending: false });
+  if (!includeInactive) query = query.eq('estado', 'activo');
+  if (templateId) query = query.eq('template_id', String(templateId).trim());
+  if (sedeCodigo) query = query.eq('sede_codigo', String(sedeCodigo).trim());
+  const { data, error } = await query;
+  if (error) throw error;
+  return (data || []).map(mapShiftSitePlanAssignmentRow);
+}
+
+export async function activateShiftPlanForSites({ templateId = null, sedeCodigos = [], sedeOperarios = {}, horizonDays = 90 } = {}) {
+  const targetTemplate = String(templateId || '').trim();
+  if (!targetTemplate) throw new Error('Selecciona un plan.');
+  const selectedSedeCodes = [...new Set((Array.isArray(sedeCodigos) ? sedeCodigos : [])
+    .map((code) => String(code || '').trim())
+    .filter(Boolean))];
+  if (!selectedSedeCodes.length) throw new Error('Selecciona al menos una sede.');
+  const days = Math.min(370, Math.max(1, numberOrDefault(horizonDays, 90)));
+  const dateFrom = addIsoDays(todayBogota(), 1);
+  const dateTo = addIsoDays(dateFrom, days - 1);
+
+  const [templates, sedeRows, activeForTemplate] = await Promise.all([
+    listShiftTemplates({ includeInactive: false }),
+    selectPagedRows(() => supabase
+      .from('sedes')
+      .select('*')
+      .in('codigo', selectedSedeCodes)
+      .neq('estado', 'inactivo')
+      .order('nombre', { ascending: true })),
+    listShiftSitePlanAssignments({ includeInactive: false, templateId: targetTemplate })
+  ]);
+
+  const template = templates.find((row) => String(row.id || '') === targetTemplate);
+  if (!template) throw new Error('El plan seleccionado no esta activo.');
+  const sedesByCode = new Map((sedeRows || []).map(mapSedeRow).map((sede) => [String(sede.codigo || '').trim(), sede]));
+  const validSedeCodes = selectedSedeCodes.filter((code) => sedesByCode.has(code));
+  if (!validSedeCodes.length) throw new Error('No hay sedes activas para activar el plan.');
+
+  const activeBySedeForTemplate = new Map(activeForTemplate
+    .filter((row) => validSedeCodes.includes(String(row.sedeCodigo || '').trim()))
+    .map((row) => [String(row.sedeCodigo || '').trim(), row]));
+  const nowIso = new Date().toISOString();
+  const audit = await getCurrentAuditFields();
+
+  const updateRows = validSedeCodes
+    .filter((code) => activeBySedeForTemplate.has(code))
+    .map((code) => {
+      const sede = sedesByCode.get(code) || {};
+      return {
+        id: activeBySedeForTemplate.get(code).id,
+        payload: shiftSitePlanAssignmentPayload({
+          sedeNombre: sede.nombre || null,
+          operariosPlaneados: sedeOperarios?.[code] ?? 0,
+          horizonDays: days,
+          estado: 'activo',
+          inactivatedAt: null
+        })
+      };
+    });
+
+  const insertRows = validSedeCodes.filter((code) => !activeBySedeForTemplate.has(code)).map((code) => {
+    const sede = sedesByCode.get(code) || {};
+    return shiftSitePlanAssignmentPayload({
+      templateId: targetTemplate,
+      sedeCodigo: code,
+      sedeNombre: sede.nombre || null,
+      operariosPlaneados: sedeOperarios?.[code] ?? 0,
+      horizonDays: days,
+      estado: 'activo',
+      activatedAt: nowIso,
+      inactivatedAt: null
+    }, audit);
+  });
+
+  const savedAssignments = [];
+  for (const row of updateRows) {
+    const { data, error } = await supabase
+      .from('shift_site_plan_assignments')
+      .update(row.payload)
+      .eq('id', row.id)
+      .select('*')
+      .single();
+    if (error) throw error;
+    savedAssignments.push(mapShiftSitePlanAssignmentRow(data));
+  }
+
+  if (insertRows.length) {
+    const { data, error } = await supabase
+      .from('shift_site_plan_assignments')
+      .insert(insertRows)
+      .select('*');
+    if (error) throw error;
+    savedAssignments.push(...(data || []).map(mapShiftSitePlanAssignmentRow));
+  }
+
+  const generation = await generateScheduledShiftsFromPlans({
+    dateFrom,
+    dateTo,
+    templateId: targetTemplate,
+    sedeCodigos: validSedeCodes,
+    sedeOperarios
+  });
+
+  await Promise.all([
+    notifyTableReload('shift_site_plan_assignments'),
+    notifyTableReload('scheduled_shifts')
+  ]);
+
+  return {
+    assignments: savedAssignments,
+    generation,
+    dateFrom,
+    dateTo,
+    horizonDays: days,
+    updated: updateRows.length,
+    inserted: insertRows.length
+  };
+}
+
+export async function renewActiveShiftPlans() {
+  const assignments = await listShiftSitePlanAssignments({ includeInactive: false });
+  const results = [];
+  for (const assignment of assignments) {
+    const dateFrom = addIsoDays(todayBogota(), 1);
+    const dateTo = addIsoDays(dateFrom, Math.min(370, Math.max(1, Number(assignment.horizonDays || 90))) - 1);
+    const generation = await generateScheduledShiftsFromPlans({
+      dateFrom,
+      dateTo,
+      templateId: assignment.templateId,
+      sedeCodigos: [assignment.sedeCodigo],
+      sedeOperarios: { [assignment.sedeCodigo]: assignment.operariosPlaneados }
+    });
+    results.push({ assignment, generation, dateFrom, dateTo });
+  }
+  return results;
+}
+
+export function streamScheduledShiftsByDate(fechaOperativa, onData, onError = null, onStatus = null) {
+  const day = String(fechaOperativa || '').trim();
+  if (!day) {
+    onData([]);
+    return () => {};
+  }
+  let active = true;
+  const emit = async () => {
+    const { data, error } = await supabase
+      .from('scheduled_shifts')
+      .select('*')
+      .eq('fecha_operativa', day)
+      .order('starts_at', { ascending: true });
+    if (!active) return;
+    if (error) {
+      console.error('No se pudo cargar scheduled_shifts:', error);
+      onError?.(error, 'LOAD_ERROR');
+      onData([]);
+      return;
+    }
+    onData((data || []).map(mapScheduledShiftRow));
+  };
+  const onChange = (payload) => {
+    if (!shouldRefreshForDay(payload, day, 'fecha_operativa')) return;
+    emit();
+  };
+  emit();
+  const unregister = registerTableReloader('scheduled_shifts', emit);
+  const realtime = subscribeToRealtime(
+    supabase.channel(nextRealtimeChannelName(`scheduled-shifts-${day}`)).on('postgres_changes', { event: '*', schema: 'public', table: 'scheduled_shifts' }, onChange),
+    { label: `scheduled_shifts:${day}`, onError, onStatus }
+  );
+  const channel = realtime.subscription;
+  return () => {
+    active = false;
+    unregister();
+    realtime.cancel();
+    supabase.removeChannel(channel);
+  };
+}
+
+export async function listScheduledShiftsRange(dateFrom, dateTo, { sedeCodigo = null, estados = [] } = {}) {
+  if (!dateFrom || !dateTo) return [];
+  const rows = await selectPagedRows(() => {
+    let query = supabase
+      .from('scheduled_shifts')
+      .select('*')
+      .gte('fecha_operativa', dateFrom)
+      .lte('fecha_operativa', dateTo)
+      .order('fecha_operativa', { ascending: true })
+      .order('starts_at', { ascending: true });
+    if (sedeCodigo) query = query.eq('sede_codigo', String(sedeCodigo).trim());
+    if (Array.isArray(estados) && estados.length) query = query.in('estado', estados);
+    return query;
+  });
+  return rows.map(mapScheduledShiftRow);
+}
+
+export async function generateScheduledShiftsFromPlans({ dateFrom, dateTo, sedeCodigo = null, sedeCodigos = [], sedeOperarios = {}, templateId = null } = {}) {
+  const dates = listIsoDatesInRange(dateFrom, dateTo, 370);
+  const targetTemplate = String(templateId || '').trim();
+  if (!targetTemplate) throw new Error('Selecciona un plan.');
+  const selectedSedeCodes = [...new Set([
+    ...((Array.isArray(sedeCodigos) ? sedeCodigos : []).map((code) => String(code || '').trim())),
+    String(sedeCodigo || '').trim()
+  ].filter(Boolean))];
+  if (!selectedSedeCodes.length) throw new Error('Selecciona al menos una sede.');
+  const operariosBySede = Object.fromEntries(Object.entries(sedeOperarios || {}).map(([code, value]) => [
+    String(code || '').trim(),
+    Math.max(0, numberOrDefault(value, 0))
+  ]).filter(([code]) => code));
+
+  const [templates, rules, sedeRows, existing] = await Promise.all([
+    listShiftTemplates({ includeInactive: false }),
+    listShiftTemplateRules(targetTemplate, { includeInactive: false }),
+    selectPagedRows(() => supabase
+      .from('sedes')
+      .select('*')
+      .in('codigo', selectedSedeCodes)
+      .neq('estado', 'inactivo')
+      .order('nombre', { ascending: true })),
+    listScheduledShiftsRange(dateFrom, dateTo)
+  ]);
+
+  const templatesById = new Map(templates.map((row) => [row.id, row]));
+  const template = templatesById.get(targetTemplate);
+  if (!template) throw new Error('El plan seleccionado no esta activo.');
+  const eligibleSites = (sedeRows || []).map(mapSedeRow).map((sede) => ({
+    id: null,
+    templateId: targetTemplate,
+    sedeCodigo: sede.codigo || null,
+    sedeNombre: sede.nombre || null,
+    operariosPlaneados: operariosBySede[String(sede.codigo || '').trim()] || 0
+  }));
+  const existingKeys = new Set(existing
+    .filter((row) => row.sedeCodigo && row.templateRuleId && row.fechaOperativa)
+    .map((row) => `${row.sedeCodigo}|${row.templateRuleId}|${row.fechaOperativa}`));
+
+  let skippedExisting = 0;
+  let skippedInvalid = 0;
+  const rows = [];
+
+  for (const site of eligibleSites) {
+    for (const fechaOperativa of dates) {
+      for (const rule of rules) {
+        if (!shiftRuleAppliesOnDate(rule, fechaOperativa)) continue;
+        const key = `${site.sedeCodigo}|${rule.id}|${fechaOperativa}`;
+        if (existingKeys.has(key)) {
+          skippedExisting += 1;
+          continue;
+        }
+        const candidate = buildScheduledShiftCandidate({ template, site, rule, fechaOperativa });
+        if (!candidate) {
+          skippedInvalid += 1;
+          continue;
+        }
+        rows.push(scheduledShiftPayload(candidate));
+        existingKeys.add(key);
+      }
+    }
+  }
+
+  const createdRows = [];
+  const chunkSize = 500;
+  for (let index = 0; index < rows.length; index += chunkSize) {
+    const chunk = rows.slice(index, index + chunkSize);
+    const { data, error } = await supabase
+      .from('scheduled_shifts')
+      .insert(chunk)
+      .select('*');
+    if (error) throw error;
+    createdRows.push(...(data || []).map(mapScheduledShiftRow));
+  }
+
+  if (createdRows.length) await notifyTableReload('scheduled_shifts');
+  return {
+    created: createdRows.length,
+    skippedExisting,
+    skippedInvalid,
+    sites: eligibleSites.length,
+    templates: 1,
+    days: dates.length,
+    rows: createdRows
+  };
+}
+
+export async function createScheduledShift(data = {}) {
+  const { data: row, error } = await supabase
+    .from('scheduled_shifts')
+    .insert(scheduledShiftPayload(data))
+    .select('*')
+    .single();
+  if (error) throw error;
+  await notifyTableReload('scheduled_shifts');
+  return mapScheduledShiftRow(row);
+}
+
+export async function updateScheduledShift(id, data = {}) {
+  const shiftId = String(id || '').trim();
+  if (!shiftId) throw new Error('Falta el turno programado para actualizar.');
+  const { data: row, error } = await supabase
+    .from('scheduled_shifts')
+    .update(scheduledShiftPayload(data))
+    .eq('id', shiftId)
+    .select('*')
+    .single();
+  if (error) throw error;
+  await notifyTableReload('scheduled_shifts');
+  return mapScheduledShiftRow(row);
+}
+
+export async function setScheduledShiftStatus(id, estado = 'programado') {
+  return updateScheduledShift(id, { estado });
+}
+
+export async function listShiftAssignmentsByShift(scheduledShiftId) {
+  const shiftId = String(scheduledShiftId || '').trim();
+  if (!shiftId) return [];
+  const rows = await selectPagedRows(() => supabase
+    .from('shift_assignments')
+    .select('*')
+    .eq('scheduled_shift_id', shiftId)
+    .order('nombre', { ascending: true }));
+  return rows.map(mapShiftAssignmentRow);
+}
+
+export async function listShiftAssignmentsForShifts(scheduledShiftIds = []) {
+  const ids = [...new Set((Array.isArray(scheduledShiftIds) ? scheduledShiftIds : [])
+    .map((id) => String(id || '').trim())
+    .filter(Boolean))];
+  if (!ids.length) return [];
+  const rows = await selectPagedRows(() => supabase
+    .from('shift_assignments')
+    .select('*')
+    .in('scheduled_shift_id', ids)
+    .order('nombre', { ascending: true }));
+  return rows.map(mapShiftAssignmentRow);
+}
+
+export function streamShiftAssignmentsByShift(scheduledShiftId, onData, onError = null, onStatus = null) {
+  const shiftId = String(scheduledShiftId || '').trim();
+  if (!shiftId) {
+    onData([]);
+    return () => {};
+  }
+  let active = true;
+  const emit = async () => {
+    try {
+      const rows = await listShiftAssignmentsByShift(shiftId);
+      if (active) onData(rows);
+    } catch (error) {
+      if (!active) return;
+      console.error('No se pudo cargar shift_assignments:', error);
+      onError?.(error, 'LOAD_ERROR');
+      onData([]);
+    }
+  };
+  const onChange = (payload) => {
+    const nextVal = String(payload?.new?.scheduled_shift_id || '').trim();
+    const prevVal = String(payload?.old?.scheduled_shift_id || '').trim();
+    if ((nextVal || prevVal) && nextVal !== shiftId && prevVal !== shiftId) return;
+    emit();
+  };
+  emit();
+  const unregister = registerTableReloader('shift_assignments', emit);
+  const realtime = subscribeToRealtime(
+    supabase.channel(nextRealtimeChannelName(`shift-assignments-${shiftId}`)).on('postgres_changes', { event: '*', schema: 'public', table: 'shift_assignments' }, onChange),
+    { label: `shift_assignments:${shiftId}`, onError, onStatus }
+  );
+  const channel = realtime.subscription;
+  return () => {
+    active = false;
+    unregister();
+    realtime.cancel();
+    supabase.removeChannel(channel);
+  };
+}
+
+export async function upsertShiftAssignments(assignments = []) {
+  const rows = (Array.isArray(assignments) ? assignments : [])
+    .map((row) => shiftAssignmentPayload(row))
+    .filter((row) => row.scheduled_shift_id && (row.employee_id || row.documento));
+  if (!rows.length) return { saved: 0 };
+
+  const assignmentKey = (row = {}) => {
+    const shiftId = String(row.scheduled_shift_id || '').trim();
+    const employeeId = String(row.employee_id || '').trim();
+    const documento = String(row.documento || '').trim();
+    return employeeId ? `${shiftId}|employee|${employeeId}` : `${shiftId}|documento|${documento}`;
+  };
+  const uniqueRows = Array.from(new Map(rows.map((row) => [assignmentKey(row), row])).values());
+  const shiftIds = [...new Set(uniqueRows.map((row) => String(row.scheduled_shift_id || '').trim()).filter(Boolean))];
+  const existingRows = await selectPagedRows(() => supabase
+    .from('shift_assignments')
+    .select('id, scheduled_shift_id, employee_id, documento')
+    .in('scheduled_shift_id', shiftIds));
+  const existingByKey = new Map((existingRows || [])
+    .map((row) => [assignmentKey(row), row.id])
+    .filter(([key, id]) => key && id));
+  const updates = [];
+  const inserts = [];
+  uniqueRows.forEach((row) => {
+    const id = existingByKey.get(assignmentKey(row));
+    if (id) updates.push({ id, ...row });
+    else inserts.push(row);
+  });
+
+  for (const chunk of chunkArray(updates, 500)) {
+    const { error } = await supabase.from('shift_assignments').upsert(chunk, { onConflict: 'id' });
+    if (error) throw error;
+  }
+  for (const chunk of chunkArray(inserts, 500)) {
+    const { error } = await supabase.from('shift_assignments').insert(chunk);
+    if (error) throw error;
+  }
+
+  await seedEmployeeShiftStatusFromAssignments(uniqueRows);
+  await notifyTableReload('shift_assignments');
+  return { saved: uniqueRows.length, inserted: inserts.length, updated: updates.length };
+}
+
+async function seedEmployeeShiftStatusFromAssignments(assignments = []) {
+  const rows = (Array.isArray(assignments) ? assignments : [])
+    .filter((row) => row.scheduled_shift_id && (row.employee_id || row.documento));
+  if (!rows.length) return { saved: 0 };
+  const shiftIds = [...new Set(rows.map((row) => String(row.scheduled_shift_id || '').trim()).filter(Boolean))];
+  const shifts = await selectPagedRows(() => supabase
+    .from('scheduled_shifts')
+    .select('id,fecha_operativa,sede_codigo')
+    .in('id', shiftIds));
+  const shiftById = new Map((shifts || []).map((row) => [String(row.id || '').trim(), row]));
+  const statusRows = rows
+    .map((row) => {
+      const shiftId = String(row.scheduled_shift_id || '').trim();
+      const shift = shiftById.get(shiftId);
+      const employeeId = String(row.employee_id || '').trim();
+      const documento = String(row.documento || '').trim();
+      const identity = employeeId || documento;
+      if (!shift?.fecha_operativa || !identity) return null;
+      return {
+        id: `${shiftId}_${identity}`,
+        scheduled_shift_id: shiftId,
+        fecha_operativa: shift.fecha_operativa,
+        employee_id: employeeId || null,
+        documento: documento || null,
+        nombre: row.nombre || null,
+        sede_codigo: row.sede_codigo || shift.sede_codigo || null,
+        estado_turno: 'programado',
+        asistio: false
+      };
+    })
+    .filter(Boolean);
+  if (!statusRows.length) return { saved: 0 };
+  for (const chunk of chunkArray(statusRows, 500)) {
+    const { error } = await supabase
+      .from('employee_shift_status')
+      .upsert(chunk, { onConflict: 'id', ignoreDuplicates: true });
+    if (error) throw error;
+  }
+  await notifyTableReload('employee_shift_status');
+  return { saved: statusRows.length };
+}
+
+export async function updateShiftAssignment(id, data = {}) {
+  const assignmentId = String(id || '').trim();
+  if (!assignmentId) throw new Error('Falta la asignacion para actualizar.');
+  const { data: row, error } = await supabase
+    .from('shift_assignments')
+    .update(shiftAssignmentPayload(data))
+    .eq('id', assignmentId)
+    .select('*')
+    .single();
+  if (error) throw error;
+  await notifyTableReload('shift_assignments');
+  return mapShiftAssignmentRow(row);
+}
+
+export async function removeShiftAssignment(id) {
+  const assignmentId = String(id || '').trim();
+  if (!assignmentId) return;
+  const existing = await selectPagedRows(() => supabase
+    .from('shift_assignments')
+    .select('scheduled_shift_id,employee_id,documento')
+    .eq('id', assignmentId));
+  const { error } = await supabase.from('shift_assignments').delete().eq('id', assignmentId);
+  if (error) throw error;
+  await cancelEmployeeShiftStatusForAssignments(existing);
+  await notifyTableReload('shift_assignments');
+}
+
+export async function removeShiftAssignments(ids = []) {
+  const cleanIds = [...new Set((Array.isArray(ids) ? ids : [])
+    .map((id) => String(id || '').trim())
+    .filter(Boolean))];
+  if (!cleanIds.length) return { removed: 0 };
+  const existing = await selectPagedRows(() => supabase
+    .from('shift_assignments')
+    .select('scheduled_shift_id,employee_id,documento')
+    .in('id', cleanIds));
+  for (const chunk of chunkArray(cleanIds, 500)) {
+    const { error } = await supabase.from('shift_assignments').delete().in('id', chunk);
+    if (error) throw error;
+  }
+  await cancelEmployeeShiftStatusForAssignments(existing);
+  await notifyTableReload('shift_assignments');
+  return { removed: cleanIds.length };
+}
+
+async function cancelEmployeeShiftStatusForAssignments(assignments = []) {
+  const statusIds = (Array.isArray(assignments) ? assignments : [])
+    .map((row) => {
+      const shiftId = String(row.scheduled_shift_id || '').trim();
+      const identity = String(row.employee_id || row.documento || '').trim();
+      return shiftId && identity ? `${shiftId}_${identity}` : '';
+    })
+    .filter(Boolean);
+  if (!statusIds.length) return { cancelled: 0 };
+  for (const chunk of chunkArray(statusIds, 500)) {
+    const { error } = await supabase
+      .from('employee_shift_status')
+      .update({ estado_turno: 'cancelado' })
+      .in('id', chunk)
+      .eq('closed', false)
+      .is('source_attendance_id', null);
+    if (error) throw error;
+  }
+  await notifyTableReload('employee_shift_status');
+  return { cancelled: statusIds.length };
+}
+
+export async function listEmployeeShiftStatusRange(dateFrom, dateTo, { sedeCodigo = null, scheduledShiftId = null, requiresReview = null } = {}) {
+  if (!dateFrom || !dateTo) return [];
+  const rows = await selectPagedRows(() => {
+    let query = supabase
+      .from('employee_shift_status')
+      .select('*')
+      .gte('fecha_operativa', dateFrom)
+      .lte('fecha_operativa', dateTo)
+      .order('fecha_operativa', { ascending: true })
+      .order('nombre', { ascending: true });
+    if (sedeCodigo) query = query.eq('sede_codigo', String(sedeCodigo).trim());
+    if (scheduledShiftId) query = query.eq('scheduled_shift_id', String(scheduledShiftId).trim());
+    if (typeof requiresReview === 'boolean') query = query.eq('requires_review', requiresReview);
+    return query;
+  });
+  return rows.map(mapEmployeeShiftStatusRow);
+}
+
+export async function upsertEmployeeShiftStatus(rows = []) {
+  const payload = (Array.isArray(rows) ? rows : [])
+    .map((row) => employeeShiftStatusPayload(row))
+    .filter((row) => row.id && row.scheduled_shift_id && row.fecha_operativa);
+  if (!payload.length) return { saved: 0 };
+  const { error } = await supabase
+    .from('employee_shift_status')
+    .upsert(payload, { onConflict: 'id' });
+  if (error) throw error;
+  await syncEmployeeShiftReviewSourceRows(payload);
+  await notifyTableReload('employee_shift_status');
+  return { saved: payload.length };
+}
+
+async function syncEmployeeShiftReviewSourceRows(rows = []) {
+  let touchedAttendance = false;
+  let touchedExits = false;
+  for (const row of rows || []) {
+    if (row.source_attendance_id) {
+      const update = {};
+      if (row.requires_review !== undefined) update.requires_review = row.requires_review === true;
+      if (row.entry_authorization_id !== undefined) update.entry_authorization_id = row.entry_authorization_id || null;
+      if (row.early_entry_reason !== undefined) update.early_entry_reason = row.early_entry_reason || null;
+      if (row.late_entry_reason !== undefined) update.late_entry_reason = row.late_entry_reason || null;
+      if (Object.keys(update).length) {
+        const { error } = await supabase
+          .from('attendance')
+          .update(update)
+          .eq('id', row.source_attendance_id);
+        if (error) throw error;
+        touchedAttendance = true;
+      }
+    }
+    if (row.source_exit_id) {
+      const update = {};
+      if (row.requires_review !== undefined) update.requires_review = row.requires_review === true;
+      if (row.exit_authorization_id !== undefined) update.exit_authorization_id = row.exit_authorization_id || null;
+      if (row.early_exit_reason !== undefined) update.early_exit_reason = row.early_exit_reason || null;
+      if (row.late_exit_reason !== undefined) update.late_exit_reason = row.late_exit_reason || null;
+      if (Object.keys(update).length) {
+        const { error } = await supabase
+          .from('employee_daily_exits')
+          .update(update)
+          .eq('id', row.source_exit_id);
+        if (error) throw error;
+        touchedExits = true;
+      }
+    }
+  }
+  if (touchedAttendance) await notifyTableReload('attendance');
+  if (touchedExits) await notifyTableReload('employee_daily_exits');
+}
+
+export async function listShiftClosuresRange(dateFrom, dateTo, { sedeCodigo = null } = {}) {
+  if (!dateFrom || !dateTo) return [];
+  const rows = await selectPagedRows(() => {
+    let query = supabase
+      .from('shift_closures')
+      .select('*')
+      .gte('fecha_operativa', dateFrom)
+      .lte('fecha_operativa', dateTo)
+      .order('fecha_operativa', { ascending: true })
+      .order('closed_at', { ascending: true });
+    if (sedeCodigo) query = query.eq('sede_codigo', String(sedeCodigo).trim());
+    return query;
+  });
+  return rows.map(mapShiftClosureRow);
+}
+
+export async function listPendingShiftAdjustments({ scheduledShiftId = null } = {}) {
+  const rows = await selectPagedRows(() => {
+    let query = supabase
+      .from('shift_adjustments')
+      .select('*')
+      .eq('estado', 'pendiente')
+      .order('reported_at', { ascending: false });
+    if (scheduledShiftId) query = query.eq('scheduled_shift_id', String(scheduledShiftId).trim());
+    return query;
+  });
+  return rows.map(mapShiftAdjustmentRow);
+}
+
+export async function createShiftAdjustment(data = {}) {
+  const audit = await getCurrentAuditFields();
+  const { data: row, error } = await supabase
+    .from('shift_adjustments')
+    .insert(shiftAdjustmentPayload(data, audit))
+    .select('*')
+    .single();
+  if (error) throw error;
+  await notifyTableReload('shift_adjustments');
+  return mapShiftAdjustmentRow(row);
+}
+
+export async function updateShiftAdjustment(id, data = {}) {
+  const adjustmentId = String(id || '').trim();
+  if (!adjustmentId) throw new Error('Falta el ajuste para actualizar.');
+  const audit = await getCurrentAuditFields();
+  const { data: row, error } = await supabase
+    .from('shift_adjustments')
+    .update(shiftAdjustmentPayload(data, audit))
+    .eq('id', adjustmentId)
+    .select('*')
+    .single();
+  if (error) throw error;
+  await notifyTableReload('shift_adjustments');
+  return mapShiftAdjustmentRow(row);
+}
+
+export async function listShiftTimeAuthorizations({ scheduledShiftId = null, employeeId = null, documento = null, estado = null } = {}) {
+  const rows = await selectPagedRows(() => {
+    let query = supabase
+      .from('shift_time_authorizations')
+      .select('*')
+      .order('created_at', { ascending: false });
+    if (scheduledShiftId) query = query.eq('scheduled_shift_id', String(scheduledShiftId).trim());
+    if (employeeId) query = query.eq('employee_id', String(employeeId).trim());
+    if (documento) query = query.eq('documento', String(documento).trim());
+    if (estado) query = query.eq('estado', String(estado).trim());
+    return query;
+  });
+  return rows.map(mapShiftTimeAuthorizationRow);
+}
+
+export async function createShiftTimeAuthorization(data = {}) {
+  const audit = await getCurrentAuditFields();
+  const { data: row, error } = await supabase
+    .from('shift_time_authorizations')
+    .insert(shiftTimeAuthorizationPayload(data, audit))
+    .select('*')
+    .single();
+  if (error) throw error;
+  await notifyTableReload('shift_time_authorizations');
+  return mapShiftTimeAuthorizationRow(row);
+}
+
+export async function updateShiftTimeAuthorization(id, data = {}) {
+  const authorizationId = String(id || '').trim();
+  if (!authorizationId) throw new Error('Falta la autorizacion para actualizar.');
+  const { data: row, error } = await supabase
+    .from('shift_time_authorizations')
+    .update(shiftTimeAuthorizationPayload(data))
+    .eq('id', authorizationId)
+    .select('*')
+    .single();
+  if (error) throw error;
+  await notifyTableReload('shift_time_authorizations');
+  return mapShiftTimeAuthorizationRow(row);
 }
 
 export async function getNextSedeCode(prefix = 'SED', width = 4) {
@@ -3182,9 +4328,13 @@ export async function createSede({ codigo, nombre, dependenciaCodigo, dependenci
 
 export async function createSedesBulk(rows = []) {
   const items = Array.isArray(rows) ? rows.filter(Boolean) : [];
+  const missingCodeCount = items.filter((row) => !String(row?.codigo || '').trim()).length;
+  const reservedCodes = missingCodeCount ? await reservePrefixedCodes('sedes', 'SED', missingCodeCount, 4) : [];
+  if (reservedCodes.length < missingCodeCount) throw new Error('No se pudieron reservar todos los codigos de sedes.');
+  let reservedCodeIndex = 0;
   let created = 0;
   for (const row of items) {
-    const codigo = row.codigo || await getNextSedeCode('SED', 4);
+    const codigo = String(row.codigo || '').trim() || reservedCodes[reservedCodeIndex++]?.code || null;
     await createSede({
       codigo,
       nombre: row.nombre || null,
@@ -3575,6 +4725,10 @@ export function streamCargos(onData, onError = null, onStatus = null) {
   return streamTable('cargos', mapCargoRow, onData, { onError, onStatus });
 }
 
+export function countActiveCargos() {
+  return countActiveRows('cargos');
+}
+
 export async function getNextCargoCode(prefix = 'CAR', width = 4) {
   return getNextPrefixedCode('cargos', prefix, width);
 }
@@ -3624,6 +4778,10 @@ export async function findCargoByCode(codigo) {
 
 export function streamNovedades(onData, onError = null, onStatus = null) {
   return streamTable('novedades', mapNovedadRow, onData, { onError, onStatus });
+}
+
+export function countActiveNovedades() {
+  return countActiveRows('novedades');
 }
 
 export async function getNextNovedadCode(prefix = 'NOV', width = 4) {
@@ -3686,11 +4844,236 @@ export function streamEmployees(onData, onError = null, onStatus = null) {
   return streamTable('employees', mapEmployeeRow, onData, { onError, onStatus });
 }
 
+export function countActiveEmployees() {
+  return countActiveRows('employees');
+}
+
+function employeeAdminSortColumn(sortKey = '') {
+  const map = {
+    codigo: 'codigo',
+    documento: 'documento',
+    nombre: 'nombre',
+    telefono: 'telefono',
+    cargoNombre: 'cargo_nombre',
+    sedeNombre: 'sede_nombre',
+    estado: 'estado',
+    fechaIngreso: 'fecha_ingreso',
+    fechaRetiro: 'fecha_retiro'
+  };
+  return map[sortKey] || 'nombre';
+}
+
+function buildEmployeesAdminQuery({
+  search = '',
+  sedeCodigo = '',
+  estado = '',
+  sortKey = 'nombre',
+  sortDir = 1,
+  count = null
+} = {}) {
+  const options = count ? { count } : undefined;
+  let query = supabase.from('employees').select('*', options);
+  const cleanStatus = String(estado || '').trim();
+  const cleanSede = String(sedeCodigo || '').trim();
+  const term = cleanPostgrestSearchTerm(search);
+  if (cleanStatus) {
+    query = query.eq('estado', cleanStatus);
+  } else {
+    query = query.or('estado.is.null,estado.neq.eliminado');
+  }
+  if (cleanSede) query = query.eq('sede_codigo', cleanSede);
+  if (term) {
+    const pattern = `%${term}%`;
+    query = query.or([
+      `codigo.ilike.${pattern}`,
+      `documento.ilike.${pattern}`,
+      `nombre.ilike.${pattern}`,
+      `telefono.ilike.${pattern}`,
+      `cargo_codigo.ilike.${pattern}`,
+      `cargo_nombre.ilike.${pattern}`,
+      `sede_codigo.ilike.${pattern}`,
+      `sede_nombre.ilike.${pattern}`
+    ].join(','));
+  }
+  query = query.order(employeeAdminSortColumn(sortKey), { ascending: Number(sortDir || 1) === 1, nullsFirst: false });
+  if (sortKey !== 'nombre') query = query.order('nombre', { ascending: true, nullsFirst: false });
+  return query;
+}
+
+export async function listEmployeesAdminPage({
+  search = '',
+  sedeCodigo = '',
+  estado = '',
+  sortKey = 'nombre',
+  sortDir = 1,
+  page = 1,
+  pageSize = 50,
+  showAll = false
+} = {}) {
+  const safePageSize = showAll ? 5000 : Math.max(1, Math.min(Number(pageSize || 50), 500));
+  const safePage = showAll ? 1 : Math.max(1, Number(page || 1));
+  const from = showAll ? 0 : (safePage - 1) * safePageSize;
+  const to = from + safePageSize - 1;
+  const { data, error, count } = await buildEmployeesAdminQuery({
+    search,
+    sedeCodigo,
+    estado,
+    sortKey,
+    sortDir,
+    count: 'exact'
+  }).range(from, to);
+  if (error) throw error;
+  return {
+    rows: (data || []).map(mapEmployeeRow),
+    total: Number(count || 0),
+    page: safePage,
+    pageSize: safePageSize
+  };
+}
+
+export async function listEmployeeCargoHistoryForEmployees({ ids = [], documentos = [] } = {}) {
+  const cleanIds = [...new Set((ids || []).map((value) => String(value || '').trim()).filter(Boolean))];
+  const cleanDocs = [...new Set((documentos || []).map((value) => String(value || '').trim()).filter(Boolean))];
+  if (!cleanIds.length && !cleanDocs.length) return [];
+
+  const rows = [];
+  for (let i = 0; i < cleanIds.length; i += 100) {
+    const { data, error } = await supabase
+      .from('employee_cargo_history')
+      .select('*')
+      .in('employee_id', cleanIds.slice(i, i + 100))
+      .order('fecha_ingreso', { ascending: false });
+    if (error) throw error;
+    rows.push(...(data || []));
+  }
+  for (let i = 0; i < cleanDocs.length; i += 100) {
+    const { data, error } = await supabase
+      .from('employee_cargo_history')
+      .select('*')
+      .in('documento', cleanDocs.slice(i, i + 100))
+      .order('fecha_ingreso', { ascending: false });
+    if (error) throw error;
+    rows.push(...(data || []));
+  }
+
+  const byId = new Map();
+  rows.forEach((row) => {
+    const id = String(row?.id || '').trim();
+    if (id && !byId.has(id)) byId.set(id, row);
+  });
+  return [...byId.values()].map(mapCargoHistoryRow);
+}
+
+export function watchEmployeesAdminChanges(onChange, onError = null, onStatus = null) {
+  const emit = () => {
+    try {
+      onChange?.();
+    } catch (error) {
+      console.error('No se pudo refrescar administracion de empleados:', error);
+    }
+  };
+  const unEmployees = registerTableReloader('employees', emit);
+  const unHistory = registerTableReloader('employee_cargo_history', emit);
+  const employeesChannel = subscribeToRealtime(
+    supabase.channel(nextRealtimeChannelName('employees-admin-watch'))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'employees' }, emit),
+    { label: 'employees_admin', onError, onStatus }
+  );
+  const historyChannel = subscribeToRealtime(
+    supabase.channel(nextRealtimeChannelName('employee-history-admin-watch'))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'employee_cargo_history' }, emit),
+    { label: 'employee_history_admin', onError, onStatus }
+  );
+  return () => {
+    unEmployees();
+    unHistory();
+    employeesChannel.cancel();
+    historyChannel.cancel();
+  };
+}
+
+export async function listCurrentEmployees(fecha = todayBogotaISO()) {
+  const rows = await listEmployeesEffectiveOnDate(fecha, {
+    select: '*',
+    order: 'nombre',
+    ascending: true
+  });
+  return rows.map(mapEmployeeRow);
+}
+
+export async function listEmployeeDashboardPeople(fecha = todayBogotaISO()) {
+  const rows = await listEmployeesEffectiveOnDate(fecha, {
+    select: 'id,documento,nombre,estado,cargo_codigo,cargo_nombre,fecha_ingreso,fecha_retiro',
+    order: 'cargo_nombre',
+    ascending: true
+  });
+  return rows.map(mapEmployeeRow);
+}
+
+export async function listEmployeesByIdentity({ ids = [], documentos = [] } = {}) {
+  const cleanIds = [...new Set((ids || []).map((value) => String(value || '').trim()).filter(Boolean))];
+  const cleanDocs = [...new Set((documentos || []).map((value) => String(value || '').trim()).filter(Boolean))];
+  if (!cleanIds.length && !cleanDocs.length) return [];
+
+  const select = 'id,codigo,documento,nombre,telefono,estado,cargo_codigo,cargo_nombre,sede_codigo,sede_nombre,zona_codigo,zona_nombre,fecha_ingreso,fecha_retiro';
+  const rows = [];
+  for (let i = 0; i < cleanIds.length; i += 100) {
+    const { data, error } = await supabase.from('employees').select(select).in('id', cleanIds.slice(i, i + 100));
+    if (error) throw error;
+    rows.push(...(data || []));
+  }
+  for (let i = 0; i < cleanDocs.length; i += 100) {
+    const { data, error } = await supabase.from('employees').select(select).in('documento', cleanDocs.slice(i, i + 100));
+    if (error) throw error;
+    rows.push(...(data || []));
+  }
+
+  const byKey = new Map();
+  rows.forEach((row) => {
+    const id = String(row?.id || '').trim();
+    const doc = String(row?.documento || '').trim();
+    const key = id ? `id:${id}` : `doc:${doc}`;
+    if (key && !byKey.has(key)) byKey.set(key, row);
+  });
+  return [...byKey.values()].map(mapEmployeeRow);
+}
+
+export function streamCurrentEmployees(onData, onError = null, onStatus = null, fecha = todayBogotaISO()) {
+  let active = true;
+  const emit = async () => {
+    try {
+      const rows = await listCurrentEmployees(fecha);
+      if (!active) return;
+      onData(rows || []);
+    } catch (error) {
+      if (!active) return;
+      console.error('No se pudieron cargar empleados vigentes:', error);
+      onError?.(error, 'LOAD_ERROR');
+      onData([]);
+    }
+  };
+
+  emit();
+  const unregister = registerTableReloader('employees', emit);
+  const realtime = subscribeToRealtime(
+    supabase
+      .channel(nextRealtimeChannelName('employees-current-watch'))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'employees' }, emit),
+    { label: 'employees_current', onError, onStatus }
+  );
+
+  return () => {
+    active = false;
+    unregister();
+    realtime.cancel();
+  };
+}
+
 export function streamActiveBaseEmployees(onData) {
   let active = true;
   const emit = async () => {
     const [employeesResult, { data: cargos, error: cargoError }] = await Promise.all([
-      selectAllRows('employees', { select: '*', order: 'created_at', ascending: false }).then((value) => ({ status: 'fulfilled', value })).catch((error) => ({ status: 'rejected', reason: error })),
+      listEmployeesEffectiveOnDate(todayBogotaISO(), { select: '*', order: 'created_at', ascending: false }).then((value) => ({ status: 'fulfilled', value })).catch((error) => ({ status: 'rejected', reason: error })),
       supabase.from('cargos').select('codigo, nombre, alineacion_crud')
     ]);
     if (!active) return;
@@ -3884,12 +5267,10 @@ export async function createEmployeesBulk(rows = [], options = {}) {
   };
   reportProgress(0, items.length, 'preparing');
   const audit = await getCurrentAuditFields();
-  const existingCodes = await selectAllRows('employees', { select: 'codigo' });
-  let nextCodeNumber = 0;
-  (existingCodes || []).forEach((row) => {
-    const num = extractPrefixedCodeNumber(row?.codigo, 'EMP');
-    if (num > nextCodeNumber) nextCodeNumber = num;
-  });
+  const missingCodeCount = items.filter((row) => !String(row?.codigo || '').trim()).length;
+  const reservedCodes = missingCodeCount ? await reservePrefixedCodes('employees', 'EMP', missingCodeCount, 4) : [];
+  if (reservedCodes.length < missingCodeCount) throw new Error('No se pudieron reservar todos los codigos de empleados.');
+  let reservedCodeIndex = 0;
   const sedeCodes = [...new Set(items.map((row) => String(row?.sedeCodigo || '').trim()).filter(Boolean))];
   const zoneBySedeCode = new Map();
   if (sedeCodes.length) {
@@ -3910,7 +5291,7 @@ export async function createEmployeesBulk(rows = [], options = {}) {
   for (const batch of batches) {
     const timestamp = new Date().toISOString();
     const payloads = batch.map((row) => {
-      const codigo = row.codigo || buildNextPrefixedCode('EMP', ++nextCodeNumber, 4);
+      const codigo = String(row.codigo || '').trim() || reservedCodes[reservedCodeIndex++]?.code || null;
       const zone = zoneBySedeCode.get(String(row.sedeCodigo || '').trim()) || { zonaCodigo: null, zonaNombre: null };
       return applyEmployeeExtendedFields({
         codigo,
@@ -4259,6 +5640,63 @@ export function streamEmployeeCargoHistoryAll(onData, max = 5000) {
   };
 }
 
+export async function listEmployeeCargoHistoryRange(dateFrom, dateTo, { max = 5000, contextLimit = 1000 } = {}) {
+  const from = toISODate(dateFrom) || todayBogotaISO();
+  const to = toISODate(dateTo) || from;
+  const limit = Math.max(1, Math.min(Number(max || 5000), 10000));
+  const today = todayBogotaISO();
+  const [startRows, retireRows, programmedRows] = await Promise.all([
+    selectPagedRows(() => supabase
+      .from('employee_cargo_history')
+      .select('*')
+      .gte('fecha_ingreso', from)
+      .lte('fecha_ingreso', to)
+      .order('fecha_ingreso', { ascending: false })),
+    selectPagedRows(() => supabase
+      .from('employee_cargo_history')
+      .select('*')
+      .gte('fecha_retiro', from)
+      .lte('fecha_retiro', to)
+      .order('fecha_retiro', { ascending: false })),
+    selectPagedRows(() => supabase
+      .from('employee_cargo_history')
+      .select('*')
+      .gt('fecha_ingreso', today)
+      .is('fecha_retiro', null)
+      .order('fecha_ingreso', { ascending: true }))
+  ]);
+
+  const currentRows = [...startRows, ...retireRows, ...programmedRows].slice(0, limit);
+
+  const employeeIds = [...new Set(
+    (currentRows || [])
+      .map((row) => String(row?.employee_id || '').trim())
+      .filter(Boolean)
+  )];
+  if (!employeeIds.length) return [];
+
+  const contextRows = [];
+  for (let i = 0; i < employeeIds.length; i += 100) {
+    const chunk = employeeIds.slice(i, i + 100);
+    const { data, error } = await supabase
+      .from('employee_cargo_history')
+      .select('*')
+      .in('employee_id', chunk)
+      .lt('fecha_ingreso', from)
+      .order('fecha_ingreso', { ascending: false })
+      .limit(Math.max(1, Math.min(Number(contextLimit || 1000), 5000)));
+    if (error) throw error;
+    contextRows.push(...(data || []));
+  }
+
+  const byId = new Map();
+  [...currentRows, ...contextRows].forEach((row) => {
+    const id = String(row?.id || '').trim();
+    if (id && !byId.has(id)) byId.set(id, row);
+  });
+  return [...byId.values()].map(mapCargoHistoryRow);
+}
+
 export function streamSupernumerarios(onData, fecha = null) {
   let active = true;
   const day = toISODate(fecha);
@@ -4273,26 +5711,22 @@ export function streamSupernumerarios(onData, fecha = null) {
       }
       return;
     }
-    const [employeesResult, { data: cargos, error: cargoError }] = await Promise.all([
-      selectAllRows('employees', { select: '*', order: 'created_at', ascending: false }).then((value) => ({ status: 'fulfilled', value })).catch((error) => ({ status: 'rejected', reason: error })),
-      supabase.from('cargos').select('codigo, nombre, alineacion_crud')
-    ]);
+    const employeesResult = await listEmployeesByCargoAlignment('supernumerario', {
+      select: '*',
+      order: 'created_at',
+      ascending: false
+    })
+      .then((value) => ({ status: 'fulfilled', value }))
+      .catch((error) => ({ status: 'rejected', reason: error }));
     if (!active) return;
     const empError = employeesResult.status === 'rejected' ? employeesResult.reason : null;
     const employeeRows = employeesResult.status === 'fulfilled' ? employeesResult.value : [];
-    if (empError || cargoError) {
-      console.error('No se pudieron cargar supernumerarios:', empError || cargoError);
+    if (empError) {
+      console.error('No se pudieron cargar supernumerarios:', empError);
       onData([]);
       return;
     }
-    const cargoMap = new Map((cargos || []).map((row) => [String(row.codigo || ''), row]));
-    const rows = (employeeRows || [])
-      .filter((emp) => {
-        const cargo = cargoMap.get(String(emp.cargo_codigo || '')) || null;
-        const alignment = normalizeCargoAlignment(cargo?.alineacion_crud || emp.cargo_nombre);
-        return alignment === 'supernumerario';
-      })
-      .map((row) => mapEmployeeRow(row));
+    const rows = (employeeRows || []).map((row) => mapEmployeeRow(row));
     onData(rows);
   };
   emit();
@@ -4397,13 +5831,17 @@ export async function createSupernumerario(payload) {
 
 export async function createSupernumerariosBulk(rows = []) {
   const items = Array.isArray(rows) ? rows.filter(Boolean) : [];
+  const missingCodeCount = items.filter((row) => !String(row?.codigo || '').trim()).length;
+  const reservedCodes = missingCodeCount ? await reservePrefixedCodes('employees', 'SUPN', missingCodeCount, 4) : [];
+  if (reservedCodes.length < missingCodeCount) throw new Error('No se pudieron reservar todos los codigos de supernumerarios.');
+  let reservedCodeIndex = 0;
   let created = 0;
   for (const row of items) {
     const alignment = await getCargoCrudAlignmentByCode(row.cargoCodigo, row.cargoNombre);
     if (alignment !== 'supernumerario') {
       throw new Error(`El cargo ${row.cargoCodigo || row.cargoNombre || '-'} no está alineado como supernumerario.`);
     }
-    const codigo = row.codigo || await getNextSupernumerarioCode('SUPN', 4);
+    const codigo = String(row.codigo || '').trim() || reservedCodes[reservedCodeIndex++]?.code || null;
     await createSupernumerario({
       codigo,
       documento: String(row.documento || '').trim(),
@@ -4445,42 +5883,42 @@ export async function findSupernumerarioByDocument(documento) {
 export function streamSupervisors(onData) {
   let active = true;
   const emit = async () => {
-    const [
-      employeesResult,
-      profilesResult,
-      { data: cargos, error: cargoError }
-    ] = await Promise.all([
-      selectAllRows('employees', { select: '*', order: 'created_at', ascending: false }).then((value) => ({ status: 'fulfilled', value })).catch((error) => ({ status: 'rejected', reason: error })),
-      selectAllRows('supervisor_profile', { select: '*', order: 'created_at', ascending: false }).then((value) => ({ status: 'fulfilled', value })).catch((error) => ({ status: 'rejected', reason: error })),
-      supabase.from('cargos').select('codigo, nombre, alineacion_crud')
-    ]);
-
+    const employeesResult = await listEmployeesByCargoAlignment('supervisor', {
+      select: '*',
+      order: 'created_at',
+      ascending: false
+    })
+      .then((value) => ({ status: 'fulfilled', value }))
+      .catch((error) => ({ status: 'rejected', reason: error }));
     const empError = employeesResult.status === 'rejected' ? employeesResult.reason : null;
-    const profileError = profilesResult.status === 'rejected' ? profilesResult.reason : null;
     const employees = employeesResult.status === 'fulfilled' ? employeesResult.value : [];
+    const employeeDocs = [...new Set((employees || []).map((emp) => String(emp?.documento || '').trim()).filter(Boolean))];
+    const profilesResult = employeeDocs.length
+      ? await selectPagedRows(() => supabase
+        .from('supervisor_profile')
+        .select('*')
+        .in('documento', employeeDocs)
+        .order('created_at', { ascending: false }))
+          .then((value) => ({ status: 'fulfilled', value }))
+          .catch((error) => ({ status: 'rejected', reason: error }))
+      : { status: 'fulfilled', value: [] };
+    const profileError = profilesResult.status === 'rejected' ? profilesResult.reason : null;
     const profiles = profilesResult.status === 'fulfilled' ? profilesResult.value : [];
 
     if (!active) return;
-    if (empError || profileError || cargoError) {
-      console.error('No se pudieron cargar supervisores:', empError || profileError || cargoError);
+    if (empError || profileError) {
+      console.error('No se pudieron cargar supervisores:', empError || profileError);
       onData([]);
       return;
     }
 
-    const cargoMap = new Map((cargos || []).map((row) => [String(row.codigo || ''), row]));
     const profileByDoc = mapByDocument((profiles || []).map(mapSupervisorProfileRow));
 
     const rows = (employees || [])
-      .filter((emp) => {
-        const cargo = cargoMap.get(String(emp.cargo_codigo || '')) || null;
-        const alignment = normalizeCargoAlignment(cargo?.alineacion_crud || emp.cargo_nombre);
-        return alignment === 'supervisor';
-      })
       .map((emp) => {
         const base = mapEmployeeRow(emp);
         const documento = String(base.documento || '').trim();
         const profile = profileByDoc.get(documento) || {};
-        const cargo = cargoMap.get(String(base.cargoCodigo || '')) || null;
         return {
           id: base.id,
           profileId: profile.profileId || null,
@@ -4488,7 +5926,7 @@ export function streamSupervisors(onData) {
           documento: documento || null,
           nombre: base.nombre || null,
           cargoCodigo: base.cargoCodigo || profile.cargoCodigo || null,
-          cargoNombre: cargo?.nombre || base.cargoNombre || profile.cargoNombre || null,
+          cargoNombre: base.cargoNombre || profile.cargoNombre || null,
           zonaCodigo: profile.zonaCodigo || base.zonaCodigo || null,
           zonaNombre: profile.zonaNombre || base.zonaNombre || null,
           fechaIngreso: base.fechaIngreso || profile.fechaIngreso || null,
@@ -4657,6 +6095,47 @@ export function streamDailyClosures(onData, max = 200) {
   emit();
   const unregister = registerTableReloader('daily_closures', emit);
   const channel = supabase.channel('daily-closures-watch').on('postgres_changes', { event: '*', schema: 'public', table: 'daily_closures' }, emit).subscribe();
+  return () => {
+    active = false;
+    unregister();
+    supabase.removeChannel(channel);
+  };
+}
+
+export function streamDailyClosuresRange(dateFrom, dateTo, onData) {
+  const from = String(dateFrom || '').slice(0, 10);
+  const to = String(dateTo || '').slice(0, 10);
+  if (!from || !to) {
+    onData([]);
+    return () => {};
+  }
+  let active = true;
+  const emit = async () => {
+    const { data, error } = await supabase
+      .from('daily_closures')
+      .select('*')
+      .gte('fecha', from)
+      .lte('fecha', to)
+      .order('fecha', { ascending: true });
+    if (!active) return;
+    if (error) {
+      console.error('No se pudo cargar daily_closures por rango:', error);
+      onData([]);
+      return;
+    }
+    onData((data || []).map(mapDailyClosureRow));
+  };
+  const onChange = (payload) => {
+    const inRange = (row = {}) => {
+      const value = String(row?.fecha || '').slice(0, 10);
+      return value && value >= from && value <= to;
+    };
+    if (!inRange(payload?.new) && !inRange(payload?.old)) return;
+    emit();
+  };
+  emit();
+  const unregister = registerTableReloader('daily_closures', emit);
+  const channel = supabase.channel(`daily-closures-watch-${from}-${to}`).on('postgres_changes', { event: '*', schema: 'public', table: 'daily_closures' }, onChange).subscribe();
   return () => {
     active = false;
     unregister();
@@ -4893,6 +6372,9 @@ export async function createIncapacidad({
     .select('*')
     .single();
   if (error) throw error;
+  if (hasIncapacityOperationalChange(null, data)) {
+    await releaseSupernumerarioReplacementsForIncapacity(data);
+  }
   await refreshOperationalStateForIncapacityChange(data);
   await notifyTableReload('incapacitados');
   return mapIncapacidadRow(data);
@@ -4945,6 +6427,80 @@ function hasIncapacityOperationalChange(before = null, after = null) {
   return incapacityOperationalSignature(before) !== incapacityOperationalSignature(after);
 }
 
+async function findActiveSupernumerarioIncapacityForDate({ fecha = '', supernumerarioId = null, documento = null } = {}) {
+  const day = toISODate(fecha);
+  const empId = String(supernumerarioId || '').trim();
+  const doc = normalizeDailyDocument(documento);
+  if (!day || (!empId && !doc)) return null;
+
+  let query = supabase
+    .from('incapacitados')
+    .select('id, employee_id, documento, nombre, fecha_inicio, fecha_fin, source')
+    .eq('estado', 'activo')
+    .lte('fecha_inicio', day)
+    .gte('fecha_fin', day)
+    .limit(1);
+  if (empId && doc) query = query.or(`employee_id.eq.${empId},documento.eq.${doc}`);
+  else if (empId) query = query.eq('employee_id', empId);
+  else query = query.eq('documento', doc);
+
+  const { data, error } = await query;
+  if (error) throw error;
+  return Array.isArray(data) ? data[0] || null : null;
+}
+
+async function releaseSupernumerarioReplacementsForIncapacity(row = {}) {
+  const estado = String(row?.estado || 'activo').trim().toLowerCase();
+  if (estado !== 'activo') return [];
+  const start = toISODate(row?.fecha_inicio || row?.fechaInicio);
+  const end = toISODate(row?.fecha_fin || row?.fechaFin || start);
+  const empId = String(row?.employee_id || row?.employeeId || '').trim();
+  const doc = normalizeDailyDocument(row?.documento);
+  if (!start || !end || end < start || (!empId && !doc)) return [];
+
+  let query = supabase
+    .from('import_replacements')
+    .select('*')
+    .eq('decision', 'reemplazo')
+    .gte('fecha', start)
+    .lte('fecha', end);
+  if (empId && doc) query = query.or(`supernumerario_id.eq.${empId},supernumerario_documento.eq.${doc}`);
+  else if (empId) query = query.eq('supernumerario_id', empId);
+  else query = query.eq('supernumerario_documento', doc);
+
+  const { data, error } = await query;
+  if (error) throw error;
+  const rows = Array.isArray(data) ? data : [];
+  const openRows = [];
+  for (const replacement of rows) {
+    const day = String(replacement?.fecha || '').trim();
+    if (!day || await isOperationDayClosed(day)) continue;
+    openRows.push(replacement);
+  }
+  if (!openRows.length) return [];
+
+  const audit = await getCurrentAuditFields();
+  const timestamp = new Date().toISOString();
+  const ids = openRows.map((replacement) => String(replacement?.id || '').trim()).filter(Boolean);
+  for (const batch of chunkArray(ids, 100)) {
+    const { error: updateError } = await supabase
+      .from('import_replacements')
+      .update({
+        decision: 'ausentismo',
+        supernumerario_id: null,
+        supernumerario_documento: null,
+        supernumerario_nombre: null,
+        actor_uid: audit.created_by_uid,
+        actor_email: audit.created_by_email,
+        ts: timestamp
+      })
+      .in('id', batch);
+    if (updateError) throw updateError;
+  }
+  await notifyTableReload('import_replacements');
+  return openRows.map(mapImportReplacementRow);
+}
+
 export async function updateIncapacidad(id, {
   employeeId,
   documento,
@@ -4986,6 +6542,7 @@ export async function updateIncapacidad(id, {
     .single();
   if (error) throw error;
   if (hasIncapacityOperationalChange(previous, data)) {
+    await releaseSupernumerarioReplacementsForIncapacity(data);
     await refreshOperationalStateForIncapacityChange(previous, data);
   }
   await notifyTableReload('incapacitados');
@@ -5007,6 +6564,7 @@ export async function setIncapacidadStatus(id, estado) {
     .single();
   if (error) throw error;
   if (hasIncapacityOperationalChange(previous, data)) {
+    await releaseSupernumerarioReplacementsForIncapacity(data);
     await refreshOperationalStateForIncapacityChange(previous, data);
   }
   await notifyTableReload('incapacitados');
@@ -5018,10 +6576,10 @@ export async function listIncapacidadesRange(dateFrom, dateTo) {
   const rows = await selectPagedRows(() => supabase
     .from('incapacitados')
     .select('*')
+    .lte('fecha_inicio', dateTo)
+    .gte('fecha_fin', dateFrom)
     .order('created_at', { ascending: false }));
-  return rows
-    .map(mapIncapacidadRow)
-    .filter((row) => incapacityOverlapsRange(row, dateFrom, dateTo));
+  return rows.map(mapIncapacidadRow);
 }
 
 export async function listSedeStatusRange(dateFrom, dateTo) {
@@ -5257,9 +6815,7 @@ export async function listSupervisorDailyRegistry(fecha, zoneCodes = [], options
       .order('sede_codigo', { ascending: true })
       .order('nombre', { ascending: true })),
     selectPagedRows(() => scopeByZones(
-      supabase
-        .from('employees')
-        .select('*'),
+      employeesEffectiveOnDateQuery({ select: '*', fecha: day, order: null }),
       'zona_codigo'
     )
       .order('nombre', { ascending: true })),
@@ -5495,6 +7051,15 @@ export async function saveImportReplacements({ importId = null, fechaOperacion =
     const currentId = buildDailyRecordId(fecha, a.documento, a.empleadoId);
     const superId = String(a.supernumerarioId || '').trim();
     const superDoc = String(a.supernumerarioDocumento || '').trim();
+    const incapacity = await findActiveSupernumerarioIncapacityForDate({
+      fecha,
+      supernumerarioId: superId,
+      documento: superDoc
+    });
+    if (incapacity) {
+      const superLabel = a.supernumerarioNombre || a.supernumerarioDocumento || 'El supernumerario';
+      throw new Error(`${superLabel} esta incapacitado el ${fecha}; no puede asignarse como reemplazo.`);
+    }
     const conflict = (occupancyByDate.get(fecha) || []).find((row) => {
       if (String(row?.id || '').trim() === currentId) return false;
       if (String(row?.decision || '').trim() !== 'reemplazo') return false;
@@ -5566,70 +7131,6 @@ async function replacementAssignmentHasScheduledService(assignment = {}, fecha =
   return row.servicio_programado === true;
 }
 
-export async function closeOperationDayManual(fecha) {
-  const day = String(fecha || '').trim();
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) throw new Error('Fecha invalida.');
-  if (await isOperationDayClosed(day)) {
-    return { ok: true, results: [{ date: day, status: 'already_closed' }] };
-  }
-
-  await finalizePendingAbsenteeismForClosure(day);
-
-  const refreshedBeforeClosure = await refreshOperationalSnapshotsFromEmployeeDailyStatus(day);
-  let metricsRow = null;
-  if (refreshedBeforeClosure === null) {
-    await recomputeSedeStatusSnapshot(day);
-    metricsRow = await recomputeDailyMetrics(day);
-  } else {
-    metricsRow = await getDailyMetricsRowByDate(day);
-    if (!metricsRow) metricsRow = await recomputeDailyMetrics(day);
-  }
-
-  const metrics = mapDailyMetricsRow(metricsRow || {});
-  const closureSnapshot = await computeDailyClosureSnapshot(day);
-  const sedeClosureSnapshot = await computeDailySedeClosureSnapshot(day);
-  const audit = await getCurrentAuditFields();
-  const { error } = await supabase.from('daily_closures').upsert({
-    id: day,
-    fecha: day,
-    status: 'closed',
-    locked: true,
-    planeados: closureSnapshot?.planeados ?? metrics.planned ?? 0,
-    contratados: closureSnapshot?.contratados ?? metrics.expected ?? 0,
-    asistencias: closureSnapshot?.registrados ?? 0,
-    ausentismos: closureSnapshot?.ausentismos ?? metrics.absenteeism ?? 0,
-    faltan: closureSnapshot?.faltan ?? 0,
-    sobran: closureSnapshot?.sobran ?? 0,
-    no_contratados: closureSnapshot?.noContratados ?? metrics.noContracted ?? 0,
-    closed_by_uid: audit.created_by_uid,
-    closed_by_email: audit.created_by_email
-  }, { onConflict: 'id' });
-  if (error) throw error;
-  if (sedeClosureSnapshot.length) {
-    const { error: sedeClosureError } = await supabase.from('daily_sede_closures').upsert(sedeClosureSnapshot, { onConflict: 'id' });
-    if (sedeClosureError) throw sedeClosureError;
-    await notifyTableReload('daily_sede_closures');
-  }
-
-  await runPostClosureTasks(day);
-
-  const refreshedAfterClosure = await refreshOperationalSnapshotsFromEmployeeDailyStatus(day);
-  if (refreshedAfterClosure === null) {
-    await recomputeSedeStatusSnapshot(day);
-    await recomputeDailyMetrics(day);
-  }
-
-  await notifyTableReload('daily_closures');
-  return { ok: true, results: [{ date: day, status: 'closed' }] };
-}
-
-async function runPostClosureTasks(day) {
-
-  const { error } = await supabase.from('daily_metrics').update({ closed: true }).eq('fecha', day);
-  if (error) throw error;
-  await propagateIncapacitiesToNextDay(day);
-}
-
 async function finalizePendingAbsenteeismForClosure(day) {
   const audit = await getCurrentAuditFields();
   await refreshEmployeeDailyStatusSnapshot(day);
@@ -5642,7 +7143,7 @@ async function finalizePendingAbsenteeismForClosure(day) {
     supabase.from('attendance').select('*').eq('fecha', day),
     supabase.from('import_replacements').select('*').eq('fecha', day),
     supabase.from('employee_daily_status').select('fecha, employee_id, documento, tipo_personal, servicio_programado').eq('fecha', day),
-    selectAllRows('novedades', { select: 'codigo, codigo_novedad, nombre, reemplazo' })
+    selectSmallTableRows('novedades', { select: 'codigo, codigo_novedad, nombre, reemplazo' })
   ]);
   if (attendanceError) throw attendanceError;
   if (replacementsError) throw replacementsError;
@@ -5731,8 +7232,7 @@ function statusLookupKeys(row = {}) {
 }
 
 async function cleanupNonProgrammedClosedOperationalAbsenteeism(day) {
-  const refreshed = await refreshEmployeeDailyStatusSnapshot(day);
-  if (refreshed === null) return 0;
+  await refreshEmployeeDailyStatusSnapshot(day);
 
   const { data: statusRows, error } = await supabase
     .from('employee_daily_status')
@@ -5802,8 +7302,7 @@ async function cleanupNonProgrammedClosedOperationalAbsenteeism(day) {
 }
 
 async function materializeClosedOperationalAbsenteeismForClosure(day, { actorUid = null, actorEmail = null } = {}) {
-  const refreshed = await refreshEmployeeDailyStatusSnapshot(day);
-  if (refreshed === null) return 0;
+  await refreshEmployeeDailyStatusSnapshot(day);
 
   const { data: statusRows, error } = await supabase
     .from('employee_daily_status')
