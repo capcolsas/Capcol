@@ -1,6 +1,7 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 import { EMPLOYEE_PORTAL_API_BASE, SUPABASE_ANON_KEY, SUPABASE_PROFILES_TABLE, SUPABASE_URL } from './config.js';
 import { addIsoDays, buildScheduledShiftCandidate, listIsoDatesInRange, shiftRuleAppliesOnDate, todayBogota } from './utils/shiftCalendar.js';
+import { hasValidSedeLocation, parseCoordinate } from './utils/sedeLocation.js';
 
 function assertSupabaseConfig() {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
@@ -4299,6 +4300,10 @@ export async function getNextSedeCode(prefix = 'SED', width = 4) {
 }
 
 export async function createSede({ codigo, nombre, dependenciaCodigo, dependenciaNombre, zonaCodigo, zonaNombre, numeroOperarios, jornada, qrEnabled = false, qrLatitude = null, qrLongitude = null, qrRadiusMeters = 500 }, options = {}) {
+  const normalizedQrLatitude = parseCoordinate(qrLatitude);
+  const normalizedQrLongitude = parseCoordinate(qrLongitude);
+  if ((normalizedQrLatitude !== null || normalizedQrLongitude !== null) && !hasValidSedeLocation(normalizedQrLatitude, normalizedQrLongitude)) throw new Error('Registra una ubicacion valida de la sede.');
+  if (qrEnabled === true && !hasValidSedeLocation(normalizedQrLatitude, normalizedQrLongitude)) throw new Error('Para activar QR debes registrar una ubicacion valida de la sede.');
   const audit = await getCurrentAuditFields();
   const { data, error } = await supabase
     .from('sedes')
@@ -4312,8 +4317,8 @@ export async function createSede({ codigo, nombre, dependenciaCodigo, dependenci
       numero_operarios: typeof numeroOperarios === 'number' ? numeroOperarios : null,
       jornada: jornada || 'lun_vie',
       qr_enabled: qrEnabled === true,
-      qr_latitude: typeof qrLatitude === 'number' && Number.isFinite(qrLatitude) ? qrLatitude : null,
-      qr_longitude: typeof qrLongitude === 'number' && Number.isFinite(qrLongitude) ? qrLongitude : null,
+      qr_latitude: normalizedQrLatitude,
+      qr_longitude: normalizedQrLongitude,
       qr_radius_meters: typeof qrRadiusMeters === 'number' && Number.isFinite(qrRadiusMeters) ? qrRadiusMeters : 500,
       estado: 'activo',
       ...audit
@@ -4359,6 +4364,13 @@ export async function updateSede(id, { codigo, nombre, dependenciaCodigo, depend
   const previous = await supabase.from('sedes').select('*').eq('id', id).single();
   if (previous.error) throw previous.error;
   const previousRow = previous.data || {};
+  const effectiveQrEnabled = typeof qrEnabled === 'boolean' ? qrEnabled : previousRow.qr_enabled === true;
+  const normalizedQrLatitude = qrLatitude !== undefined ? parseCoordinate(qrLatitude) : undefined;
+  const normalizedQrLongitude = qrLongitude !== undefined ? parseCoordinate(qrLongitude) : undefined;
+  const effectiveQrLatitude = normalizedQrLatitude !== undefined ? normalizedQrLatitude : (previousRow.qr_latitude == null ? null : Number(previousRow.qr_latitude));
+  const effectiveQrLongitude = normalizedQrLongitude !== undefined ? normalizedQrLongitude : (previousRow.qr_longitude == null ? null : Number(previousRow.qr_longitude));
+  if ((qrLatitude !== undefined || qrLongitude !== undefined) && (effectiveQrLatitude !== null || effectiveQrLongitude !== null) && !hasValidSedeLocation(effectiveQrLatitude, effectiveQrLongitude)) throw new Error('Registra una ubicacion valida de la sede.');
+  if (effectiveQrEnabled && !hasValidSedeLocation(effectiveQrLatitude, effectiveQrLongitude)) throw new Error('Para activar QR debes registrar una ubicacion valida de la sede.');
   const patch = {};
   if (typeof codigo === 'string') patch.codigo = codigo;
   if (typeof nombre === 'string') patch.nombre = nombre;
@@ -4369,8 +4381,8 @@ export async function updateSede(id, { codigo, nombre, dependenciaCodigo, depend
   if (typeof numeroOperarios === 'number') patch.numero_operarios = numeroOperarios;
   if (typeof jornada === 'string') patch.jornada = jornada;
   if (typeof qrEnabled === 'boolean') patch.qr_enabled = qrEnabled;
-  if (qrLatitude !== undefined) patch.qr_latitude = typeof qrLatitude === 'number' && Number.isFinite(qrLatitude) ? qrLatitude : null;
-  if (qrLongitude !== undefined) patch.qr_longitude = typeof qrLongitude === 'number' && Number.isFinite(qrLongitude) ? qrLongitude : null;
+  if (qrLatitude !== undefined) patch.qr_latitude = normalizedQrLatitude;
+  if (qrLongitude !== undefined) patch.qr_longitude = normalizedQrLongitude;
   if (typeof qrRadiusMeters === 'number' && Number.isFinite(qrRadiusMeters)) patch.qr_radius_meters = qrRadiusMeters;
   const { data: updated, error } = await supabase.from('sedes').update(patch).eq('id', id).select('*').single();
   if (error) throw error;
@@ -5343,6 +5355,84 @@ export async function createEmployeesBulk(rows = [], options = {}) {
   return { created };
 }
 
+function employeeBulkUpdatePatch(row = {}, audit = {}) {
+  const patch = {
+    last_modified_by_uid: audit.created_by_uid,
+    last_modified_by_email: audit.created_by_email,
+    last_modified_at: new Date().toISOString()
+  };
+  const cleanOptional = (value) => {
+    const raw = String(value ?? '').trim();
+    if (!raw) return undefined;
+    return raw === '__CLEAR__' ? null : raw;
+  };
+  if (row.nombre !== undefined) {
+    const value = cleanOptional(row.nombre);
+    if (value !== undefined) patch.nombre = value;
+  }
+  if (row.telefono !== undefined) {
+    const value = cleanOptional(row.telefono);
+    if (value !== undefined) patch.telefono = value === null ? null : normalizeStoredPhone(value);
+  }
+  if (row.fechaNacimiento !== undefined) {
+    const value = cleanOptional(row.fechaNacimiento);
+    patch.fecha_nacimiento = value === undefined ? undefined : value;
+  }
+  applyEmployeeExtendedFields(patch, {
+    eps: row.eps === undefined ? undefined : cleanOptional(row.eps),
+    afp: row.afp === undefined ? undefined : cleanOptional(row.afp),
+    arlRiesgo: row.arlRiesgo === undefined ? undefined : cleanOptional(row.arlRiesgo),
+    dotacionCamisa: row.dotacionCamisa === undefined ? undefined : cleanOptional(row.dotacionCamisa),
+    dotacionPantalon: row.dotacionPantalon === undefined ? undefined : cleanOptional(row.dotacionPantalon),
+    dotacionZapatos: row.dotacionZapatos === undefined ? undefined : cleanOptional(row.dotacionZapatos)
+  });
+  return Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined));
+}
+
+export async function updateEmployeesBulk(rows = [], options = {}) {
+  const items = Array.isArray(rows) ? rows.filter(Boolean) : [];
+  if (!items.length) return { updated: 0, skipped: 0 };
+  const onProgress = typeof options?.onProgress === 'function' ? options.onProgress : null;
+  const reportProgress = (updated, total, phase = 'updating') => {
+    if (!onProgress) return;
+    onProgress({
+      created: updated,
+      total,
+      percent: total > 0 ? Math.min(100, Math.round((updated / total) * 100)) : 0,
+      phase
+    });
+  };
+  reportProgress(0, items.length, 'preparing');
+  const audit = await getCurrentAuditFields();
+  let updated = 0;
+  let skipped = 0;
+  for (const row of items) {
+    const documento = String(row?.documento || '').trim();
+    const id = String(row?.id || '').trim();
+    if (!documento && !id) {
+      skipped += 1;
+      continue;
+    }
+    const patch = employeeBulkUpdatePatch(row, audit);
+    const meaningfulKeys = Object.keys(patch).filter((key) => !['last_modified_by_uid', 'last_modified_by_email', 'last_modified_at'].includes(key));
+    if (!meaningfulKeys.length) {
+      skipped += 1;
+      continue;
+    }
+    const query = supabase.from('employees').update(patch);
+    const { error } = id
+      ? await query.eq('id', id)
+      : await query.eq('documento', documento);
+    if (error) throw error;
+    updated += 1;
+    reportProgress(updated, items.length, 'updating');
+  }
+  reportProgress(updated, items.length, 'refreshing');
+  await notifyTableReload('employees');
+  reportProgress(updated, items.length, 'completed');
+  return { updated, skipped };
+}
+
 export async function updateEmployee(id, data = {}) {
   const audit = await getCurrentAuditFields();
   const current = await supabase.from('employees').select('*').eq('id', id).single();
@@ -5666,7 +5756,12 @@ export async function listEmployeeCargoHistoryRange(dateFrom, dateTo, { max = 50
       .order('fecha_ingreso', { ascending: true }))
   ]);
 
-  const currentRows = [...startRows, ...retireRows, ...programmedRows].slice(0, limit);
+  const candidateRowsById = new Map();
+  [...startRows, ...retireRows, ...programmedRows].forEach((row) => {
+    const id = String(row?.id || '').trim();
+    if (id && !candidateRowsById.has(id)) candidateRowsById.set(id, row);
+  });
+  const currentRows = [...candidateRowsById.values()].slice(0, limit);
 
   const employeeIds = [...new Set(
     (currentRows || [])
@@ -5682,7 +5777,6 @@ export async function listEmployeeCargoHistoryRange(dateFrom, dateTo, { max = 50
       .from('employee_cargo_history')
       .select('*')
       .in('employee_id', chunk)
-      .lt('fecha_ingreso', from)
       .order('fecha_ingreso', { ascending: false })
       .limit(Math.max(1, Math.min(Number(contextLimit || 1000), 5000)));
     if (error) throw error;

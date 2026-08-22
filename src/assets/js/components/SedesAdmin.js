@@ -2,6 +2,7 @@ import { el, qs, infoIcon, lucideInlineIcon, moreIcon } from '../utils/dom.js';
 import { showInfoModal } from '../utils/infoModal.js';
 import { showActionModal } from '../utils/actionModal.js';
 import { createTablePagination } from '../utils/pagination.js';
+import { hasValidSedeLocation, sedeCoordinates, sedeLocationLabel } from '../utils/sedeLocation.js';
 import { can, PERMS } from '../permissions.js';
 export const SedesAdmin=(mount,deps={})=>{
   const canEdit=can(PERMS.EDIT_SEDES);
@@ -23,7 +24,6 @@ export const SedesAdmin=(mount,deps={})=>{
               el('th',{'data-sort':'numeroOperarios',style:'cursor:pointer'},['Operarios']),
               el('th',{'data-sort':'jornada',style:'cursor:pointer'},['Jornada']),
               el('th',{'data-sort':'qrEnabled',style:'cursor:pointer'},['QR']),
-              el('th',{},['Ubicacion QR']),
               el('th',{'data-sort':'estado',style:'cursor:pointer'},['Estado']),
               el('th',{},['Acciones'])
             ]) ]),
@@ -105,9 +105,9 @@ export const SedesAdmin=(mount,deps={})=>{
             { value:'true', label:'Activo' }
           ]
         },
-        { id:'qrLatitude', label:'Latitud QR', type:'number', step:'0.000001', placeholder:'Ej: 6.244203' },
-        { id:'qrLongitude', label:'Longitud QR', type:'number', step:'0.000001', placeholder:'Ej: -75.581212' },
-        { id:'qrRadiusMeters', label:'Radio QR (m)', type:'number', min:'1', step:'1', value:'500' }
+        { id:'qrLatitude', label:'Latitud sede', type:'number', step:'0.000001', placeholder:'Ej: 6.244203' },
+        { id:'qrLongitude', label:'Longitud sede', type:'number', step:'0.000001', placeholder:'Ej: -75.581212' },
+        { id:'qrRadiusMeters', label:'Radio validacion QR (m)', type:'number', min:'1', step:'1', value:'500' }
       ]
     });
     if(!modal.confirmed) return;
@@ -125,7 +125,8 @@ export const SedesAdmin=(mount,deps={})=>{
     const qrLatitude=parseOptionalNumber(modal.values.qrLatitude);
     const qrLongitude=parseOptionalNumber(modal.values.qrLongitude);
     const qrRadiusMeters=parsePositiveInteger(modal.values.qrRadiusMeters,500);
-    if(qrEnabled && (!Number.isFinite(qrLatitude) || !Number.isFinite(qrLongitude))){ alert('Para activar QR debes configurar latitud y longitud de la sede.'); return; }
+    if((qrLatitude!==null || qrLongitude!==null) && !hasValidSedeLocation(qrLatitude, qrLongitude)){ alert('Registra una ubicacion valida de la sede.'); return; }
+    if(qrEnabled && !hasValidSedeLocation(qrLatitude, qrLongitude)){ alert('Para activar QR debes registrar una ubicacion valida de la sede.'); return; }
     try{
       const code=await deps.getNextSedeCode?.();
       const dep=depList.find(d=>d.codigo===depCode);
@@ -233,10 +234,9 @@ export const SedesAdmin=(mount,deps={})=>{
     const tdOps=el('td',{},[ String(s.numeroOperarios ?? '-') ]);
     const tdJornada=el('td',{},[ labelJornada(s.jornada) ]);
     const tdQr=el('td',{},[ qrBadge(s.qrEnabled) ]);
-    const tdQrLocation=el('td',{},[ qrLocationLabel(s) ]);
     const tdEstado=el('td',{},[ statusBadge(s.estado) ]);
     const tdAcc=el('td',{},[ actionsCell(s) ]);
-    tr.append(tdCodigo,tdNombre,tdDep,tdZone,tdOps,tdJornada,tdQr,tdQrLocation,tdEstado,tdAcc);
+    tr.append(tdCodigo,tdNombre,tdDep,tdZone,tdOps,tdJornada,tdQr,tdEstado,tdAcc);
     return tr;
   }
   function sedeCard(s){
@@ -248,8 +248,7 @@ export const SedesAdmin=(mount,deps={})=>{
         ['Zona',s.zonaNombre||zoneNameByCode(s.zonaCodigo)],
         ['Operarios',String(s.numeroOperarios ?? '-')],
         ['Jornada',labelJornada(s.jornada)],
-        ['QR',qrBadge(s.qrEnabled)],
-        ['Ubicacion QR',qrLocationLabel(s)]
+        ['QR',qrBadge(s.qrEnabled)]
       ],
       actions:actionsCell(s)
     });
@@ -277,9 +276,8 @@ export const SedesAdmin=(mount,deps={})=>{
   }
   function statusBadge(st){ return el('span',{className:'badge '+(st==='activo'?'badge--ok':'badge--off')},[st||'-']); }
   function qrBadge(enabled){ return el('span',{className:'badge '+(enabled===true?'badge--ok':'badge--off')},[enabled===true?'Activo':'Inactivo']); }
-  function qrLocationLabel(s){
-    if(!Number.isFinite(Number(s.qrLatitude)) || !Number.isFinite(Number(s.qrLongitude))) return '-';
-    return `${Number(s.qrLatitude).toFixed(6)}, ${Number(s.qrLongitude).toFixed(6)} (${Number(s.qrRadiusMeters||500)} m)`;
+  function hasSedeLocation(s){
+    return Boolean(sedeCoordinates(s));
   }
   function formatDate(ts){ try{ const d=ts?.toDate? ts.toDate(): (ts? new Date(ts): null); return d? new Date(d).toLocaleString(): '-'; }catch{ return '-'; } }
   function auditInfoData(s){
@@ -290,9 +288,59 @@ export const SedesAdmin=(mount,deps={})=>{
       date: hasMod ? formatDate(s.lastModifiedAt) : formatDate(s.createdAt)
     };
   }
+  function openSedeInfoModal(s){
+    showInfoModal(`Informacion de la sede - ${s?.nombre||'-'}`,[sedeDetailContent(s)]);
+  }
+  function sedeDetailContent(s={}){
+    const audit=auditInfoData(s);
+    const coords=sedeCoordinates(s);
+    return el('div',{className:'employee-detail'},[
+      detailSection('Datos generales',[
+        ['Codigo',s.codigo],
+        ['Nombre',s.nombre],
+        ['Estado',statusBadge(s.estado)],
+        ['Dependencia',s.dependenciaNombre||depNameByCode(s.dependenciaCodigo)],
+        ['Codigo dependencia',s.dependenciaCodigo],
+        ['Zona',s.zonaNombre||zoneNameByCode(s.zonaCodigo)],
+        ['Codigo zona',s.zonaCodigo],
+        ['Operarios',String(s.numeroOperarios ?? '-')],
+        ['Jornada',labelJornada(s.jornada)]
+      ]),
+      detailSection('Datos especificos',[
+        ['QR',qrBadge(s.qrEnabled)],
+        ['Ubicacion sede',sedeLocationLabel(s)],
+        ['Latitud',coords ? coords.latitude.toFixed(6) : '-'],
+        ['Longitud',coords ? coords.longitude.toFixed(6) : '-'],
+        ['Radio validacion QR',`${parsePositiveInteger(s.qrRadiusMeters,500)} m`]
+      ]),
+      detailSection('Auditoria',[
+        ['Evento',audit.action],
+        ['Usuario',audit.user],
+        ['Fecha evento',audit.date],
+        ['Creado por',s.createdByEmail||s.createdByUid],
+        ['Fecha creacion',formatDate(s.createdAt)],
+        ['Ultima modificacion por',s.lastModifiedByEmail||s.lastModifiedByUid],
+        ['Fecha ultima modificacion',formatDate(s.lastModifiedAt)]
+      ])
+    ]);
+  }
+  function detailSection(title,items=[]){
+    return el('section',{className:'employee-detail__section'},[
+      el('h4',{className:'employee-detail__heading'},[title]),
+      el('dl',{className:'employee-detail__grid'},items.map(([label,value])=> el('div',{className:'employee-detail__item'},[
+        el('dt',{},[label]),
+        el('dd',{},[detailValue(value)])
+      ])))
+    ]);
+  }
+  function detailValue(value){
+    if(typeof Node!=='undefined' && value instanceof Node) return value;
+    const text=String(value ?? '').trim();
+    return text || '-';
+  }
   function activeQrSedeOptions(){
     return [...snapshot]
-      .filter((row)=> row?.qrEnabled===true && String(row?.estado||'activo').trim().toLowerCase()==='activo' && String(row?.codigo||'').trim())
+      .filter((row)=> row?.qrEnabled===true && hasSedeLocation(row) && String(row?.estado||'activo').trim().toLowerCase()==='activo' && String(row?.codigo||'').trim())
       .sort((a,b)=> String(a.nombre||a.codigo||'').localeCompare(String(b.nombre||b.codigo||'')))
       .map((row)=> ({ value:String(row.codigo||'').trim(), label:`${row.nombre||row.codigo||'-'} (${row.codigo||'-'})` }));
   }
@@ -321,6 +369,7 @@ export const SedesAdmin=(mount,deps={})=>{
   async function openRegisterQrDeviceModal(s){
     const canManageQrDevices=can(PERMS.MANAGE_QR_DEVICES);
     if(s.qrEnabled!==true) return alert('Activa QR en la sede para registrar tablets.');
+    if(!hasSedeLocation(s)) return alert('Registra una ubicacion valida de la sede antes de usar QR.');
     if(!canManageQrDevices) return alert('No tienes permiso para administrar tablets QR.');
     const sedeOptions=activeQrSedeOptions();
     const modal=await showActionModal({
@@ -394,9 +443,9 @@ export const SedesAdmin=(mount,deps={})=>{
             { value:'true', label:'Activo' }
           ]
         },
-        { id:'qrLatitude', label:'Latitud QR', type:'number', step:'0.000001', value:s.qrLatitude ?? '', placeholder:'Ej: 6.244203' },
-        { id:'qrLongitude', label:'Longitud QR', type:'number', step:'0.000001', value:s.qrLongitude ?? '', placeholder:'Ej: -75.581212' },
-        { id:'qrRadiusMeters', label:'Radio QR (m)', type:'number', min:'1', step:'1', value:String(s.qrRadiusMeters || 500) },
+        { id:'qrLatitude', label:'Latitud sede', type:'number', step:'0.000001', value:s.qrLatitude ?? '', placeholder:'Ej: 6.244203' },
+        { id:'qrLongitude', label:'Longitud sede', type:'number', step:'0.000001', value:s.qrLongitude ?? '', placeholder:'Ej: -75.581212' },
+        { id:'qrRadiusMeters', label:'Radio validacion QR (m)', type:'number', min:'1', step:'1', value:String(s.qrRadiusMeters || 500) },
         { id:'detail', label:'Detalle de la modificacion', type:'textarea', required:true, placeholder:'Describe brevemente el cambio realizado' }
       ]
     });
@@ -415,7 +464,8 @@ export const SedesAdmin=(mount,deps={})=>{
     if(!newDepCode||!newZoneCode) return alert('Selecciona dependencia y zona.');
     const newOps=Number(newOpsRaw);
     if(!Number.isFinite(newOps) || newOps<0 || !Number.isInteger(newOps)) return alert('Ingresa un numero entero de operarios valido.');
-    if(newQrEnabled && (!Number.isFinite(newQrLatitude) || !Number.isFinite(newQrLongitude))) return alert('Para activar QR debes configurar latitud y longitud.');
+    if((newQrLatitude!==null || newQrLongitude!==null) && !hasValidSedeLocation(newQrLatitude, newQrLongitude)) return alert('Registra una ubicacion valida de la sede.');
+    if(newQrEnabled && !hasValidSedeLocation(newQrLatitude, newQrLongitude)) return alert('Para activar QR debes registrar una ubicacion valida de la sede.');
     try{
       if(newCode!==s.codigo){ const dup=await deps.findSedeByCode?.(newCode); if(dup && dup.id!==s.id) return alert('Ya existe una sede con ese codigo.'); }
       const newDep=depList.find(d=>d.codigo===newDepCode);
@@ -440,11 +490,14 @@ export const SedesAdmin=(mount,deps={})=>{
   function actionsCell(s){
     const box=el('div',{className:'row-actions'},[]);
     const canManageQrDevices=can(PERMS.MANAGE_QR_DEVICES);
-    const qrDisabledReason=s.qrEnabled!==true?'Activa QR en la sede para registrar tablets':'No tienes permiso para administrar tablets QR';
+    const hasLocation=hasSedeLocation(s);
+    const qrDisabledReason=s.qrEnabled!==true
+      ? 'Activa QR en la sede para registrar tablets'
+      : (!hasLocation ? 'Registra la ubicacion de la sede para usar QR' : 'No tienes permiso para administrar tablets QR');
     const btnInfo=el('button',{className:'btn btn--icon',type:'button',title:'Ver informacion','aria-label':'Ver informacion'},[infoIcon()]);
-    btnInfo.addEventListener('click',()=>{ const info=auditInfoData(s); showInfoModal('Informacion del registro',[`Evento: ${info.action}`,`Usuario: ${info.user}`,`Fecha: ${info.date}`]); });
-    const btnQr=el('button',{className:'btn btn--icon',type:'button',title:canManageQrDevices && s.qrEnabled===true?'Registrar tablet QR':qrDisabledReason,'aria-label':'Registrar tablet QR'},[lucideInlineIcon('qr-code','QR')]);
-    btnQr.disabled=s.qrEnabled!==true || !canManageQrDevices;
+    btnInfo.addEventListener('click',()=> openSedeInfoModal(s));
+    const btnQr=el('button',{className:'btn btn--icon',type:'button',title:canManageQrDevices && s.qrEnabled===true && hasLocation?'Registrar tablet QR':qrDisabledReason,'aria-label':'Registrar tablet QR'},[lucideInlineIcon('qr-code','QR')]);
+    btnQr.disabled=s.qrEnabled!==true || !canManageQrDevices || !hasLocation;
     btnQr.addEventListener('click',()=> openRegisterQrDeviceModal(s));
     if(canEdit){
       const btnMore=el('button',{className:'btn btn--icon',type:'button',title:'Mas opciones','aria-label':'Mas opciones'},[moreIcon()]);

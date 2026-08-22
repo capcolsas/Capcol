@@ -1,4 +1,4 @@
-import { el, qs } from './dom.js';
+import { el, lucideInlineIcon, qs } from './dom.js';
 
 const DEFAULT_PAGE_SIZE = 50;
 const PAGE_SIZES = [25, 50, 100, 200];
@@ -7,7 +7,8 @@ export function createTablePagination(scope, {
   id = 'table',
   after = null,
   defaultPageSize = DEFAULT_PAGE_SIZE,
-  onChange = null
+  onChange = null,
+  compactNav = true
 } = {}) {
   const safeId = String(id || 'table').replace(/[^a-zA-Z0-9_-]/g, '');
   const controls = el('div', {
@@ -21,10 +22,10 @@ export function createTablePagination(scope, {
       el('select', { id: `${safeId}PageSize`, className: 'input wa-input', style: 'width:auto;min-width:88px;' }, PAGE_SIZES.map((size) => (
         el('option', { value: String(size), selected: size === defaultPageSize }, [String(size)])
       ))),
-      el('button', { id: `${safeId}ToggleAll`, className: 'btn', type: 'button' }, ['Ver todos']),
-      el('button', { id: `${safeId}PrevPage`, className: 'btn', type: 'button' }, ['Anterior']),
+      toggleAllButton(`${safeId}ToggleAll`, compactNav),
+      navButton(`${safeId}PrevPage`, 'Anterior', 'chevron-left', compactNav),
       el('span', { id: `${safeId}PageIndicator`, className: 'text-muted', style: 'font-size:.86rem;min-width:96px;text-align:center;' }, ['Pagina 0 de 0']),
-      el('button', { id: `${safeId}NextPage`, className: 'btn', type: 'button' }, ['Siguiente'])
+      navButton(`${safeId}NextPage`, 'Siguiente', 'chevron-right', compactNav)
     ])
   ]);
 
@@ -75,7 +76,16 @@ export function createTablePagination(scope, {
     if (indicator) indicator.textContent = state.showAll ? 'Todos los registros' : (totalRows ? `Pagina ${state.currentPage} de ${totalPages}` : 'Pagina 0 de 0');
     if (pageSizeSelect) pageSizeSelect.value = String(state.pageSize);
     if (pageSizeSelect) pageSizeSelect.disabled = state.showAll;
-    if (toggleAll) toggleAll.textContent = state.showAll ? 'Usar paginas' : 'Ver todos';
+    if (toggleAll) {
+      const label = state.showAll ? 'Usar paginas' : 'Ver todos';
+      if (compactNav) {
+        toggleAll.title = label;
+        toggleAll.setAttribute('aria-label', label);
+        toggleAll.replaceChildren(lucideInlineIcon(state.showAll ? 'list' : 'list-plus', label.slice(0, 1)));
+      } else {
+        toggleAll.textContent = label;
+      }
+    }
     if (prevPage) prevPage.disabled = state.showAll || totalRows === 0 || state.currentPage <= 1;
     if (nextPage) nextPage.disabled = state.showAll || totalRows === 0 || state.currentPage >= totalPages;
   };
@@ -98,4 +108,25 @@ export function createTablePagination(scope, {
     slice,
     state
   };
+}
+
+function navButton(id, label, icon, compact = false) {
+  return el('button', {
+    id,
+    className: compact ? 'btn btn--icon' : 'btn',
+    type: 'button',
+    title: label,
+    'aria-label': label
+  }, compact ? [lucideInlineIcon(icon, label.slice(0, 1))] : [label]);
+}
+
+function toggleAllButton(id, compact = false) {
+  const label = 'Ver todos';
+  return el('button', {
+    id,
+    className: compact ? 'btn btn--icon' : 'btn',
+    type: 'button',
+    title: label,
+    'aria-label': label
+  }, compact ? [lucideInlineIcon('list-plus', 'V')] : [label]);
 }

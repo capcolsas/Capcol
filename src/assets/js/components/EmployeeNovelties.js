@@ -3,6 +3,7 @@ import { showInfoModal } from '../utils/infoModal.js';
 import { createTablePagination } from '../utils/pagination.js';
 import { showActionModal } from '../utils/actionModal.js';
 import { can, PERMS } from '../permissions.js';
+import { subscribe } from '../state.js';
 
 const ACTIONS = {
   create_employee: { type: 'create', label: 'Creacion' },
@@ -15,7 +16,6 @@ const ACTIONS = {
 
 export const EmployeeNovelties = (mount, deps = {}) => {
   const today = todayBogota();
-  const canManageSchedules = can(PERMS.MANAGE_EMPLOYEE_SCHEDULES);
   const ui = el('section', { className: 'main-card' }, [
     el('h2', {}, ['Novedades de empleados']),
     el('p', { className: 'text-muted' }, ['Consulta altas, traslados, cambios de cargo y retiros registrados desde el modulo de empleados.']),
@@ -117,6 +117,8 @@ export const EmployeeNovelties = (mount, deps = {}) => {
     cargos = rows || [];
     render();
   }) || (() => {});
+  const unRoleMatrix = subscribe('roleMatrix', render);
+  const unUserOverrides = subscribe('userOverrides', render);
 
   scheduleRangeLoad(0);
   render();
@@ -126,6 +128,8 @@ export const EmployeeNovelties = (mount, deps = {}) => {
     clearTimeout(loadTimer);
     unSedes?.();
     unCargos?.();
+    unRoleMatrix?.();
+    unUserOverrides?.();
   };
 
   function scheduleRangeLoad(delay = 250) {
@@ -316,6 +320,7 @@ export const EmployeeNovelties = (mount, deps = {}) => {
       });
       ordered.forEach((item, index) => {
         const employee = employeeByHistoryRow(item);
+        const previousHistoryItem = previousHistoryItemFor(item, ordered);
         const base = {
           id: `history:${item.id}:start`,
           date: toInputDate(item.fechaIngreso || item.createdAt),
@@ -325,14 +330,14 @@ export const EmployeeNovelties = (mount, deps = {}) => {
           nombre: employee?.nombre || item.employeeCodigo || item.documento || '-',
           actorEmail: '-',
           note: sourceLabel(item.source),
-          before: index > 0 ? historyAssignmentData(ordered[index - 1]) : {},
+          before: previousHistoryItem ? historyAssignmentData(previousHistoryItem) : {},
           after: historyAssignmentData(item),
           employee,
           historyItem: item,
-          previousHistoryItem: index > 0 ? ordered[index - 1] : null,
+          previousHistoryItem,
           isProgrammed: isProgrammedHistoryRow(item)
         };
-        if (index === 0) {
+        if (!previousHistoryItem) {
           rows.push({
             ...base,
             type: 'create',
@@ -342,7 +347,7 @@ export const EmployeeNovelties = (mount, deps = {}) => {
           });
           return;
         }
-        const previous = ordered[index - 1];
+        const previous = previousHistoryItem;
         const sedeChanged = String(previous?.sedeCodigo || '').trim() !== String(item?.sedeCodigo || '').trim();
         const cargoChanged = String(previous?.cargoCodigo || '').trim() !== String(item?.cargoCodigo || '').trim();
         if (!sedeChanged && !cargoChanged) return;
@@ -452,16 +457,63 @@ export const EmployeeNovelties = (mount, deps = {}) => {
   function actionsCell(row) {
     const btnInfo = el('button', { className: 'btn btn--icon', type: 'button', title: 'Ver informacion', 'aria-label': 'Ver informacion' }, [infoIcon()]);
     btnInfo.addEventListener('click', () => showInfo(row));
-    const actions = [];
-    if (canManageSchedules && row.source === 'history' && row.isProgrammed && row.previousHistoryItem) {
-      const btnEdit = el('button', { className: 'btn btn--icon', type: 'button', title: 'Editar programacion', 'aria-label': 'Editar programacion' }, [editIcon()]);
+    const editState = programmedEditState(row);
+    const btnEdit = el('button', {
+      className: 'btn btn--icon',
+      type: 'button',
+      title: editState.reason || 'Editar programacion',
+      'aria-label': editState.reason || 'Editar programacion'
+    }, [editIcon()]);
+    btnEdit.disabled = !editState.enabled;
+    if (editState.enabled) {
       btnEdit.addEventListener('click', () => editProgrammedAssignment(row));
-      const btnCancel = el('button', { className: 'btn btn--icon btn--danger', type: 'button', title: 'Cancelar programacion', 'aria-label': 'Cancelar programacion' }, [cancelIcon()]);
-      btnCancel.addEventListener('click', () => cancelProgrammedAssignment(row));
-      actions.push(btnEdit, btnCancel);
     }
-    actions.push(btnInfo);
-    return el('div', { className: 'row-actions' }, actions);
+    const cancelState = programmedCancelState(row);
+    const btnCancel = el('button', {
+      className: 'btn btn--icon btn--danger',
+      type: 'button',
+      title: cancelState.reason || 'Cancelar programacion',
+      'aria-label': cancelState.reason || 'Cancelar programacion'
+    }, [cancelIcon()]);
+    btnCancel.disabled = !cancelState.enabled;
+    if (cancelState.enabled) {
+      btnCancel.addEventListener('click', () => cancelProgrammedAssignment(row));
+    }
+    return el('div', { className: 'row-actions' }, [btnEdit, btnCancel, btnInfo]);
+  }
+
+  function programmedEditState(row = {}) {
+    if (!can(PERMS.MANAGE_EMPLOYEE_SCHEDULES)) return { enabled: false, reason: 'No tienes permiso para editar programaciones' };
+    if (row.source !== 'history') return { enabled: false, reason: 'Solo aplica para programaciones del historial operativo' };
+    if (!row.isProgrammed) return { enabled: false, reason: 'Solo aplica para programaciones futuras' };
+    if (typeof deps.updateProgrammedEmployeeAssignment !== 'function') return { enabled: false, reason: 'La edicion de programaciones no esta disponible' };
+    return { enabled: true, reason: '' };
+  }
+
+  function programmedCancelState(row = {}) {
+    if (!can(PERMS.MANAGE_EMPLOYEE_SCHEDULES)) return { enabled: false, reason: 'No tienes permiso para cancelar programaciones' };
+    if (row.source !== 'history') return { enabled: false, reason: 'Solo aplica para programaciones del historial operativo' };
+    if (!row.isProgrammed) return { enabled: false, reason: 'Solo aplica para programaciones futuras' };
+    if (!row.previousHistoryItem) return { enabled: false, reason: 'No hay historial anterior para restaurar al cancelar' };
+    if (typeof deps.cancelProgrammedEmployeeAssignment !== 'function') return { enabled: false, reason: 'La cancelacion de programaciones no esta disponible' };
+    return { enabled: true, reason: '' };
+  }
+
+  function previousHistoryItemFor(item = {}, ordered = []) {
+    const itemId = String(item?.id || '').trim();
+    const itemIngreso = toInputDate(item?.fechaIngreso || item?.createdAt);
+    return (ordered || [])
+      .filter((row) => String(row?.id || '').trim() !== itemId)
+      .filter((row) => {
+        const ingreso = toInputDate(row?.fechaIngreso || row?.createdAt);
+        return ingreso && itemIngreso && ingreso < itemIngreso;
+      })
+      .sort((left, right) => {
+        const a = toInputDate(left?.fechaIngreso || left?.createdAt);
+        const b = toInputDate(right?.fechaIngreso || right?.createdAt);
+        if (a !== b) return b.localeCompare(a);
+        return String(right?.createdAt || '').localeCompare(String(left?.createdAt || ''));
+      })[0] || null;
   }
 
   async function editProgrammedAssignment(row) {

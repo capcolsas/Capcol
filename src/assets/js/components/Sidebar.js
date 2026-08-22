@@ -42,12 +42,16 @@ export const Sidebar = (deps = {}) => {
     const adminLinks = [];
     if (can(PERMS.VIEW_ZONES)) adminLinks.push(navLink('Zonas', '/zones'));
     if (can(PERMS.VIEW_DEPENDENCIES)) adminLinks.push(navLink('Dependencias', '/dependencies'));
-    if (can(PERMS.VIEW_SEDES)) adminLinks.push(navLink('Sedes', '/sedes'));
     if (can(PERMS.VIEW_QR_SCANNER)) adminLinks.push(navLink('Lector QR', '/lector-qr'));
     if (can(PERMS.VIEW_QR_DEVICES)) adminLinks.push(navLink('Tablets QR', '/tablets-qr'));
     if (can(PERMS.VIEW_CARGOS)) adminLinks.push(navLink('Cargos', '/cargos'));
     if (can(PERMS.VIEW_NOVEDADES)) adminLinks.push(navLink('Novedades', '/novedades'));
     if (adminLinks.length) sections.push(section('Administracion', adminLinks, 'administracion', '/administracion-dashboard'));
+
+    const sedeLinks = [];
+    if (can(PERMS.VIEW_SEDES)) sedeLinks.push(navLink('Sedes', '/sedes'));
+    if (can(PERMS.VIEW_SEDES)) sedeLinks.push(navLink('Ubicacion sedes', '/sedes-ubicacion'));
+    if (sedeLinks.length) sections.push(section('Sedes', sedeLinks, 'sedes', '/sedes'));
 
     const shiftLinks = [];
     if (can(PERMS.VIEW_SHIFT_PLANS)) shiftLinks.push(navLink('Planes de turnos', '/turnos-planes'));
@@ -89,6 +93,7 @@ export const Sidebar = (deps = {}) => {
     const bulkLinks = [];
     if (can(PERMS.VIEW_BULK_UPLOAD_SEDES)) bulkLinks.push(navLink('Cargue sedes', '/bulk-upload-sedes'));
     if (can(PERMS.VIEW_BULK_UPLOAD_EMPLOYEES)) bulkLinks.push(navLink('Cargue empleados', '/bulk-upload'));
+    if (can(PERMS.VIEW_BULK_UPLOAD_EMPLOYEES)) bulkLinks.push(navLink('Actualizar empleados', '/bulk-update-employees'));
     if (bulkLinks.length) sections.push(section('Cargue masivo', bulkLinks, 'cargue_masivo', '/cargue-masivo-dashboard'));
 
   }
@@ -757,6 +762,7 @@ function getSectionIconMeta(key) {
   const map = {
     gobierno: { icon: 'shield-check', fallback: 'GO' },
     administracion: { icon: 'building-2', fallback: 'AD' },
+    sedes: { icon: 'map-pinned', fallback: 'SD' },
     turnos: { icon: 'calendar-clock', fallback: 'TU' },
     empleados: { icon: 'users', fallback: 'EM' },
     operacion: { icon: 'clipboard-check', fallback: 'OP' },
@@ -783,6 +789,7 @@ function getNavIconMeta(route) {
     '/zones': { icon: 'map', fallback: 'ZN' },
     '/dependencies': { icon: 'network', fallback: 'DP' },
     '/sedes': { icon: 'building-2', fallback: 'SD' },
+    '/sedes-ubicacion': { icon: 'map-pinned', fallback: 'US' },
     '/cargos': { icon: 'briefcase', fallback: 'CG' },
     '/novedades': { icon: 'list-checks', fallback: 'NV' },
     '/employees': { icon: 'badge', fallback: 'EM' },
@@ -791,6 +798,7 @@ function getNavIconMeta(route) {
     '/supernumerarios': { icon: 'user-plus', fallback: 'SN' },
     '/bulk-upload-sedes': { icon: 'building', fallback: 'BS' },
     '/bulk-upload': { icon: 'file-up', fallback: 'BE' },
+    '/bulk-update-employees': { icon: 'file-pen-line', fallback: 'AE' },
     '/imports': { icon: 'message-circle', fallback: 'WA' },
     '/whatsapp-live': { icon: 'message-circle', fallback: 'WA' },
     '/registros-vivo': { icon: 'message-circle', fallback: 'WA' },

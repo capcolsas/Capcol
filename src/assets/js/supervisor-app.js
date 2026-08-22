@@ -1,5 +1,5 @@
 import { Login } from './components/Login.js';
-import { el, qs } from './utils/dom.js';
+import { el, lucideInlineIcon, qs } from './utils/dom.js';
 import { installBrowserAlertReplacement } from './utils/notifications.js';
 import { ROLES } from './roles.js';
 
@@ -488,24 +488,28 @@ function paginationControls(key, page = {}) {
         }
       }, SUPERVISOR_PAGE_SIZE_OPTIONS.map((size) => option(String(size), String(size), String(state.pageSize)))),
       el('button', {
-        className: 'btn supervisor-page-btn',
+        className: 'btn btn--icon supervisor-page-btn',
         type: 'button',
+        title: 'Anterior',
+        'aria-label': 'Anterior',
         disabled: page.currentPage <= 1,
         onclick: () => {
           state.currentPage -= 1;
           renderApp();
         }
-      }, ['Anterior']),
+      }, [lucideInlineIcon('chevron-left', 'A')]),
       el('span', { className: 'supervisor-pagination__page' }, [`Pagina ${page.currentPage} de ${page.totalPages}`]),
       el('button', {
-        className: 'btn supervisor-page-btn',
+        className: 'btn btn--icon supervisor-page-btn',
         type: 'button',
+        title: 'Siguiente',
+        'aria-label': 'Siguiente',
         disabled: page.currentPage >= page.totalPages,
         onclick: () => {
           state.currentPage += 1;
           renderApp();
         }
-      }, ['Siguiente'])
+      }, [lucideInlineIcon('chevron-right', 'S')])
     ])
   ]);
 }

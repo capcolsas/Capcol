@@ -76,18 +76,20 @@ function renderShiftScreen(mount, deps = {}, { mode = 'plans' } = {}) {
         el('button', { id: 'btnGenerateShifts', className: 'btn', type: 'button', disabled: !canGenerate }, ['Activar plan']),
         el('span', { id: 'shiftMsg', className: 'text-muted' }, [' '])
       ]),
-      el('div', { className: 'table-wrap mt-2 responsive-table-view shift-plans-table-view' }, [
-        el('table', { className: 'table', id: 'tblShiftPlans' }, [
-          el('thead', {}, [el('tr', {}, [
-            el('th', {}, ['Plan']),
-            el('th', {}, ['Horarios']),
-            el('th', {}, ['Estado']),
-            el('th', {}, ['Acciones'])
-          ])]),
-          el('tbody', {})
-        ])
-      ]),
-      el('div', { id: 'shiftPlanCards', className: 'record-card-list shift-plan-card-list mt-2' }, [])
+      el('div', { className: 'responsive-records mt-2' }, [
+        el('div', { className: 'table-wrap responsive-table-view shift-plans-table-view' }, [
+          el('table', { className: 'table', id: 'tblShiftPlans' }, [
+            el('thead', {}, [el('tr', {}, [
+              el('th', {}, ['Plan']),
+              el('th', {}, ['Horarios']),
+              el('th', {}, ['Estado']),
+              el('th', {}, ['Acciones'])
+            ])]),
+            el('tbody', {})
+          ])
+        ]),
+        el('div', { id: 'shiftPlanCards', className: 'record-card-list shift-plan-card-list' }, [])
+      ])
     ]);
   }
 
@@ -101,19 +103,21 @@ function renderShiftScreen(mount, deps = {}, { mode = 'plans' } = {}) {
         el('button', { id: 'btnLoadGeneratedShifts', className: 'btn btn--primary', type: 'button' }, ['Consultar planes activos']),
         el('span', { id: 'generatedShiftMsg', className: 'text-muted' }, ['Sin consulta.'])
       ]),
-      el('div', { className: 'table-wrap mt-2 responsive-table-view shift-generated-table-view' }, [
-        el('table', { className: 'table', id: 'tblGeneratedShifts' }, [
-          el('thead', {}, [el('tr', {}, [
-            el('th', {}, ['Sede']),
-            el('th', {}, ['Plan activo']),
-            el('th', {}, ['Operarios']),
-            el('th', {}, ['Asignacion']),
-            el('th', {}, ['Acciones'])
-          ])]),
-          el('tbody', {})
-        ])
-      ]),
-      el('div', { id: 'shiftGeneratedCards', className: 'record-card-list shift-generated-card-list mt-2' }, [])
+      el('div', { className: 'responsive-records mt-2' }, [
+        el('div', { className: 'table-wrap responsive-table-view shift-generated-table-view' }, [
+          el('table', { className: 'table', id: 'tblGeneratedShifts' }, [
+            el('thead', {}, [el('tr', {}, [
+              el('th', {}, ['Sede']),
+              el('th', {}, ['Plan activo']),
+              el('th', {}, ['Operarios']),
+              el('th', {}, ['Asignacion']),
+              el('th', {}, ['Acciones'])
+            ])]),
+            el('tbody', {})
+          ])
+        ]),
+        el('div', { id: 'shiftGeneratedCards', className: 'record-card-list shift-generated-card-list' }, [])
+      ])
     ]);
   }
 
@@ -131,39 +135,43 @@ function renderShiftScreen(mount, deps = {}, { mode = 'plans' } = {}) {
       ]),
       el('div', { className: 'section-block mt-2' }, [
         el('h3', { className: 'section-title' }, ['Pendientes de revision']),
-        el('div', { className: 'table-wrap mt-1 responsive-table-view shift-review-table-view' }, [
-          el('table', { className: 'table', id: 'tblShiftReview' }, [
-            el('thead', {}, [el('tr', {}, [
-              el('th', {}, ['Fecha']),
-              el('th', {}, ['Sede']),
-              el('th', {}, ['Turno']),
-              el('th', {}, ['Empleado']),
-              el('th', {}, ['Estado']),
-              el('th', {}, ['Tiempo']),
-              el('th', {}, ['Acciones'])
-            ])]),
-            el('tbody', {})
-          ])
-        ]),
-        el('div', { id: 'shiftReviewCards', className: 'record-card-list shift-review-card-list mt-2' }, [])
+        el('div', { id: 'shiftReviewRecords', className: 'responsive-records mt-1' }, [
+          el('div', { className: 'table-wrap responsive-table-view shift-review-table-view' }, [
+            el('table', { className: 'table', id: 'tblShiftReview' }, [
+              el('thead', {}, [el('tr', {}, [
+                el('th', {}, ['Fecha']),
+                el('th', {}, ['Sede']),
+                el('th', {}, ['Turno']),
+                el('th', {}, ['Empleado']),
+                el('th', {}, ['Estado']),
+                el('th', {}, ['Tiempo']),
+                el('th', {}, ['Acciones'])
+              ])]),
+              el('tbody', {})
+            ])
+          ]),
+          el('div', { id: 'shiftReviewCards', className: 'record-card-list shift-review-card-list' }, [])
+        ])
       ]),
       el('div', { className: 'section-block mt-2' }, [
         el('h3', { className: 'section-title' }, ['Cierres recientes']),
-        el('div', { className: 'table-wrap mt-1 responsive-table-view shift-closures-table-view' }, [
-          el('table', { className: 'table', id: 'tblShiftClosures' }, [
-            el('thead', {}, [el('tr', {}, [
-              el('th', {}, ['Fecha']),
-              el('th', {}, ['Sede']),
-              el('th', {}, ['Turno']),
-              el('th', {}, ['Registrados']),
-              el('th', {}, ['Faltantes']),
-              el('th', {}, ['Salidas pendientes']),
-              el('th', {}, ['Acciones'])
-            ])]),
-            el('tbody', {})
-          ])
-        ]),
-        el('div', { id: 'shiftClosureCards', className: 'record-card-list shift-closure-card-list mt-2' }, [])
+        el('div', { id: 'shiftClosureRecords', className: 'responsive-records mt-1' }, [
+          el('div', { className: 'table-wrap responsive-table-view shift-closures-table-view' }, [
+            el('table', { className: 'table', id: 'tblShiftClosures' }, [
+              el('thead', {}, [el('tr', {}, [
+                el('th', {}, ['Fecha']),
+                el('th', {}, ['Sede']),
+                el('th', {}, ['Turno']),
+                el('th', {}, ['Registrados']),
+                el('th', {}, ['Faltantes']),
+                el('th', {}, ['Salidas pendientes']),
+                el('th', {}, ['Acciones'])
+              ])]),
+              el('tbody', {})
+            ])
+          ]),
+          el('div', { id: 'shiftClosureCards', className: 'record-card-list shift-closure-card-list' }, [])
+        ])
       ])
     ]);
   }
@@ -198,21 +206,40 @@ function renderShiftScreen(mount, deps = {}, { mode = 'plans' } = {}) {
   const msg = qs('#shiftMsg', ui);
   const generatedMsg = qs('#generatedShiftMsg', ui);
   const reviewMsg = qs('#shiftReviewMsg', ui);
+  const planPaginator = !isGeneratedScreen && !isReviewScreen
+    ? createTablePagination(ui, { id: 'shiftPlans', after: '#shiftPlansPanel .responsive-records', onChange: render })
+    : null;
   const generatedPaginator = isGeneratedScreen
-    ? createTablePagination(ui, { id: 'generatedShifts', after: '#shiftGeneratedCards', onChange: renderGeneratedShifts })
+    ? createTablePagination(ui, { id: 'generatedShifts', after: '#shiftGeneratedPanel .responsive-records', onChange: renderGeneratedShifts })
+    : null;
+  const reviewPaginator = isReviewScreen
+    ? createTablePagination(ui, { id: 'shiftReviewRows', after: '#shiftReviewRecords', onChange: renderShiftReview })
+    : null;
+  const closurePaginator = isReviewScreen
+    ? createTablePagination(ui, { id: 'shiftClosureRows', after: '#shiftClosureRecords', onChange: renderShiftReview })
     : null;
 
   qs('#btnNewPlan', ui)?.addEventListener('click', () => openPlanModal(null));
   qs('#btnGenerateShifts', ui)?.addEventListener('click', openGenerateShiftsModal);
-  qs('#shiftSearch', ui)?.addEventListener('input', render);
+  qs('#shiftSearch', ui)?.addEventListener('input', () => {
+    planPaginator?.reset();
+    render();
+  });
   qs('#btnLoadGeneratedShifts', ui)?.addEventListener('click', () => loadGeneratedShifts());
-  qs('#btnLoadShiftReview', ui)?.addEventListener('click', () => loadShiftReview());
+  qs('#btnLoadShiftReview', ui)?.addEventListener('click', () => {
+    resetReviewPaginators();
+    loadShiftReview();
+  });
   ['#generatedSede', '#generatedPlan'].forEach((selector) => {
     qs(selector, ui)?.addEventListener('change', () => {
       generatedPaginator?.reset();
+      resetReviewPaginators();
       if (generatedLoaded) loadGeneratedShifts();
       if (reviewLoaded) loadShiftReview({ silent: true });
     });
+  });
+  ['#shiftReviewFrom', '#shiftReviewTo'].forEach((selector) => {
+    qs(selector, ui)?.addEventListener('change', resetReviewPaginators);
   });
 
   function notify(message, type = 'info') {
@@ -443,10 +470,11 @@ function renderShiftScreen(mount, deps = {}, { mode = 'plans' } = {}) {
     refreshGeneratedFilterOptions();
     if (!isGeneratedScreen && !isReviewScreen) {
       const rows = filteredTemplates();
-      planBody.replaceChildren(...(rows.length ? rows.map(planRow) : [
+      const pageRows = planPaginator?.slice(rows) || rows;
+      planBody.replaceChildren(...(pageRows.length ? pageRows.map(planRow) : [
         el('tr', {}, [el('td', { colSpan: 4, className: 'text-muted' }, ['Sin planes de turno.'])])
       ]));
-      planCards.replaceChildren(...(rows.length ? rows.map(planCard) : [
+      planCards.replaceChildren(...(pageRows.length ? pageRows.map(planCard) : [
         el('p', { className: 'text-muted record-card__empty' }, ['Sin planes de turno.'])
       ]));
       msg.textContent = `${rows.length} planes`;
@@ -468,6 +496,11 @@ function renderShiftScreen(mount, deps = {}, { mode = 'plans' } = {}) {
       dateFrom: String(qs('#shiftReviewFrom', ui)?.value || addIsoDays(todayBogota(), -7)).trim(),
       dateTo: String(qs('#shiftReviewTo', ui)?.value || todayBogota()).trim()
     };
+  }
+
+  function resetReviewPaginators() {
+    reviewPaginator?.reset();
+    closurePaginator?.reset();
   }
 
   async function loadGeneratedShifts({ silent = false } = {}) {
@@ -605,18 +638,22 @@ function renderShiftScreen(mount, deps = {}, { mode = 'plans' } = {}) {
       reviewCards?.replaceChildren(el('p', { className: 'text-muted record-card__empty' }, ['Usa Consultar revision para ver novedades de turnos cerrados o fuera de ventana.']));
       closureBody.replaceChildren(el('tr', {}, [el('td', { colSpan: 7, className: 'text-muted' }, ['Usa Consultar revision para ver cierres recientes.'])]));
       closureCards?.replaceChildren(el('p', { className: 'text-muted record-card__empty' }, ['Usa Consultar revision para ver cierres recientes.']));
+      reviewPaginator?.slice([]);
+      closurePaginator?.slice([]);
       return;
     }
-    reviewBody.replaceChildren(...(shiftReviewRows.length ? shiftReviewRows.map(shiftReviewRow) : [
+    const reviewPageRows = reviewPaginator?.slice(shiftReviewRows) || shiftReviewRows;
+    const closurePageRows = closurePaginator?.slice(shiftClosureRows) || shiftClosureRows;
+    reviewBody.replaceChildren(...(reviewPageRows.length ? reviewPageRows.map(shiftReviewRow) : [
       el('tr', {}, [el('td', { colSpan: 7, className: 'text-muted' }, ['Sin pendientes de revision en el rango.'])])
     ]));
-    reviewCards?.replaceChildren(...(shiftReviewRows.length ? shiftReviewRows.map(shiftReviewCard) : [
+    reviewCards?.replaceChildren(...(reviewPageRows.length ? reviewPageRows.map(shiftReviewCard) : [
       el('p', { className: 'text-muted record-card__empty' }, ['Sin pendientes de revision en el rango.'])
     ]));
-    closureBody.replaceChildren(...(shiftClosureRows.length ? shiftClosureRows.map(shiftClosureRow) : [
+    closureBody.replaceChildren(...(closurePageRows.length ? closurePageRows.map(shiftClosureRow) : [
       el('tr', {}, [el('td', { colSpan: 7, className: 'text-muted' }, ['Sin cierres de turno en el rango.'])])
     ]));
-    closureCards?.replaceChildren(...(shiftClosureRows.length ? shiftClosureRows.map(shiftClosureCard) : [
+    closureCards?.replaceChildren(...(closurePageRows.length ? closurePageRows.map(shiftClosureCard) : [
       el('p', { className: 'text-muted record-card__empty' }, ['Sin cierres de turno en el rango.'])
     ]));
   }

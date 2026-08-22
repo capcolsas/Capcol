@@ -19,6 +19,7 @@ import { UsersAdmin } from './components/UsersAdmin.js';
 import { ZonesAdmin } from './components/ZonesAdmin.js';
 import { DependenciesAdmin } from './components/DependenciesAdmin.js';
 import { SedesAdmin } from './components/SedesAdmin.js';
+import { SedeLocationsAdmin } from './components/SedeLocationsAdmin.js';
 import { EmployeesAdmin } from './components/EmployeesAdmin.js';
 import { EmployeeNovelties } from './components/EmployeeNovelties.js';
 import { SupernumerariosAdmin } from './components/SupernumerariosAdmin.js';
@@ -26,6 +27,7 @@ import { SupervisorsAdmin } from './components/SupervisorsAdmin.js';
 import { CargosAdmin } from './components/CargosAdmin.js';
 import { NovedadesAdmin } from './components/NovedadesAdmin.js';
 import { CargueMasivoAdmin } from './components/CargueMasivoAdmin.js';
+import { EmployeeBulkUpdateAdmin } from './components/EmployeeBulkUpdateAdmin.js';
 import { CargueMasivoSedesAdmin } from './components/CargueMasivoSedesAdmin.js';
 import { ImportHistory } from './components/ImportHistory.js';
 import { Absenteeism } from './components/Absenteeism.js';
@@ -118,7 +120,7 @@ const guardWrite=(perm,fn)=> async (...args)=>{
         streamEmployees:fb.streamEmployees, countActiveEmployees:fb.countActiveEmployees, listEmployeesAdminPage:fb.listEmployeesAdminPage, watchEmployeesAdminChanges:fb.watchEmployeesAdminChanges, listCurrentEmployees:fb.listCurrentEmployees, listEmployeeDashboardPeople:fb.listEmployeeDashboardPeople, listEmployeesByIdentity:fb.listEmployeesByIdentity, getEmployeeLastAttendanceDay:fb.getEmployeeLastAttendanceDay, streamCurrentEmployees:fb.streamCurrentEmployees, streamActiveBaseEmployees:fb.streamActiveBaseEmployees, createEmployee:guardWrite(PERMS.EDIT_EMPLOYEES,fb.createEmployee), rehireEmployee:guardWrite(PERMS.EDIT_EMPLOYEES,fb.rehireEmployee), updateEmployee:guardWrite(PERMS.EDIT_EMPLOYEES,fb.updateEmployee), setEmployeeStatus:guardWrite(PERMS.EDIT_EMPLOYEES,fb.setEmployeeStatus), updateProgrammedEmployeeAssignment:guardWrite(PERMS.MANAGE_EMPLOYEE_SCHEDULES,fb.updateProgrammedEmployeeAssignment), cancelProgrammedEmployeeAssignment:guardWrite(PERMS.MANAGE_EMPLOYEE_SCHEDULES,fb.cancelProgrammedEmployeeAssignment), findEmployeeByCode:fb.findEmployeeByCode, findEmployeeByDocument:fb.findEmployeeByDocument, getNextEmployeeCode:fb.getNextEmployeeCode,
         generateEmployeeCertificate:fb.generateEmployeeCertificate,
         streamEmployeeCargoHistory:fb.streamEmployeeCargoHistory, streamEmployeeCargoHistoryAll:fb.streamEmployeeCargoHistoryAll, listEmployeeCargoHistoryRange:fb.listEmployeeCargoHistoryRange, listEmployeeCargoHistoryForEmployees:fb.listEmployeeCargoHistoryForEmployees,
-        createEmployeesBulk:guardWrite(PERMS.BULK_UPLOAD_EMPLOYEES,fb.createEmployeesBulk),
+        createEmployeesBulk:guardWrite(PERMS.BULK_UPLOAD_EMPLOYEES,fb.createEmployeesBulk), updateEmployeesBulk:guardWrite(PERMS.BULK_UPLOAD_EMPLOYEES,fb.updateEmployeesBulk),
         streamSupernumerarios:fb.streamSupernumerarios, listSupervisorAvailableSupernumerarios:fb.listSupervisorAvailableSupernumerarios, createSupernumerario:guardWrite(PERMS.EDIT_SUPERNUMERARIOS,fb.createSupernumerario), updateSupernumerario:guardWrite(PERMS.EDIT_SUPERNUMERARIOS,fb.updateSupernumerario), setSupernumerarioStatus:guardWrite(PERMS.EDIT_SUPERNUMERARIOS,fb.setSupernumerarioStatus), findSupernumerarioByCode:fb.findSupernumerarioByCode, findSupernumerarioByDocument:fb.findSupernumerarioByDocument, getNextSupernumerarioCode:fb.getNextSupernumerarioCode,
         streamCargos:fb.streamCargos, countActiveCargos:fb.countActiveCargos, createCargo:guardWrite(PERMS.EDIT_CARGOS,fb.createCargo), updateCargo:guardWrite(PERMS.EDIT_CARGOS,fb.updateCargo), setCargoStatus:guardWrite(PERMS.EDIT_CARGOS,fb.setCargoStatus), findCargoByCode:fb.findCargoByCode, getNextCargoCode:fb.getNextCargoCode,
         streamNovedades:fb.streamNovedades, countActiveNovedades:fb.countActiveNovedades, createNovedad:guardWrite(PERMS.EDIT_NOVEDADES,fb.createNovedad), updateNovedad:guardWrite(PERMS.EDIT_NOVEDADES,fb.updateNovedad), setNovedadStatus:guardWrite(PERMS.EDIT_NOVEDADES,fb.setNovedadStatus), findNovedadByCode:fb.findNovedadByCode, findNovedadByCodigoNovedad:fb.findNovedadByCodigoNovedad, getNextNovedadCode:fb.getNextNovedadCode,
@@ -204,17 +206,19 @@ const guardWrite=(perm,fn)=> async (...args)=>{
   addRoute('/permissions-audit', ()=> requireAuth(()=> { if(!isSuperAdmin() && !can(PERMS.VIEW_AUDIT)) return block('No tienes permiso para consultar auditoria.'); return PermissionsAudit(root, deps); }));
 
   // Administración
-  addRoute('/administracion-dashboard', ()=> requireAuth(()=> guardAny([PERMS.VIEW_ZONES, PERMS.VIEW_DEPENDENCIES, PERMS.VIEW_SEDES, PERMS.VIEW_QR_SCANNER, PERMS.VIEW_QR_DEVICES, PERMS.VIEW_CARGOS, PERMS.VIEW_NOVEDADES], ()=> AdministracionDashboard(root, deps))));
+  addRoute('/administracion-dashboard', ()=> requireAuth(()=> guardAny([PERMS.VIEW_ZONES, PERMS.VIEW_DEPENDENCIES, PERMS.VIEW_QR_SCANNER, PERMS.VIEW_QR_DEVICES, PERMS.VIEW_CARGOS, PERMS.VIEW_NOVEDADES], ()=> AdministracionDashboard(root, deps))));
   addRoute('/users', ()=> requireAuth(()=> guard(PERMS.VIEW_USERS, ()=> UsersAdmin(root, deps))));
   addRoute('/zones', ()=> requireAuth(()=> guard(PERMS.VIEW_ZONES, ()=> ZonesAdmin(root, deps))));
   addRoute('/dependencies', ()=> requireAuth(()=> guard(PERMS.VIEW_DEPENDENCIES, ()=> DependenciesAdmin(root, deps))));
   addRoute('/sedes', ()=> requireAuth(()=> guard(PERMS.VIEW_SEDES, ()=> SedesAdmin(root, deps))));
+  addRoute('/sedes-ubicacion', ()=> requireAuth(()=> guard(PERMS.VIEW_SEDES, ()=> SedeLocationsAdmin(root, deps))));
   addRoute('/bulk-upload-sedes', ()=> requireAuth(()=> guard(PERMS.VIEW_BULK_UPLOAD_SEDES, ()=> CargueMasivoSedesAdmin(root, deps))));
   addRoute('/empleados-dashboard', ()=> requireAuth(()=> guardAny([PERMS.VIEW_EMPLOYEES, PERMS.VIEW_EMPLOYEE_NOVELTIES, PERMS.VIEW_SUPERVISORS, PERMS.VIEW_INCAPACITIES], ()=> EmpleadosDashboard(root, deps))));
   addRoute('/employees', ()=> requireAuth(()=> guard(PERMS.VIEW_EMPLOYEES, ()=> EmployeesAdmin(root, deps))));
   addRoute('/employee-novelties', ()=> requireAuth(()=> guard(PERMS.VIEW_EMPLOYEE_NOVELTIES, ()=> EmployeeNovelties(root, deps))));
   addRoute('/supernumerarios', ()=> requireAuth(()=> guard(PERMS.VIEW_SUPERNUMERARIOS, ()=> SupernumerariosAdmin(root, deps))));
   addRoute('/bulk-upload', ()=> requireAuth(()=> guard(PERMS.VIEW_BULK_UPLOAD_EMPLOYEES, ()=> CargueMasivoAdmin(root, deps))));
+  addRoute('/bulk-update-employees', ()=> requireAuth(()=> guard(PERMS.VIEW_BULK_UPLOAD_EMPLOYEES, ()=> EmployeeBulkUpdateAdmin(root, deps))));
   addRoute('/cargos', ()=> requireAuth(()=> guard(PERMS.VIEW_CARGOS, ()=> CargosAdmin(root, deps))));
   addRoute('/novedades', ()=> requireAuth(()=> guard(PERMS.VIEW_NOVEDADES, ()=> NovedadesAdmin(root, deps))));
   addRoute('/supervisors', ()=> requireAuth(()=> guard(PERMS.VIEW_SUPERVISORS, ()=> SupervisorsAdmin(root, deps))));

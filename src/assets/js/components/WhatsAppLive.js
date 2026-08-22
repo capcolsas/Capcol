@@ -1,4 +1,4 @@
-import { el, qs, enableSectionToggles, infoIcon, editIcon, cancelIcon } from '../utils/dom.js';
+import { el, qs, enableSectionToggles, infoIcon, editIcon, cancelIcon, lucideInlineIcon } from '../utils/dom.js';
 import { showInfoModal } from '../utils/infoModal.js';
 import { can, PERMS } from '../permissions.js';
 
@@ -106,10 +106,10 @@ export const WhatsAppLive = (mount, deps = {}) => {
             el('option', { value: '100' }, ['100']),
             el('option', { value: '200' }, ['200'])
           ]),
-          el('button', { id: 'waToggleAll', className: 'btn', type: 'button' }, ['Ver todos']),
-          el('button', { id: 'waPrevPage', className: 'btn', type: 'button' }, ['Anterior']),
+          paginationIconButton('waToggleAll', 'Ver todos', 'list-plus'),
+          paginationIconButton('waPrevPage', 'Anterior', 'chevron-left'),
           el('span', { id: 'waPageIndicator', className: 'text-muted', style: 'font-size:.86rem;min-width:96px;text-align:center;' }, ['Pagina 1 de 1']),
-          el('button', { id: 'waNextPage', className: 'btn', type: 'button' }, ['Siguiente'])
+          paginationIconButton('waNextPage', 'Siguiente', 'chevron-right')
         ])
       ]),
       el('div', { className: 'mt-2', style: 'display:flex;justify-content:space-between;gap:.5rem;align-items:center;flex-wrap:wrap;' }, [
@@ -1030,7 +1030,12 @@ export const WhatsAppLive = (mount, deps = {}) => {
     if (pageIndicator) pageIndicator.textContent = showAllRows ? 'Todos los registros' : (totalRows ? `Pagina ${currentPage} de ${totalPages}` : 'Pagina 0 de 0');
     if (pageSizeSelect) pageSizeSelect.value = String(pageSize);
     if (pageSizeSelect) pageSizeSelect.disabled = showAllRows;
-    if (btnToggleAll) btnToggleAll.textContent = showAllRows ? 'Usar paginas' : 'Ver todos';
+    if (btnToggleAll) {
+      const label = showAllRows ? 'Usar paginas' : 'Ver todos';
+      btnToggleAll.title = label;
+      btnToggleAll.setAttribute('aria-label', label);
+      btnToggleAll.replaceChildren(lucideInlineIcon(showAllRows ? 'list' : 'list-plus', label.slice(0, 1)));
+    }
     if (btnPrevPage) btnPrevPage.disabled = showAllRows || totalRows === 0 || currentPage <= 1;
     if (btnNextPage) btnNextPage.disabled = showAllRows || totalRows === 0 || currentPage >= totalPages;
     msg.textContent = totalRows
@@ -1638,6 +1643,16 @@ function kpiItem(label, id, value) {
     el('small', { className: 'wa-kpi__label' }, [label]),
     el('strong', { id, className: 'wa-kpi__value' }, [value])
   ]);
+}
+
+function paginationIconButton(id, label, icon) {
+  return el('button', {
+    id,
+    className: 'btn btn--icon',
+    type: 'button',
+    title: label,
+    'aria-label': label
+  }, [lucideInlineIcon(icon, label.slice(0, 1))]);
 }
 
 function isEmployeeExpectedForDate(emp, selectedDate, sedeRows = []) {

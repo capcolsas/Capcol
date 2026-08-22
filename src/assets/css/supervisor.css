@@ -359,7 +359,10 @@
   border-radius:8px
 }
 .supervisor-page-btn{
-  min-height:40px;
+  width:34px;
+  height:34px;
+  min-height:34px;
+  padding:0;
   border-radius:8px;
   box-shadow:none
 }

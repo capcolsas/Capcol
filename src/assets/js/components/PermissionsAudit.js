@@ -47,7 +47,7 @@ export const PermissionsAudit = (mount, deps = {}) => {
     const list = qs('#auditActivityList', ui);
     if (!list) return;
     if (!activityPaginator || !ui.contains(activityPaginator.controls)) {
-      activityPaginator = createTablePagination(ui, { id: 'permissionsAuditActivity', after: '#auditActivityList', onChange: renderActivityPage });
+      activityPaginator = createTablePagination(ui, { id: 'permissionsAuditActivity', after: '#auditActivityList', compactNav: true, onChange: renderActivityPage });
     }
     const pageItems = activityPaginator.slice(activityItems);
     list.replaceChildren(...(pageItems.length
@@ -60,7 +60,7 @@ export const PermissionsAudit = (mount, deps = {}) => {
     const list = qs('#auditClosureList', ui);
     if (!list) return;
     if (!closurePaginator || !ui.contains(closurePaginator.controls)) {
-      closurePaginator = createTablePagination(ui, { id: 'permissionsAuditClosures', after: '#auditClosureList', onChange: renderClosurePage });
+      closurePaginator = createTablePagination(ui, { id: 'permissionsAuditClosures', after: '#auditClosureList', compactNav: true, onChange: renderClosurePage });
     }
     const pageItems = closurePaginator.slice(closureItems);
     list.replaceChildren(...(pageItems.length
