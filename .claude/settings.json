@@ -33,7 +33,8 @@
       "Bash(node --check whatsapp-backend/src/app.js)",
       "Bash(node daily-qr-realtime-scope.mjs)",
       "Bash(node daily-attendance-tracking.mjs)",
-      "Bash(node --check app.js)"
+      "Bash(node --check app.js)",
+      "Bash(node --check src/assets/js/components/WhatsAppLive.js)"
     ]
   }
 }

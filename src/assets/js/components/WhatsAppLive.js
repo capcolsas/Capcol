@@ -1546,7 +1546,10 @@ export const WhatsAppLive = (mount, deps = {}) => {
     const plannedMetric = selectedContract || dailyMetrics?.planned == null || dailyMetrics?.planned === '' ? null : Number(dailyMetrics.planned);
     const expectedMetric = selectedContract || dailyMetrics?.expected == null || dailyMetrics?.expected === '' ? null : Number(dailyMetrics.expected);
     const expected = Number.isFinite(expectedMetric) ? expectedMetric : expectedLocal;
-    const pendingListCount = pendingEmployeesForToday().length;
+    // Supernumerarios stay visible in the pending list (they're on-call, unregistered), but the KPI counts only
+    // people expected to check in today, so a full bench of standby staff doesn't inflate "Pendientes".
+    const pendingListRows = trackingPending === null ? pendingEmployeesForToday() : scopedRows(trackingPending);
+    const pendingListCount = pendingListRows.filter((row) => row?.isSupernumerario !== true).length;
     const registered = registeredLocal;
     const attendance = Math.min(registered, attendanceLocal);
     const absenteeism = absenteeismLocal;

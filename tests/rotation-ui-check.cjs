@@ -1,0 +1,57 @@
+const {chromium}=require(process.env.PLAYWRIGHT_MODULE);
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const path=require('node:path');
+const screenshotDir=path.resolve(__dirname,'../tmp');
+fs.mkdirSync(screenshotDir,{recursive:true});
+(async()=>{
+const browser=await chromium.launch({channel:'msedge',headless:true});
+try {
+ const page=await browser.newPage({viewport:{width:1440,height:900}});const errors=[];page.on('pageerror',e=>errors.push(e.message));
+ await page.route('**/src/assets/js/app.js',r=>r.fulfill({contentType:'text/javascript',body:''}));
+ await page.goto('http://127.0.0.1:4173/app.html');
+ await page.evaluate(async()=>{
+  const {setState}=await import('/src/assets/js/state.js');setState({user:{uid:'demo'},userProfile:{role:'superadmin'},selectedContractCode:'A'});
+  const {ShiftRotationsAdmin}=await import('/src/assets/js/components/ShiftRotationsAdmin.js');
+  window.saved=[];window.applied=0;
+  const rows=[{codigo:'S',nombre:'Sede Norte',contratoCodigo:'A',estado:'activo'}];
+  const deps={streamSedes:cb=>{cb(rows);return ()=>{};},streamShiftTemplates:cb=>{cb([{id:'T',nombre:'Jornada diurna',contratoCodigo:'A',estado:'activo'}]);return ()=>{};},streamActiveBaseEmployees:cb=>{cb([{id:'E',nombre:'Andrea Perez',sedeCodigo:'S',contratoCodigo:'A',estado:'activo'}]);return ()=>{};},listShiftRotations:async()=>window.saved,saveShiftRotation:async(c,n,config)=>{window.saved.push({id:'R',nombre:n,config,estado:'borrador'});return 'R';},previewShiftRotation:async(c,config,from)=>[{fecha:from,employee_id:'E',result:'Por asignar'}],applyShiftRotation:async()=>{window.applied++;return 1;},pauseShiftRotation:async()=>{}};
+  deps.updateShiftRotationRules=async(id,rules,unavailable)=>{window.saved[0].config.rules=rules;window.saved[0].config.unavailable=unavailable;window.updated=true;};
+  window.cleanup=ShiftRotationsAdmin(document.querySelector('#app-root'),deps);
+ });
+ await page.getByRole('button',{name:'Nueva rotacion',exact:true}).click();
+ await page.getByLabel('Nombre',{exact:true}).fill('Rotacion Norte');
+ await page.getByLabel('Sede',{exact:true}).selectOption('S');
+ await page.getByLabel('Plan de etapa 1',{exact:true}).selectOption('T');
+ await page.getByLabel('Andrea Perez',{exact:true}).check();
+ await page.getByRole('checkbox',{name:'Descanso minimo entre turnos (horas)',exact:true}).check();
+ await page.getByRole('spinbutton',{name:'Descanso minimo entre turnos (horas)',exact:true}).fill('12');
+ await page.getByRole('button',{name:'Agregar indisponibilidad',exact:true}).click();
+ await page.getByLabel('Empleado',{exact:true}).selectOption('E');
+ await page.getByRole('button',{name:'Guardar borrador',exact:true}).click();
+ await page.waitForSelector('.rotation-calendar');
+ assert.equal(await page.evaluate(()=>window.saved[0].config.members.length),1);
+ assert.equal(await page.evaluate(()=>window.saved[0].config.rules.minRestHours),12);
+ assert.equal(await page.evaluate(()=>window.saved[0].config.unavailable.length),1);
+ assert.equal(await page.locator('.rotation-calendar thead th').count(),15);
+ await page.screenshot({path:path.join(screenshotDir,'rotation-desktop.png'),fullPage:true});
+ await page.setViewportSize({width:390,height:844});
+ assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+ await page.screenshot({path:path.join(screenshotDir,'rotation-mobile.png'),fullPage:true});
+ await page.getByRole('button',{name:'Activar rotacion',exact:true}).click();
+ await page.getByRole('button',{name:'Confirmar',exact:true}).click();
+ await page.waitForFunction(()=>window.applied===1);
+ await page.evaluate(async()=> (await import('/src/assets/js/utils/infoModal.js')).closeInfoModal());
+ await page.getByRole('button',{name:'Reglas y disponibilidad',exact:true}).click();
+ assert.equal(await page.getByRole('spinbutton',{name:'Descanso minimo entre turnos (horas)',exact:true}).inputValue(),'12');
+ await page.getByRole('spinbutton',{name:'Descanso minimo entre turnos (horas)',exact:true}).fill('10');
+ await page.screenshot({path:path.join(screenshotDir,'rotation-rules-mobile.png'),fullPage:true});
+ assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+ await page.getByRole('button',{name:'Guardar reglas',exact:true}).click();
+ await page.waitForFunction(()=>window.updated);
+ assert.equal(await page.evaluate(()=>window.saved[0].config.rules.minRestHours),10);
+ await page.evaluate(async()=> (await import('/src/assets/js/state.js')).setState({selectedContractCode:'B'}));
+ assert.equal(await page.locator('.rotation-calendar').count(),0);
+ assert.deepEqual(errors,[]);console.log('PASS: editor, teams, cycle, preview, confirmation, contract switch and mobile viewport.');
+}finally{await browser.close();}
+})().catch(e=>{console.error(e);process.exitCode=1;});

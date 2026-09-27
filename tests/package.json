@@ -1,0 +1,7 @@
+{
+  "name": "rocky-isolated-tests",
+  "private": true,
+  "type": "module",
+  "scripts": { "test:rotations": "node shift-rotations.mjs", "test:release-bundles": "node release-bundles.mjs", "test:inventory": "node inventory.mjs", "test:inventory-ui": "node inventory-ui.cjs" },
+  "devDependencies": { "@electric-sql/pglite": "^0.5.0" }
+}

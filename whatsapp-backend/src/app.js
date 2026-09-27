@@ -1792,13 +1792,23 @@ async function listDailyQrRecords(date) {
     if (extraEmployeesError) throw extraEmployeesError;
     (extraEmployees || []).forEach((employee) => employeesById.set(String(employee.id), employee));
   }
+  // An employee_daily_status row for incapacidad/vacaciones/compensatorio is an explicit administrative record for
+  // the day (someone granted the leave on purpose); it must win over a shift assignment that was never cancelled,
+  // otherwise a person on vacation keeps showing up as "pending to register".
+  const awayKeys = new Set((registeredStatusRows || []).flatMap((row) => [
+    row?.employee_id ? `id:${String(row.employee_id).trim()}` : '',
+    row?.documento ? `doc:${String(row.documento).trim()}` : ''
+  ]).filter(Boolean));
   const assignedIdentities = new Set((assignments || []).map(row => String(row.employee_id || row.documento || '')));
   pendingRows = pendingRows.filter(row => !assignedIdentities.has(String(row.employeeId || row.documento || '')));
   for (const assignment of assignments || []) {
     const shift = assignment.scheduled_shifts;
     const status = statusByKey.get(keyFor({ ...assignment, turno_id: shift.id }));
+    const assignmentEmployeeId = String(assignment.employee_id || '').trim();
+    const assignmentDocumento = String(assignment.documento || '').trim();
+    const isAway = (assignmentEmployeeId && awayKeys.has(`id:${assignmentEmployeeId}`)) || (assignmentDocumento && awayKeys.has(`doc:${assignmentDocumento}`));
     if (shift.estado === 'cancelado' || ['ausente','reemplazado'].includes(assignment.estado)
-      || status?.entrada_at || ['ausente_con_novedad','cancelado'].includes(status?.estado_turno)) continue;
+      || status?.entrada_at || ['ausente_con_novedad','cancelado'].includes(status?.estado_turno) || isAway) continue;
     const sede = qrSedesByCode.get(shift.sede_codigo) || {};
     const employee = employeesById.get(String(assignment.employee_id || '')) || {};
     pendingRows.push({ employeeId: assignment.employee_id, documento: employee.documento || assignment.documento, nombre: employee.nombre || assignment.nombre,
