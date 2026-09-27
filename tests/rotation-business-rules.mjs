@@ -382,4 +382,97 @@ await legacy.exec(`update shift_template_rules set almuerzo_minutos = 45 where h
 await legacy.exec(await sql(phase66));
 assert.equal((await one(legacy, `select almuerzo_minutos m from shift_template_rules where hora_inicio='07:00'`)).m, 45, 'repetir la migracion no pisa el almuerzo editado');
 
-console.log('PASS: almuerzo neto, descansos rotativos por semana, compensatorio tras el domingo, intercambio de descansos con recalculo, horas extra registradas y migracion idempotente.');
+// 11) Fase 67: horas extra recalculadas por la sola asignacion manual (sin rotacion ni llamada explicita),
+// y employee_shift_status recibe servicio/nomina desde employee_daily_status sin mezclar personas.
+{
+  const phase67 = 'schema_operations_phase67_shift_status_payroll_sync.sql';
+  const db67 = new PGlite();
+  await db67.exec(SCAFFOLD);
+  await db67.exec(`alter table employee_shift_status
+    add column decision_cobertura text not null default 'no_aplica',
+    add column reemplazado_por_employee_id uuid,
+    add column reemplazado_por_documento text,
+    add column reemplazado_por_nombre text,
+    add column entrada_at timestamptz,
+    add column novedad_codigo text,
+    add column novedad_nombre text,
+    add column source_incapacity_id uuid,
+    add column closed boolean not null default false,
+    add column updated_at timestamptz not null default now();
+  create table employee_daily_status(
+    fecha text, employee_id text, documento text, decision_cobertura text default 'no_aplica',
+    reemplazado_por_employee_id text, reemplazado_por_documento text, reemplazado_por_nombre text,
+    asistio boolean default false, novedad_codigo text, novedad_nombre text, source_incapacity_id text,
+    servicio_cubierto boolean default false, cuenta_pago_servicio boolean default false,
+    cuenta_nomina boolean default true, paga_nomina boolean, motivo_nomina text);
+  -- Only needed so refresh_operational_snapshots_from_employee_daily_status (unused by this test) can be
+  -- created: its declare section names this type, even though nothing here ever calls the function.
+  create table daily_metrics(id uuid, attendance_count integer, expected integer, planned integer)`);
+  for (const file of migrations) await db67.exec(await sql(file));
+  await db67.exec(await sql(phase66));
+  await db67.exec(await sql(phase67));
+  await db67.exec(`insert into contracts values('A'); insert into sedes values('S','A','activo');
+    insert into shift_templates values('${P}','A','activo');
+    insert into employees(id,nombre,documento,sede_codigo,contrato_codigo,estado) values
+      ('${emp(1)}','Titular','D1','S','A','activo'),('${emp(2)}','Reemplazo','D2','S','A','activo')`);
+
+  // 11a) Siete turnos de 7 h netas asignados a mano, sin rotacion: deben superar el limite semanal
+  // (49 h vs 42 h) y shift_overtime_weeks debe reflejarlo sin ninguna llamada explicita de recalculo.
+  const anchor = new Date();
+  anchor.setUTCDate(anchor.getUTCDate() + 2);
+  while (anchor.getUTCDay() !== 0) anchor.setUTCDate(anchor.getUTCDate() + 1);
+  const addDays = (iso, n) => { const d = new Date(`${iso}T00:00:00Z`); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+  const week1 = anchor.toISOString().slice(0, 10);
+  const shiftIds = [];
+  for (let n = 0; n < 7; n += 1) {
+    const d = addDays(week1, n);
+    const row = (await one(db67, `insert into scheduled_shifts(id,template_id,fecha_operativa,sede_codigo,contrato_codigo,starts_at,ends_at,estado,operarios_planeados,almuerzo_minutos)
+      values(gen_random_uuid(),$1,$2,'S','A',($2||'T07:00:00-05:00')::timestamptz,($2||'T15:00:00-05:00')::timestamptz,'programado',1,60) returning id`, [P, d]));
+    shiftIds.push(row.id);
+  }
+  for (const shiftId of shiftIds) {
+    await db67.query(`insert into shift_assignments(scheduled_shift_id,employee_id,sede_codigo,contrato_codigo,estado) values($1,$2,'S','A','asignado')`, [shiftId, emp(1)]);
+  }
+  let manualOvertime = await one(db67, `select worked_minutes w, limit_minutes l, overtime_minutes o, rotation_id r from shift_overtime_weeks where employee_id=$1 and week_start=$2::date`, [emp(1), week1]);
+  assert(manualOvertime, 'la asignacion manual genero la fila de horas extra sin llamar a ninguna funcion de recalculo');
+  assert.deepEqual([manualOvertime.w, manualOvertime.l, manualOvertime.o, manualOvertime.r], [49 * 60, 42 * 60, 7 * 60, null], 'siete dias de 7 h netas: 49 h, 7 h extra, sin rotacion asociada');
+
+  // Retimar uno de los turnos (por ejemplo, se alarga 2 h) tambien debe recalcular automaticamente.
+  await db67.query(`update scheduled_shifts set ends_at = ends_at + interval '2 hours' where id=$1`, [shiftIds[0]]);
+  manualOvertime = await one(db67, `select worked_minutes w, overtime_minutes o from shift_overtime_weeks where employee_id=$1 and week_start=$2::date`, [emp(1), week1]);
+  assert.deepEqual([manualOvertime.w, manualOvertime.o], [51 * 60, 9 * 60], 'retimar un turno ya asignado tambien recalcula las horas extra');
+
+  // 11b) Servicio vs nomina: un titular reemplazado por novedad no pagable sigue contando como servicio
+  // prestado (se puede facturar al contrato), pero su propia fila de nomina queda en no-pago; el reemplazo,
+  // en su propia fila, sí se paga. Cada fila de employee_shift_status solo recibe el dato de SU empleado.
+  const day2 = addDays(week1, 10);
+  const s1 = (await one(db67, `insert into scheduled_shifts(id,template_id,fecha_operativa,sede_codigo,contrato_codigo,starts_at,ends_at,estado,operarios_planeados,almuerzo_minutos)
+    values(gen_random_uuid(),$1,$2,'S','A',($2||'T07:00:00-05:00')::timestamptz,($2||'T15:00:00-05:00')::timestamptz,'programado',1,60) returning id`, [P, day2])).id;
+  const s2 = (await one(db67, `insert into scheduled_shifts(id,template_id,fecha_operativa,sede_codigo,contrato_codigo,starts_at,ends_at,estado,operarios_planeados,almuerzo_minutos)
+    values(gen_random_uuid(),$1,$2,'S','A',($2||'T07:00:00-05:00')::timestamptz,($2||'T15:00:00-05:00')::timestamptz,'programado',1,60) returning id`, [P, day2])).id;
+  await db67.query(`insert into employee_shift_status(id,scheduled_shift_id,fecha_operativa,employee_id,documento,estado_turno,asistio) values
+    ('ES1',$1,$3,$4,'D1','ausente_con_novedad',false),
+    ('ES2',$2,$3,$5,'D2','programado',false)`, [s1, s2, day2, emp(1), emp(2)]);
+  await db67.query(`insert into employee_daily_status(fecha,employee_id,documento,decision_cobertura,reemplazado_por_employee_id,reemplazado_por_documento,
+      reemplazado_por_nombre,asistio,novedad_codigo,novedad_nombre,servicio_cubierto,cuenta_pago_servicio,cuenta_nomina,paga_nomina,motivo_nomina) values
+    ($1,$2,'D1','reemplazo',$3,'D2','Reemplazo',false,'5','Licencia No Remunerada',true,true,true,false,'Ausencia cubierta con reemplazo.'),
+    ($1,$3,'D2','no_aplica',null,null,null,true,'1','Trabajando',true,true,true,true,'Prestacion del servicio registrada.')`,
+    [day2, emp(1), emp(2)]);
+  const synced = await one(db67, `select sync_shift_status_coverage_from_daily($1) n`, [day2]);
+  assert.equal(synced.n, 2, 'sincroniza las dos filas del dia');
+  const es1 = await one(db67, `select servicio_cubierto, cuenta_pago_servicio, cuenta_nomina, paga_nomina, motivo_nomina, decision_cobertura,
+    reemplazado_por_employee_id, reemplazado_por_documento, asistio, novedad_codigo, novedad_nombre from employee_shift_status where id='ES1'`);
+  assert.deepEqual([es1.servicio_cubierto, es1.cuenta_pago_servicio, es1.cuenta_nomina, es1.paga_nomina, es1.motivo_nomina],
+    [true, true, true, false, 'Ausencia cubierta con reemplazo.'], 'el titular cuenta como servicio prestado pero no se le paga esta novedad');
+  assert.equal(es1.decision_cobertura, 'reemplazo');
+  assert.equal(es1.reemplazado_por_employee_id, emp(2));
+  assert.equal(es1.asistio, false, 'el titular sigue sin asistir: el diario tampoco marca asistio para el');
+  assert.equal(es1.novedad_codigo, '5');
+  const es2 = await one(db67, `select servicio_cubierto, cuenta_nomina, paga_nomina, decision_cobertura, asistio, novedad_codigo from employee_shift_status where id='ES2'`);
+  assert.deepEqual([es2.servicio_cubierto, es2.cuenta_nomina, es2.paga_nomina], [true, true, true], 'el reemplazo, en su propia fila, si se paga');
+  assert.equal(es2.decision_cobertura, 'no_aplica', 'el reemplazo no tenia ninguna decision pendiente que pisar');
+  assert.equal(es2.asistio, true, 'una persona genuinamente presente en el diario sube a asistio=true aunque el turno no tuviera marcacion propia');
+  assert.equal(es2.novedad_codigo, '1');
+}
+
+console.log('PASS: almuerzo neto, descansos rotativos por semana, compensatorio tras el domingo, intercambio de descansos con recalculo, horas extra registradas, migracion idempotente, horas extra manuales sin rotacion y sincronizacion de servicio/nomina.');

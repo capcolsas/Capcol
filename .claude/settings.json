@@ -42,7 +42,11 @@
       "Bash(awk 'NR<=3009 && /^async function/{line=NR; name=$0} END{print line\": \"name}' app.js)",
       "Bash(awk '/^async function registerNovelty/{f=1} f{print NR\": \"$0} f && /^}/{exit}' app.js)",
       "Bash(node whatsapp-novelty-shift-coverage.mjs)",
-      "Bash(node whatsapp-attendance-reasons.mjs)"
+      "Bash(node whatsapp-attendance-reasons.mjs)",
+      "Bash(node contract-coverage.mjs)",
+      "Bash(node contract-coverage-replacements.mjs)",
+      "Bash(node contract-dashboard-pdf.cjs)",
+      "Bash(node --check src/assets/js/components/ContractDashboard.js)"
     ]
   }
 }

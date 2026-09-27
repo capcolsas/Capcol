@@ -129,7 +129,8 @@ function alertFor(host, id) {
   return find(host, node => node.props['data-alert'] === id);
 }
 const reviewAlert = () => alertFor(mount, 'review');
-const absenceAlert = () => alertFor(mount, 'absenteeism');
+// "Ausentismo semanal" is a plain KPI card now, not a duplicate alert; its own onclick opens the same detail.
+const absenteeismCard = () => find(mount, node => node.props.label === 'Ausentismo semanal');
 const unjustifiedAlert = () => alertFor(mount, 'unjustified');
 const unattendedAlert = () => alertFor(mount, 'unattended');
 const table = () => find(mount, node => node.tag === 'table');
@@ -139,7 +140,7 @@ assert.equal(absenteeism().value, '—');
 assert.equal(absenteeism().detail, 'Cargando ausentismo...');
 assert.equal(novelties().detail, 'Cargando novedades...');
 assert.equal(reviewAlert().props.disabled, true);
-assert.equal(absenceAlert().props.disabled, true);
+assert.equal(absenteeismCard().onclick, undefined, 'not clickable before there is anything to show');
 assert.equal(unjustifiedAlert().props.disabled, true);
 assert.equal(unattendedAlert().props.disabled, true);
 assert.equal(statusRequests[0].from, '2026-08-24');
@@ -173,8 +174,8 @@ assert.equal(reviewRows[0].children.length, 4);
 assert.equal(reviewRows[0].children[2].children[0], 'Sede Centro');
 assert.equal(reviewRows[0].children[3].children[0], 'Entrada tardia: 42 min');
 assert.equal(reviewRows.length, 1, 'generic requiresReview without a time circumstance is excluded');
-assert.equal(find(absenceAlert(), node => node.tag === 'strong').children[0], '1 ausentismo en la semana');
-absenceAlert().props.onclick();
+assert(absenteeismCard().onclick, 'the KPI itself opens the same absence detail the removed alert used to');
+absenteeismCard().onclick();
 assert.equal(modalTitle, 'Ausentismo semanal · Detalle de faltas');
 const absenceTable = find(modalHost, node => node.props['aria-label'] === 'Detalle de ausentismo semanal');
 const absenceRows = find(absenceTable, node => node.tag === 'tbody').children;
@@ -184,8 +185,12 @@ assert.deepEqual(Array.from(absenceRows[0].children.slice(1, 4), node => node.ch
 assert(absenceRows[1].children[0].children[0].includes('(b)'));
 assert.deepEqual(Array.from(absenceRows[1].children.slice(1, 4), node => node.children[0]), ['1', '1', '0']);
 assert.equal(find(unjustifiedAlert(), node => node.tag === 'strong').children[0], '1 ausencia no justificada en la semana');
+// This count includes unjustified absences that already have a replacement, so it can exceed "Ausentismo semanal"
+// (only absences without one); the breakdown must be visible right on the KPI, not just discoverable in the modal.
+assert(find(unjustifiedAlert(), node => node.children?.[0] === '0 con reemplazo · 1 sin reemplazo · Ver detalle'), 'unjustified KPI shows its own replaced/sin reemplazo breakdown');
 unjustifiedAlert().props.onclick();
 assert.equal(modalTitle, 'Ausencias no justificadas');
+assert.match(find(modalHost, node => node.tag === 'p')?.children?.[0] || '', /puede ser mayor que "Ausentismo semanal"/);
 const unjustifiedTable = find(modalHost, node => node.props['aria-label'] === 'Detalle de ausencias no justificadas');
 const unjustifiedRows = find(unjustifiedTable, node => node.tag === 'tbody').children;
 assert.equal(unjustifiedRows.length, 1);
@@ -213,7 +218,7 @@ assert.equal(absenteeism().value, '—', 'no assignments does not mean zero abse
 assert.equal(novelties().value, 0);
 assert.equal(unjustifiedAlert().props.disabled, true);
 assert.equal(novelties().detail, 'Sin pendientes de revision');
-assert.equal(absenceAlert().props.disabled, true);
+assert.equal(absenteeismCard().onclick, undefined, 'no assignments means nothing to drill into');
 assert.equal(reviewAlert().props.disabled, true);
 assert.equal(find(reviewAlert(), node => node.tag === 'strong').children[0], 'Sin pendientes de revision');
 assert.equal(table(), undefined, 'empty week has an explicit message instead of a table of zeros');
@@ -228,7 +233,7 @@ assert.equal(find(unattendedAlert(), node => node.tag === 'strong').children[0],
 assert.equal(unjustifiedAlert().props.disabled, true);
 assert.equal(absenteeism().detail, 'No se pudo cargar el ausentismo');
 assert.equal(novelties().detail, 'No se pudo cargar las novedades');
-assert.equal(find(absenceAlert(), node => node.tag === 'strong').children[0], 'No se pudo cargar el ausentismo');
+assert.equal(absenteeismCard().onclick, undefined, 'a failed load is not clickable either');
 assert.equal(reviewAlert().props.disabled, true);
 assert.equal(find(reviewAlert(), node => node.tag === 'strong').children[0], 'No se pudieron cargar los pendientes');
 assert.equal(table(), undefined, 'error is not presented as zero attendance');
@@ -363,10 +368,10 @@ const replacementsCleanup = context.ContractDashboard(replacementsMount, {
   listShiftAssignmentsForShifts: async () => [assignment('b')]
 });
 await tick();
-const replacementAlert = alertFor(replacementsMount, 'absenteeism');
-assert.equal(find(replacementAlert, node => node.tag === 'strong').children[0], '0 ausentismos en la semana');
-assert.equal(replacementAlert.props.disabled, false, 'covered absences remain accessible even with zero absenteeism');
-replacementAlert.props.onclick();
+const replacementCard = find(replacementsMount, node => node.props.label === 'Ausentismo semanal');
+assert.equal(replacementCard.props.detail, '0 ausencias sin reemplazo');
+assert(replacementCard.onclick, 'covered absences remain accessible even with zero unreplaced absenteeism');
+replacementCard.onclick();
 assert.equal(find(modalHost, node => node.tag === 'tbody').children.length, 1);
 replacementsCleanup();
 const unattendedMount = el('main');
@@ -464,17 +469,17 @@ const visibleAlerts = () => Array.from(find(rankedMount, node => node.props.id =
 const alertToggle = () => find(rankedMount, node => node.props['aria-controls'] === 'contract-alert-list');
 assert.equal(visibleAlerts().length, 4, 'four alerts even while loading');
 await tick();
-assert.deepEqual(visibleAlerts(), ['hiring', 'incapacity', 'review', 'absenteeism'], 'top four use each headline count');
+assert.deepEqual(visibleAlerts(), ['hiring', 'incapacity', 'review', 'unjustified'], 'top four use each headline count; "Ausentismo semanal" is a KPI card now, not one of these alerts');
 assert.equal(alertToggle().children[0], 'Ver más');
 assert.equal(alertToggle().props['aria-expanded'], 'false');
 alertToggle().props.onclick();
-assert.deepEqual(visibleAlerts(), ['hiring', 'incapacity', 'review', 'absenteeism', 'unjustified', 'unattended', 'unassigned'], 'remaining alerts retain descending order and stable ties');
+assert.deepEqual(visibleAlerts(), ['hiring', 'incapacity', 'review', 'unjustified', 'unattended', 'unassigned'], 'remaining alerts retain descending order and stable ties');
 assert.equal(alertToggle().children[0], 'Ver menos');
 assert.equal(alertToggle().props['aria-expanded'], 'true');
 alertToggle().props.onclick();
 assert.equal(visibleAlerts().length, 4);
 updateRankedSites([site('1', 0)]);
-assert.deepEqual(visibleAlerts(), ['incapacity', 'review', 'absenteeism', 'unjustified'], 'ranking updates when counts change');
+assert.deepEqual(visibleAlerts(), ['incapacity', 'review', 'unjustified', 'hiring'], 'ranking updates when counts change');
 alertToggle().props.onclick();
 find(rankedMount, node => node.props.title === 'Semana siguiente').props.onclick();
 assert.equal(visibleAlerts().length, 4, 'changing week collapses alerts');

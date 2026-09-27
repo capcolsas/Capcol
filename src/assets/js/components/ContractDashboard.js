@@ -191,13 +191,28 @@ export const ContractDashboard = (mount, deps = {}) => {
     const statuses = (rawStatuses || []).map(status => {
       if (!status.employeeId && !status.documento) return status;
       const daily = dailyStatusByKey.get(`${status.employeeId || status.documento}|${status.fechaOperativa}`);
-      if (!daily || daily.decisionCobertura === 'no_aplica' || status.decisionCobertura !== 'no_aplica') return status;
-      return { ...status,
-        decisionCobertura: daily.decisionCobertura,
-        reemplazadoPorEmployeeId: daily.reemplazadoPorEmployeeId,
-        reemplazadoPorDocumento: daily.reemplazadoPorDocumento,
-        reemplazadoPorNombre: daily.reemplazadoPorNombre
-      };
+      if (!daily) return status;
+      let next = status;
+      if (daily.decisionCobertura !== 'no_aplica' && next.decisionCobertura === 'no_aplica') {
+        next = { ...next,
+          decisionCobertura: daily.decisionCobertura,
+          reemplazadoPorEmployeeId: daily.reemplazadoPorEmployeeId,
+          reemplazadoPorDocumento: daily.reemplazadoPorDocumento,
+          reemplazadoPorNombre: daily.reemplazadoPorNombre
+        };
+      }
+      // The person genuinely reported being present that day (e.g. a compensatory day reported before this shift
+      // was linked to novelties other than "Trabajando") but this shift-specific row was never marked attended.
+      // Do not let a known-present person show as pending/absent here.
+      if (daily.asistio === true && next.asistio !== true && !next.entradaAt) next = { ...next, asistio: true };
+      // The novelty code/name (vacaciones, incapacidad, licencia...) and the incapacity record it came from also
+      // only live on employee_daily_status. Without them, a justified absence whose shift was auto-closed with
+      // nothing of its own reported looks exactly like "nada reportado" and gets miscounted as unjustified below.
+      if (!next.novedadCodigo && !next.novedadNombre && (daily.novedadCodigo || daily.novedadNombre)) {
+        next = { ...next, novedadCodigo: daily.novedadCodigo, novedadNombre: daily.novedadNombre,
+          sourceIncapacityId: next.sourceIncapacityId || daily.sourceIncapacityId };
+      }
+      return next;
     });
     const scoped = (shifts || []).filter(shift => shift.contratoCodigo === code && shift.fechaOperativa >= from
       && shift.fechaOperativa <= to && shift.estado !== 'cancelado');
@@ -247,7 +262,35 @@ export const ContractDashboard = (mount, deps = {}) => {
     const total = coverage.total;
     if (!total.assigned) return card('—', 'Sin turnos asignados');
     const absences = total.absent;
-    return card(percent(absences, total.assigned), `${absences} ${absences === 1 ? 'ausencia' : 'ausencias'} sin reemplazo`);
+    const node = card(percent(absences, total.assigned), `${absences} ${absences === 1 ? 'ausencia' : 'ausencias'} sin reemplazo`);
+    // The KPI already covers what the removed "Ausentismo semanal" alert showed; keep its per-person/date detail
+    // reachable by making the card itself open the same breakdown, instead of duplicating the count as an alert.
+    if (coverage.absencePeople?.length) {
+      node.onclick = openAbsenteeismDetails;
+      if (node.style) node.style.cursor = 'pointer';
+      node.role = 'button';
+      node.tabIndex = 0;
+      node.ariaLabel = `Ausentismo semanal, ${absences} ${absences === 1 ? 'ausencia' : 'ausencias'} sin reemplazo. Ver detalle.`;
+    }
+    return node;
+  }
+  function openAbsenteeismDetails() {
+    if (!contractFilterCode() || coverageLoad !== 'ready' || !coverage.absencePeople?.length) return;
+    const total = coverage.total;
+    const content = el('div', {}, [
+      el('p', { className: 'text-muted' }, [`${total.absent + total.replaced} faltas: ${total.replaced} con reemplazo y ${total.absent} sin reemplazo. Ordenado por ausencias sin reemplazo, de mayor a menor.`]),
+      el('div', { className: 'table-wrap' }, [el('table', { className: 'table', 'aria-label': 'Detalle de ausentismo semanal' }, [
+        el('thead', {}, [el('tr', {}, ['Persona', 'Total faltas', 'Con reemplazo', 'Sin reemplazo', 'Fechas'].map(label => el('th', { scope: 'col' }, [label])))]),
+        el('tbody', {}, coverage.absencePeople.map(person => el('tr', {}, [
+          el('th', { scope: 'row' }, [[person.nombre, person.documento ? `(${person.documento})` : ''].filter(Boolean).join(' ')]),
+          ...[person.total, person.replaced, person.absent].map(value => el('td', {}, [String(value)])),
+          el('td', {}, [person.dates.map(date => formatDate(date)).join(', ')])
+        ]))),
+        el('tfoot', {}, [el('tr', {}, [el('th', { scope: 'row' }, ['Total']),
+          ...[total.absent + total.replaced, total.replaced, total.absent].map(value => el('td', {}, [String(value)])), el('td', {}, [''])])])
+      ])])
+    ]);
+    showInfoModal('Ausentismo semanal · Detalle de faltas', [content]);
   }
   function reviewAlert() {
     const ready = Boolean(contractFilterCode()) && coverageLoad === 'ready';
@@ -312,43 +355,14 @@ export const ContractDashboard = (mount, deps = {}) => {
       ])])
     ]);
   }
-  function absenteeismAlert() {
-    const ready = Boolean(contractFilterCode()) && coverageLoad === 'ready';
-    const total = ready ? coverage.total : {};
-    const hasAbsences = ready && total.absent + total.replaced > 0;
-    const title = !contractFilterCode() ? 'Selecciona un contrato'
-      : coverageLoad === 'loading' ? 'Cargando ausentismo...'
-        : coverageLoad === 'error' ? 'No se pudo cargar el ausentismo'
-          : `${total.absent} ${total.absent === 1 ? 'ausentismo' : 'ausentismos'} en la semana`;
-    return el('button', { type: 'button', className: 'contract-demo__alert', 'data-alert': 'absenteeism', disabled: !hasAbsences, onclick: openAbsenteeismDetails }, [
-      iconTile('user-round-minus', total.absent ? 'danger' : 'teal'),
-      el('span', { className: 'contract-demo__alert-copy' }, [el('strong', {}, [title]),
-        el('span', {}, [hasAbsences ? `${total.replaced} con reemplazo · ${total.absent} sin reemplazo · Ver detalle`
-          : ready ? 'Sin ausencias en la semana' : 'Contrato y semana seleccionados'])]),
-      ...(hasAbsences ? [lucideInlineIcon('chevron-right', '>')] : [])
-    ]);
-  }
-  function openAbsenteeismDetails() {
-    if (!contractFilterCode() || coverageLoad !== 'ready' || !coverage.absencePeople?.length) return;
-    const total = coverage.total;
-    const content = el('div', {}, [
-      el('p', { className: 'text-muted' }, [`${total.absent + total.replaced} faltas: ${total.replaced} con reemplazo y ${total.absent} sin reemplazo. Ordenado por ausencias sin reemplazo, de mayor a menor.`]),
-      el('div', { className: 'table-wrap' }, [el('table', { className: 'table', 'aria-label': 'Detalle de ausentismo semanal' }, [
-        el('thead', {}, [el('tr', {}, ['Persona', 'Total faltas', 'Con reemplazo', 'Sin reemplazo', 'Fechas'].map(label => el('th', { scope: 'col' }, [label])))]),
-        el('tbody', {}, coverage.absencePeople.map(person => el('tr', {}, [
-          el('th', { scope: 'row' }, [[person.nombre, person.documento ? `(${person.documento})` : ''].filter(Boolean).join(' ')]),
-          ...[person.total, person.replaced, person.absent].map(value => el('td', {}, [String(value)])),
-          el('td', {}, [person.dates.map(date => formatDate(date)).join(', ')])
-        ]))),
-        el('tfoot', {}, [el('tr', {}, [el('th', { scope: 'row' }, ['Total']),
-          ...[total.absent + total.replaced, total.replaced, total.absent].map(value => el('td', {}, [String(value)])), el('td', {}, [''])])])
-      ])])
-    ]);
-    showInfoModal('Ausentismo semanal · Detalle de faltas', [content]);
-  }
   function unjustifiedAlert() {
     const ready = Boolean(contractFilterCode()) && coverageLoad === 'ready';
     const count = ready ? coverage.unjustifiedCount : 0;
+    // Unlike "Ausentismo semanal" (only absences without replacement), this includes unjustified absences that
+    // were replaced too, so the count is not directly comparable to that other KPI. Break it down the same way
+    // absenteeismAlert does, so a bigger number here than "sin reemplazo" reads as consistent, not as an error.
+    const replaced = ready ? coverage.unjustifiedPeople.reduce((sum, person) => sum + person.replaced, 0) : 0;
+    const absent = ready ? coverage.unjustifiedPeople.reduce((sum, person) => sum + person.absent, 0) : 0;
     const title = !contractFilterCode() ? 'Selecciona un contrato'
       : coverageLoad === 'loading' ? 'Cargando ausencias no justificadas...'
         : coverageLoad === 'error' ? 'No se pudieron cargar las ausencias no justificadas'
@@ -356,13 +370,15 @@ export const ContractDashboard = (mount, deps = {}) => {
     return el('button', { type: 'button', className: 'contract-demo__alert', 'data-alert': 'unjustified', disabled: !ready || !count, onclick: openUnjustifiedDetails }, [
       iconTile('user-round-x', count ? 'danger' : 'teal'),
       el('span', { className: 'contract-demo__alert-copy' }, [el('strong', {}, [title]),
-        el('span', {}, [count ? 'Ver personas y cantidad de faltas' : ready ? 'Sin ausencias no justificadas' : 'Contrato y semana seleccionados'])]),
+        el('span', {}, [count ? `${replaced} con reemplazo · ${absent} sin reemplazo · Ver detalle`
+          : ready ? 'Sin ausencias no justificadas' : 'Contrato y semana seleccionados'])]),
       ...(count ? [lucideInlineIcon('chevron-right', '>')] : [])
     ]);
   }
   function openUnjustifiedDetails() {
     if (!contractFilterCode() || coverageLoad !== 'ready' || !coverage.unjustifiedCount) return;
-    showInfoModal('Ausencias no justificadas', [
+    const content = el('div', {}, [
+      el('p', { className: 'text-muted' }, ['Incluye las que ya tienen reemplazo: por eso el total puede ser mayor que "Ausentismo semanal", que solo cuenta las que quedaron sin reemplazo.']),
       el('div', { className: 'table-wrap' }, [el('table', { className: 'table', 'aria-label': 'Detalle de ausencias no justificadas' }, [
         el('thead', {}, [el('tr', {}, ['Persona', 'Ausencias no justificadas', 'Con reemplazo', 'Sin reemplazo', 'Fechas'].map(label => el('th', { scope: 'col' }, [label])))]),
         el('tbody', {}, coverage.unjustifiedPeople.map(person => el('tr', {}, [
@@ -376,6 +392,7 @@ export const ContractDashboard = (mount, deps = {}) => {
           el('td', {}, [''])])])
       ])])
     ]);
+    showInfoModal('Ausencias no justificadas', [content]);
   }
   function unattendedAlert() {
     const ready = Boolean(contractFilterCode()) && coverageLoad === 'ready';
@@ -487,7 +504,8 @@ export const ContractDashboard = (mount, deps = {}) => {
     return [
       { count: ready ? coverage.reviewCount : -1, render: reviewAlert },
       { count: hiring.message ? -1 : hiring.total, render: hiringAlert },
-      { count: ready ? coverage.total.absent : -1, render: absenteeismAlert },
+      // "Ausentismo semanal" already has its own KPI card above (absenteeismMetric); showing it again here too was
+      // redundant.
       { count: ready ? coverage.unjustifiedCount : -1, render: unjustifiedAlert },
       { count: ready ? coverage.unattendedDayCount : -1, render: unattendedAlert },
       { count: contractFilterCode() && incapacitiesLoad === 'ready' ? incapacityPeople.reduce((sum, person) => sum + person.count, 0) : -1, render: incapacityAlert },
