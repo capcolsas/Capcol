@@ -39,7 +39,10 @@
       "Bash(grep -n \"from\\('attendance'\\)\\\\.insert\\\\|\\\\.from\\('attendance'\\)\\\\s*$\\\\|into attendance\\\\|'attendance'\\\\\\)\\\\.upsert\\\\|insert.*attendance\" app.js shifts.js)",
       "Bash(grep -v \"select\\\\|marking_method,\\\\|marking_method\\\\s*$\")",
       "Bash(awk 'NR<=8024 && /^export \\(async \\)?function/{line=NR; name=$0} END{print line\": \"name}' legacy.js)",
-      "Bash(awk 'NR<=3009 && /^async function/{line=NR; name=$0} END{print line\": \"name}' app.js)"
+      "Bash(awk 'NR<=3009 && /^async function/{line=NR; name=$0} END{print line\": \"name}' app.js)",
+      "Bash(awk '/^async function registerNovelty/{f=1} f{print NR\": \"$0} f && /^}/{exit}' app.js)",
+      "Bash(node whatsapp-novelty-shift-coverage.mjs)",
+      "Bash(node whatsapp-attendance-reasons.mjs)"
     ]
   }
 }

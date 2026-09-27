@@ -2985,7 +2985,9 @@ async function registerNovelty(phone, employee, novelty, selectedSede = null, in
     }
   }
 
-  const shiftResult = novelty.code === NOVELTIES.WORKING.code
+  // Any novelty that is not an absence (WORKING and COMPENSATORY: the employee is physically present) opens/attaches
+  // the operational shift the same way, so it is reflected in shift coverage; only true absences merely resolve it.
+  const shiftResult = !novelty.absenteeism
     ? await openOperationalShiftFromAttendance({
       fecha: date,
       employeeId: freshEmployee.id,
@@ -2993,18 +2995,16 @@ async function registerNovelty(phone, employee, novelty, selectedSede = null, in
       sedeCodigo,
       action: 'entry',
       eventAt,
-      source: 'whatsapp_working'
+      source: novelty.code === NOVELTIES.WORKING.code ? 'whatsapp_working' : 'whatsapp_present'
     })
-    : novelty.absenteeism
-    ? await resolveOperationalShiftForAttendance({
+    : await resolveOperationalShiftForAttendance({
       fecha: date,
       employeeId: freshEmployee.id,
       documento,
       sedeCodigo,
       action: 'entry',
       eventAt
-    })
-    : null;
+    });
 
   const { error: attendanceError } = await supabaseAdmin.from('attendance').upsert({
     id: attendanceId,

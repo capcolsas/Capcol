@@ -174,11 +174,31 @@ export const ContractDashboard = (mount, deps = {}) => {
   }
   async function readCoverage(from, to, code, isCurrent) {
     if (!deps.listScheduledShiftsRange || !deps.listShiftAssignmentsForShifts || !deps.listEmployeeShiftStatusRange) throw new Error('Consulta no disponible');
-    const [shifts, statuses] = await Promise.all([
+    const [shifts, rawStatuses, dailyStatuses] = await Promise.all([
       deps.listScheduledShiftsRange(from, to, { contratoCodigo: code, estados: ['programado', 'abierto', 'cerrado', 'cancelado'] }),
-      deps.listEmployeeShiftStatusRange(from, to, { contratoCodigo: code })
+      deps.listEmployeeShiftStatusRange(from, to, { contratoCodigo: code }),
+      deps.listEmployeeDailyStatusRange ? deps.listEmployeeDailyStatusRange(from, to, { contratoCodigo: code }) : Promise.resolve([])
     ]);
     if (!isCurrent()) return null;
+    // The replacement decision for a novelty (reemplazo/ausentismo) is recorded on employee_daily_status, not on
+    // employee_shift_status, so shift coverage otherwise never sees it and counts every replaced absence as a plain
+    // absence instead. Overlay it here from the same-day daily status of that person.
+    const dailyStatusByKey = new Map();
+    (dailyStatuses || []).forEach(row => {
+      if (!row.employeeId && !row.documento) return;
+      dailyStatusByKey.set(`${row.employeeId || row.documento}|${row.fecha}`, row);
+    });
+    const statuses = (rawStatuses || []).map(status => {
+      if (!status.employeeId && !status.documento) return status;
+      const daily = dailyStatusByKey.get(`${status.employeeId || status.documento}|${status.fechaOperativa}`);
+      if (!daily || daily.decisionCobertura === 'no_aplica' || status.decisionCobertura !== 'no_aplica') return status;
+      return { ...status,
+        decisionCobertura: daily.decisionCobertura,
+        reemplazadoPorEmployeeId: daily.reemplazadoPorEmployeeId,
+        reemplazadoPorDocumento: daily.reemplazadoPorDocumento,
+        reemplazadoPorNombre: daily.reemplazadoPorNombre
+      };
+    });
     const scoped = (shifts || []).filter(shift => shift.contratoCodigo === code && shift.fechaOperativa >= from
       && shift.fechaOperativa <= to && shift.estado !== 'cancelado');
     const ids = [...new Set(scoped.map(shift => shift.id).filter(Boolean))];
