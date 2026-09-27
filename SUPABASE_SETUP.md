@@ -4,43 +4,48 @@
 - El frontend, el backend de WhatsApp, el portal de empleados, la app de supervisores y el lector QR usan Supabase/PostgreSQL.
 - La configuracion activa del frontend vive en `src/assets/js/config.js`.
 - La configuracion del backend vive en variables de entorno de Vercel y en `whatsapp-backend/src/config.js`.
-- Para una base nueva, ejecutar todas las fases SQL disponibles en este repo, en el orden indicado abajo.
+- Para instalar o actualizar cualquier proyecto, nuevo o existente, ejecutar en orden los archivos `01` a `05` de `supabase/releases/`.
+- Todos los proyectos deben quedar en la ultima version del esquema.
 
-## Esquemas SQL
-Ejecutar en este orden desde el SQL Editor de Supabase:
+## Instalacion y actualizacion en 5 archivos
+Las 65 fases historicas (`supabase/schema_*.sql`) se agrupan en cinco bundles generados. Ejecutarlos completos, en orden, en el editor SQL de Supabase:
 
-1. `supabase/schema_foundation_phase0.sql`
-2. `supabase/schema_initial.sql`
-3. `supabase/schema_catalogs_phase1.sql`
-4. `supabase/schema_operations_phase2.sql`
-5. `supabase/schema_operations_phase3.sql`
-6. `supabase/schema_whatsapp_phase4.sql`
-7. `supabase/schema_constraints_phase5.sql`
-8. `supabase/schema_governance_phase6.sql`
-9. `supabase/schema_operations_phase6.sql`
-10. `supabase/schema_operations_phase7.sql`
-11. `supabase/schema_operations_phase8.sql`
-12. `supabase/schema_operations_phase9.sql`
-13. `supabase/schema_operations_phase10.sql`
-14. `supabase/schema_operations_phase11.sql`
-15. `supabase/schema_operations_phase12.sql`
-16. `supabase/schema_operations_phase13.sql`
-17. `supabase/schema_operations_phase14_employee_portal.sql`
-18. `supabase/schema_operations_phase15_incapacidades_support.sql`
-19. `supabase/schema_operations_phase16_qr_attendance.sql`
-20. `supabase/schema_operations_phase17_employee_certificates.sql`
-21. `supabase/schema_operations_phase17_tablet_qr_role.sql`
-22. `supabase/schema_operations_phase18_supervisor_rls.sql`
-23. `supabase/schema_operations_phase19_supernumerario_occupancy.sql`
-24. `supabase/schema_operations_phase20_supernumerario_incapacities.sql`
-25. `supabase/schema_operations_phase21_admin_permission_rls.sql`
-26. `supabase/schema_operations_phase22_supernumerarios_by_date.sql`
-27. `supabase/schema_operations_phase22_report_performance_indexes.sql`
-28. `supabase/schema_operations_phase23_profile_role_protection.sql`
-29. `supabase/schema_operations_phase24_colombia_holiday_july9.sql`
-30. `supabase/schema_operations_phase25_employee_extended_info.sql`
+| Orden | Archivo | Incluye |
+| --- | --- | --- |
+| 01 | `supabase/releases/01_base_operacion.sql` | Base, catalogos, operacion diaria, WhatsApp, gobierno, portal de empleados, QR, RLS de supervisores y supernumerarios (fases 0-26) |
+| 02 | `supabase/releases/02_turnos_y_rendimiento.sql` | Turnos, contadores de codigos e indices (fases 27-37) |
+| 03 | `supabase/releases/03_multicontrato.sql` | Contratos, accesos por contrato, calculos operativos, configuracion e imagenes (fases 38-49) |
+| 04 | `supabase/releases/04_rotaciones_y_modulos.sql` | Rotaciones, asistencia por turno, retiros, cargos, inventarios y visitas (fases 50-59) |
+| 05 | `supabase/releases/05_asistencia_movil_y_revision.sql` | Asistencia movil, alertas, revision de turnos y descansos (fases 60 en adelante) |
+| 06 | `supabase/releases/06_cron_programador.template.sql` | Opcional y por proyecto: programador de cierres (URL y secreto propios) |
 
-## Que habilita cada bloque
+Reglas:
+- **Proyecto nuevo:** ejecutar 01 a 05, crear el primer superadmin y, cuando se active el cierre automatico, ejecutar 06.
+- **Proyecto existente, en cualquier version:** ejecutar 01 a 05 completos. No hace falta saber en que fase quedo: los bundles son idempotentes, lo ya aplicado no cambia y los respaldos de datos de una sola vez (contrato inicial, cargos por contrato, accesos de supernumerarios, radio QR) se ejecutan una unica vez, sin revivir datos que un administrador elimino.
+- **06 nunca forma parte de una actualizacion:** contiene la URL y el secreto del backend de cada proyecto. Reemplazar `TU_BACKEND` y `TU_CRON_SECRET` en el editor y no guardar el secreto real en el repositorio.
+- Si un bundle falla a mitad, corregir la causa y volver a ejecutarlo completo; es seguro repetirlo.
+
+## Mantenimiento de los bundles
+- Los bundles se generan a partir de las fases fuente y **no se editan a mano**. Las fases fuente (`schema_*.sql`) se conservan como historial y las leen los tests.
+- Regenerar despues de cambiar o agregar una fase: `node supabase/build_release_bundles.mjs`. Comprobar que estan al dia: `node supabase/build_release_bundles.mjs --check`.
+- Una fase nueva (`schema_operations_phaseNN_*.sql`) debe poder re-ejecutarse: `create ... if not exists`, `create or replace function`, `drop policy/trigger if exists`, y cualquier respaldo de datos protegido para ejecutarse una sola vez. Las fases 60 en adelante entran automaticamente al bundle 05.
+- Verificar: `cd tests && node release-bundles.mjs` (usa PGlite). Compara los bundles con aplicar las fases originales una por una, prueba la re-ejecucion, la actualizacion desde cada version intermedia y que no se pisen datos. `RELEASE_QUICK=1` reduce los puntos de partida.
+- Las fases 28 y 62 (cron) no van en los bundles; su version vigente es `06_cron_programador.template.sql`.
+
+## Programador de cierres (cron)
+El cierre automatico de turnos y del dia lo ejecuta Supabase Cron llamando al backend. El script trae **valores de ejemplo que hay que modificar antes de ejecutarlo**; con los marcadores sin cambiar, falla a proposito con `Reemplaza backend_base_url y cron_secret`.
+
+1. Desplegar el backend y definir `CRON_SECRET` en Vercel (un valor largo y aleatorio, distinto por proyecto).
+2. Abrir `supabase/releases/06_cron_programador.template.sql` en el editor SQL de Supabase (no en el repositorio).
+3. Reemplazar `https://TU_BACKEND.vercel.app` por el dominio publico del backend y `TU_CRON_SECRET` por el mismo `CRON_SECRET` de Vercel.
+4. Ejecutar el script. Programa `/api/cron/close-shifts` cada 15 minutos y `/api/cron/close-daily-operation` a las 02:10 America/Bogota (07:10 UTC).
+5. Comprobar con la consulta final del script que ambos jobs figuren activos.
+
+- Volver a ejecutarlo solo cuando cambie la URL o el secreto; reemplaza los jobs existentes.
+- Nunca guardar la URL ni el secreto reales en el repositorio ni volver a editarlos en `schema_operations_phase28_supabase_cron.sql`, que tambien queda con marcadores.
+- Si un secreto llego a subirse a un repositorio, rotar `CRON_SECRET` en Vercel y volver a ejecutar el script con el valor nuevo.
+
+## Historial: que habilita cada fase
 - `phase0` instala `pgcrypto` para `gen_random_uuid()`.
 - `initial` crea perfiles, roles, overrides y RLS base.
 - `phase1` crea catalogos: zonas, dependencias, sedes, cargos y novedades.
@@ -69,6 +74,20 @@ Ejecutar en este orden desde el SQL Editor de Supabase:
 - `phase23 profile role protection` protege rol, estado y campos administrativos del perfil contra cambios de autoservicio.
 - `phase24 Colombia holiday July 9` actualiza la funcion de festivos con el 9 de julio.
 - `phase25 employee extended info` agrega datos ampliados del empleado: fecha de nacimiento, seguridad social y dotacion.
+- `phase26 sede catalog reference sync` asegura que los cambios de sede sincronicen referencias de catalogo.
+- `phase27 shifts` agrega turnos, programacion, asignaciones y cierres por turno.
+- `phase28 supabase cron` instala tareas programadas para cierres operativos.
+- `phase32 code counters` agrega contadores transaccionales para generar codigos consecutivos.
+- `phase33 performance indexes` agrega indices de rendimiento generales.
+- `phase34 search optimization` optimiza consultas de busqueda administrativa.
+- `phase36 employee novelties indexes` agrega indices para novedades de empleados.
+- `phase37 employees admin indexes` agrega indices para consultas administrativas de empleados.
+- `phase38 contracts` crea contratos con datos del cliente y agrega la referencia contractual a dependencias, zonas, sedes, empleados e historial.
+- `phase39 contract reporting scope` agrega contrato a `employee_daily_status`, `daily_sede_closures`, `sede_status`, `attendance`, `absenteeism` e `import_replacements`, y materializa `daily_contract_metrics`.
+- `phase40 contract access RLS` crea accesos de usuario por contrato y limita al rol administrador de contrato a sus contratos asignados.
+- `phase41 contract operational calculations` alinea el flujo `employee_daily_status -> sede_status -> daily_contract_metrics -> daily_metrics -> daily_sede_closures -> daily_closures` y valida que las sumas por contrato cuadren con las metricas globales.
+- `phase42 contract profile permissions` agrega `contrato_codigo` y `contratos_permitidos` a `profiles`, sincroniza esos campos con `profile_contract_access` y refuerza RLS para que usuarios internos vean todo y administradores de contrato solo sus contratos.
+- `phase43 backend contract context` agrega contrato/cliente a tokens, escaneos y salidas QR, incapacidades y auditoria de certificados; tambien refuerza RLS de esas tablas por contrato.
 
 ## Variables del frontend
 Configurar en `src/assets/js/config.js`:
@@ -185,6 +204,7 @@ Configurar en Vercel para el proyecto `whatsapp-backend/`:
 - `daily_closures`
 - `daily_sede_closures`
 - `employee_daily_status`
+- `daily_contract_metrics`
 - `whatsapp_incoming`
 - `whatsapp_sessions`
 - `incapacitados`
@@ -196,10 +216,12 @@ Configurar en Vercel para el proyecto `whatsapp-backend/`:
 - `employee_daily_exits`
 - `attendance_qr_scans`
 - `employee_certificate_audit`
+- `contracts`
+- `profile_contract_access`
 
 ## Storage
 - Bucket requerido: `incapacidades-soportes`.
-- Se crea en `supabase/schema_operations_phase15_incapacidades_support.sql`.
+- Se crea en `supabase/releases/01_base_operacion.sql` (fase 15).
 - Debe permitir PDF, JPG, PNG y WEBP hasta 10 MB.
 - La lectura queda publica para descargar/ver soportes desde la app.
 
@@ -208,13 +230,22 @@ Configurar en Vercel para el proyecto `whatsapp-backend/`:
 - `refresh_employee_daily_status_range`
 - `recompute_sede_status_from_employee_daily_status`
 - `recompute_daily_metrics_from_employee_daily_status`
+- `recompute_daily_contract_metrics_from_employee_daily_status`
+- `recompute_daily_sede_closures_from_sede_status`
+- `validate_daily_contract_metric_consistency`
 - `refresh_operational_snapshots_from_employee_daily_status`
 - `current_profile_is_active_non_supervisor`
+- `current_profile_is_internal_user`
 - `current_supervisor_can_read_zone`
 - `can_read_zone_data`
 - `can_read_sede_data`
 - `can_read_employee_data`
 - `can_read_operational_sede_or_employee`
+- `current_profile_can_manage_contract_access`
+- `current_profile_contract_codes`
+- `current_profile_has_contract_access`
+- `can_read_contract_data`
+- `can_read_dependency_data`
 - `current_supervisor_can_write_operational_replacement`
 - `can_view_qr_registry`
 - `list_supernumerarios_for_current_supervisor`
@@ -227,6 +258,9 @@ Despues de ejecutar las fases, confirmar que `supabase_realtime` incluya al meno
 
 - `roles_matrix`
 - `user_overrides`
+- `contracts`
+- `profile_contract_access`
+- `daily_contract_metrics`
 - `zones`
 - `dependencies`
 - `sedes`
@@ -267,7 +301,7 @@ Despues de ejecutar las fases, confirmar que `supabase_realtime` incluya al meno
 - Webhook WhatsApp: `GET /api/webhooks/whatsapp`.
 - Mensaje real de WhatsApp con registro de asistencia/novedad.
 - Cron del backend en Supabase:
-  - ejecutar `supabase/schema_operations_phase28_supabase_cron.sql`.
+  - abrir `supabase/releases/06_cron_programador.template.sql` en el editor SQL, **modificar los dos valores** y ejecutarlo (ver "Programador de cierres (cron)").
   - reemplazar `backend_base_url` por el dominio publico del backend.
   - reemplazar `cron_secret` por el mismo `CRON_SECRET` configurado en Vercel.
 
@@ -291,3 +325,27 @@ Scripts Node del backend que usan `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY` d
 - `whatsapp-backend/scripts/repair-missing-employee-cargo-history-transfers.mjs`
 - `whatsapp-backend/scripts/repair-overlapping-employee-cargo-history.mjs`
 - `whatsapp-backend/scripts/run-payroll-recovery-diagnostics.mjs`
+
+## Imagenes de Referencia de Contratos
+
+Las imagenes de referencia de contratos (fase 49) vienen incluidas en
+`supabase/releases/03_multicontrato.sql`; no hay un archivo aparte. Agrega `reference_image_path` y el bucket
+privado `contract-reference-images`, con lectura segun acceso al contrato y
+escritura administrativa. No requiere configurar un bucket publico.
+
+En Contratos, la accion **Imagen de referencia** permite cargar, reemplazar o
+quitar un PNG, JPG o WebP de hasta 2 MB. Se guarda una miniatura WebP de hasta
+256 px y la barra lateral la muestra mediante una URL firmada temporal.
+Los contratos existentes conservan sus iniciales hasta que se les asigne imagen.
+
+## Fase 54: ingreso y salida por turno
+
+Incluida en `supabase/releases/04_rotaciones_y_modulos.sql`: ejecutar los bundles antes de publicar el nuevo backend. Cambia el radio general a 200 m, guarda evidencia de ubicacion independiente del QR y confirma las marcaciones y los cierres de forma transaccional. Ver `docs/shift-attendance.md` para la secuencia y las verificaciones.
+
+## Retiros de empleados (fase 55)
+
+Incluida en `supabase/releases/04_rotaciones_y_modulos.sql`; ejecutar los bundles antes de publicar el frontend actualizado. Agrega motivo y observación del retiro, conserva cada ciclo en `employee_retirements` y limpia los campos actuales al reingresar. Ver `docs/employee-retirements.md` para comportamiento, compatibilidad y pruebas.
+
+## Visitas de supervisores (fase 59)
+
+Incluida en `supabase/releases/04_rotaciones_y_modulos.sql`; ejecutar los bundles antes de publicar el frontend actualizado. Crea ciclos por contrato, asignaciones por zona, registro GPS, revisión y el bucket privado `visit-evidence`. Programar desde Turnos → Visitas y registrar desde Supervisor → Sedes → Registro de visitas. Ver `docs/site-visits.md` para activación, reglas y pruebas.

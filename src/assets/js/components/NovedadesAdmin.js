@@ -1,5 +1,5 @@
 import { el, qs, infoIcon, editIcon, activateIcon, deactivateIcon } from '../utils/dom.js';
-import { showInfoModal } from '../utils/infoModal.js';
+import { showCatalogDetail } from '../utils/catalogDetail.js';
 import { showActionModal } from '../utils/actionModal.js';
 import { createTablePagination } from '../utils/pagination.js';
 import { can, PERMS } from '../permissions.js';
@@ -30,8 +30,7 @@ export const NovedadesAdmin=(mount,deps={})=>{
           ])
         ]),
         el('div',{id:'novedadCards',className:'record-card-list'},[])
-      ]),
-      el('p',{id:'msg',className:'text-muted mt-2'},[' '])
+      ])
     ])
   ]);
 
@@ -78,7 +77,7 @@ export const NovedadesAdmin=(mount,deps={})=>{
   const filterStatus=()=> qs('#selStatus',ui).value;
   const filterReemp=()=> qs('#selReemp',ui).value;
   const filterNomina=()=> qs('#selNomina',ui).value;
-  function sortVal(n,key){ if(key==='createdAt'){ try{ const x=n.createdAt?.toDate?n.createdAt.toDate(): (n.createdAt?new Date(n.createdAt):null); return x?x.getTime():0; }catch{return 0;} } return String(n[key]??'').toLowerCase(); }
+  function sortVal(n,key){ if(key==='createdAt'){ try{ const x=n.createdAt? new Date(n.createdAt): null; return x?x.getTime():0; }catch{return 0;} } return String(n[key]??'').toLowerCase(); }
   function sortData(data){ if(!sortKey) return data; const out=[...data]; out.sort((a,b)=>{ const va=sortVal(a,sortKey); const vb=sortVal(b,sortKey); if(va===vb) return 0; return va>vb?sortDir:-sortDir; }); return out; }
   function updateSortIndicators(){ ui.querySelectorAll('th[data-sort]').forEach((th)=>{ const base=th.dataset.baseLabel||th.textContent.replace(/\s[\^v▲▼]$/,''); th.dataset.baseLabel=base; const key=th.getAttribute('data-sort'); th.textContent=(sortKey===key)?`${base} ${sortDir===1?'▲':'▼'}`:base; }); }
   function initSorting(){ ui.querySelectorAll('th[data-sort]').forEach((th)=> th.addEventListener('click',()=>{ const key=th.getAttribute('data-sort'); if(sortKey===key) sortDir=sortDir*-1; else { sortKey=key; sortDir=1; } paginator.reset(); render(); })); }
@@ -95,7 +94,6 @@ export const NovedadesAdmin=(mount,deps={})=>{
     const pageRows=paginator.slice(sorted);
     tbody.replaceChildren(...pageRows.map(n=> row(n)));
     cards.replaceChildren(...(pageRows.length?pageRows.map(n=> recordCard(n,{title:n.nombre||'-',subtitle:`Codigo novedad: ${n.codigoNovedad||'-'}`,meta:[['Codigo',n.codigo||'-'],['Reemplazo',(n.reemplazo||'').toUpperCase()||'-'],['Nomina',(n.nomina||'').toUpperCase()||'-']],actions:actionsCell(n)})):[el('p',{className:'text-muted record-card__empty'},['Sin novedades para mostrar.'])]));
-    const msg=qs('#msg',ui); if(msg) msg.textContent=`Total registros filtrados: ${data.length}`;
     updateSortIndicators();
   }
   function row(n){
@@ -111,15 +109,6 @@ export const NovedadesAdmin=(mount,deps={})=>{
     return tr;
   }
   function statusBadge(st){ return el('span',{className:'badge '+(st==='activo'?'badge--ok':'badge--off')},[st||'-']); }
-  function formatDate(ts){ try{ const d=ts?.toDate? ts.toDate(): (ts? new Date(ts): null); return d? new Date(d).toLocaleString(): '-'; }catch{ return '-'; } }
-  function auditInfoData(n){
-    const hasMod = Boolean(n.lastModifiedAt || n.lastModifiedByEmail || n.lastModifiedByUid);
-    return {
-      action: hasMod ? 'Ultima modificacion' : 'Creacion',
-      user: hasMod ? (n.lastModifiedByEmail||n.lastModifiedByUid||'-') : (n.createdByEmail||n.createdByUid||'-'),
-      date: hasMod ? formatDate(n.lastModifiedAt) : formatDate(n.createdAt)
-    };
-  }
   function actionsCell(n){
     const box=el('div',{className:'row-actions'},[]);
     if(canEdit){
@@ -140,7 +129,10 @@ export const NovedadesAdmin=(mount,deps={})=>{
       box.append(btnEdit,btnToggle);
     }
     const btnInfo=el('button',{className:'btn btn--icon',title:'Ver informacion','aria-label':'Ver informacion'},[infoIcon()]);
-    btnInfo.addEventListener('click',()=>{ const info=auditInfoData(n); showInfoModal('Informacion del registro',[`Evento: ${info.action}`,`Usuario: ${info.user}`,`Fecha: ${info.date}`]); });
+    btnInfo.addEventListener('click',()=>{ showCatalogDetail(`Informacion de la novedad - ${n.nombre || '-'}`, n, [
+      ['Datos generales', [['Codigo', n.codigo], ['Codigo novedad', n.codigoNovedad], ['Nombre', n.nombre], ['Estado', statusBadge(n.estado)]]],
+      ['Datos especificos', [['Reemplazo', (n.reemplazo || '').toUpperCase()], ['Nomina', (n.nomina || '').toUpperCase()]]]
+    ]); });
     box.append(btnInfo); return box;
   }
   async function openEditModal(n){

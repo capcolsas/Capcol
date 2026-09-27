@@ -1,0 +1,8484 @@
+import { EMPLOYEE_PORTAL_API_BASE, SUPABASE_PROFILES_TABLE } from '../../config.js';
+import { addIsoDays, buildScheduledShiftCandidate, listIsoDatesInRange, shiftRuleAppliesOnDate, todayBogota, SHIFT_GENERATION_DAYS } from '../../utils/shiftCalendar.js';
+import { hasValidSedeLocation, parseCoordinate } from '../../utils/sedeLocation.js';
+import { supabase } from './client.js';
+import { renewShiftRotations } from './rotations.js';
+import { validateShiftPlanCapacity } from '../../utils/shiftPlanCapacity.js';
+import { validateRetirementDetails } from '../../utils/employeeRetirement.js';
+
+const POSTGREST_PAGE_SIZE = 1000;
+const EMPLOYEE_DAILY_STATUS_RANGE_CHUNK_DAYS = 7;
+const EMPLOYEE_DAILY_STATUS_SELECT = [
+  'id',
+  'fecha',
+  'employee_id',
+  'documento',
+  'nombre',
+  'tipo_personal',
+  'sede_codigo',
+  'sede_nombre_snapshot',
+  'zona_codigo_snapshot',
+  'zona_nombre_snapshot',
+  'dependencia_codigo_snapshot',
+  'dependencia_nombre_snapshot',
+  'contrato_codigo',
+  'contrato_nombre',
+  'cliente_nombre_snapshot',
+  'cliente_nit_snapshot',
+  'estado_dia',
+  'asistio',
+  'novedad_codigo',
+  'novedad_nombre',
+  'requiere_reemplazo',
+  'decision_cobertura',
+  'reemplaza_a_employee_id',
+  'reemplaza_a_documento',
+  'reemplaza_a_nombre',
+  'reemplazado_por_employee_id',
+  'reemplazado_por_documento',
+  'reemplazado_por_nombre',
+  'servicio_programado',
+  'servicio_cubierto',
+  'cuenta_pago_servicio',
+  'cuenta_nomina',
+  'paga_nomina',
+  'motivo_nomina',
+  'source_attendance_id',
+  'source_replacement_id',
+  'source_absenteeism_id',
+  'source_incapacity_id',
+  'origen',
+  'closed',
+  'created_at',
+  'updated_at'
+].join(',');
+const tableReloaders = new Map();
+const REALTIME_SUBSCRIBE_TIMEOUT_MS = 12000;
+const INCAPACITY_SUPPORT_BUCKET = 'incapacidades-soportes';
+let realtimeChannelSeq = 0;
+
+async function syncRealtimeAuth(session = null) {
+  const token = String(session?.access_token || '').trim();
+  if (!token) return;
+  try {
+    await supabase.realtime.setAuth(token);
+  } catch (error) {
+    console.error('No se pudo sincronizar auth con Realtime:', error);
+  }
+}
+
+function registerTableReloader(table, reloader) {
+  if (!tableReloaders.has(table)) tableReloaders.set(table, new Set());
+  tableReloaders.get(table).add(reloader);
+  return () => tableReloaders.get(table)?.delete(reloader);
+}
+
+function nextRealtimeChannelName(base) {
+  realtimeChannelSeq += 1;
+  return `${base}-${realtimeChannelSeq}`;
+}
+
+function readAuthUrlParam(name) {
+  try {
+    const searchValue = new URLSearchParams(window.location.search || '').get(name);
+    if (searchValue) return searchValue;
+
+    const rawHash = String(window.location.hash || '').replace(/^#/, '');
+    const hashQuery = rawHash.includes('?') ? rawHash.slice(rawHash.indexOf('?') + 1) : rawHash;
+    return new URLSearchParams(hashQuery).get(name) || '';
+  } catch {
+    return '';
+  }
+}
+
+async function ensureAuthSessionFromUrl() {
+  const { data: current, error: sessionError } = await supabase.auth.getSession();
+  if (sessionError) throw sessionError;
+  if (current?.session) return current.session;
+
+  const code = readAuthUrlParam('code');
+  if (code) {
+    const { data, error } = await supabase.auth.exchangeCodeForSession(code);
+    if (error) throw error;
+    await syncRealtimeAuth(data.session || null);
+    return data.session || null;
+  }
+
+  const accessToken = readAuthUrlParam('access_token');
+  const refreshToken = readAuthUrlParam('refresh_token');
+  if (accessToken && refreshToken) {
+    const { data, error } = await supabase.auth.setSession({
+      access_token: accessToken,
+      refresh_token: refreshToken
+    });
+    if (error) throw error;
+    await syncRealtimeAuth(data.session || null);
+    return data.session || null;
+  }
+
+  return null;
+}
+
+function normalizeRealtimeError(label, status, error = null) {
+  if (error instanceof Error) return error;
+  const suffix = error?.message || error?.details || String(error || '').trim() || status || 'unknown';
+  return new Error(`Realtime ${label}: ${suffix}`);
+}
+
+function subscribeToRealtime(channel, {
+  label = 'channel',
+  onStatus = null,
+  onError = null,
+  timeoutMs = REALTIME_SUBSCRIBE_TIMEOUT_MS
+} = {}) {
+  let subscribed = false;
+  let failureNotified = false;
+  const timeoutId = timeoutMs > 0
+    ? setTimeout(() => {
+      if (subscribed || failureNotified) return;
+      failureNotified = true;
+      const timeoutError = normalizeRealtimeError(label, 'TIMED_OUT');
+      console.error(`Realtime ${label} timed out before subscribe.`);
+      onStatus?.('TIMED_OUT', timeoutError);
+      onError?.(timeoutError, 'TIMED_OUT');
+    }, timeoutMs)
+    : null;
+
+  const subscription = channel.subscribe((status, error) => {
+    if (status === 'SUBSCRIBED') {
+      subscribed = true;
+      if (timeoutId) clearTimeout(timeoutId);
+    }
+    if (status === 'CLOSED' && timeoutId) clearTimeout(timeoutId);
+    if ((status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') && timeoutId) clearTimeout(timeoutId);
+
+    onStatus?.(status, error || null);
+
+    if ((status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') && !failureNotified) {
+      failureNotified = true;
+      const realtimeError = normalizeRealtimeError(label, status, error);
+      console.error(`Realtime ${label} failed with status ${status}:`, error || realtimeError);
+      onError?.(realtimeError, status);
+    }
+  });
+
+  return {
+    subscription,
+    cancel() {
+      if (timeoutId) clearTimeout(timeoutId);
+    }
+  };
+}
+
+function shouldRefreshForDay(payload, day, column = 'fecha') {
+  const target = String(day || '').trim();
+  if (!target) return true;
+  const nextVal = String(payload?.new?.[column] || '').trim();
+  const prevVal = String(payload?.old?.[column] || '').trim();
+  if (nextVal || prevVal) return nextVal === target || prevVal === target;
+  return true;
+}
+
+function shouldRefreshForDateRange(payload, day, startColumn = 'fecha_inicio', endColumn = 'fecha_fin') {
+  const target = String(day || '').trim();
+  if (!target) return true;
+  const overlaps = (row = {}) => {
+    const start = String(row?.[startColumn] || '').trim();
+    const end = String(row?.[endColumn] || '').trim();
+    if (!start && !end) return false;
+    return (!start || start <= target) && (!end || end >= target);
+  };
+  if (overlaps(payload?.new) || overlaps(payload?.old)) return true;
+  const hasRange = payload?.new?.[startColumn] || payload?.new?.[endColumn] || payload?.old?.[startColumn] || payload?.old?.[endColumn];
+  return !hasRange;
+}
+
+async function notifyTableReload(table) {
+  const loaders = [...(tableReloaders.get(table) || [])];
+  await Promise.all(loaders.map(async (fn) => {
+    try {
+      await fn();
+    } catch (error) {
+      console.error(`No se pudo refrescar ${table}:`, error);
+    }
+  }));
+}
+
+async function selectAllRows(table, {
+  select = '*',
+  order = null,
+  ascending = false,
+  contratoCodigo = undefined
+} = {}) {
+  const rows = [];
+  let from = 0;
+
+  while (true) {
+    let query = supabase
+      .from(table)
+      .select(select)
+      .range(from, from + POSTGREST_PAGE_SIZE - 1);
+
+    if (order) {
+      query = query.order(order, { ascending });
+    }
+    if (contratoCodigo !== undefined) query = query.eq('contrato_codigo', contratoCodigo);
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    const batch = Array.isArray(data) ? data : [];
+    rows.push(...batch);
+
+    if (batch.length < POSTGREST_PAGE_SIZE) break;
+    from += POSTGREST_PAGE_SIZE;
+  }
+
+  return rows;
+}
+
+async function selectSmallTableRows(table, options = {}) {
+  return selectAllRows(table, options);
+}
+
+async function selectAdminStreamRows(table, options = {}) {
+  return selectAllRows(table, options);
+}
+
+async function selectPagedRows(buildQuery) {
+  const rows = [];
+  let from = 0;
+
+  while (true) {
+    const { data, error } = await buildQuery()
+      .range(from, from + POSTGREST_PAGE_SIZE - 1);
+    if (error) throw error;
+
+    const batch = Array.isArray(data) ? data : [];
+    rows.push(...batch);
+
+    if (batch.length < POSTGREST_PAGE_SIZE) break;
+    from += POSTGREST_PAGE_SIZE;
+  }
+
+  return rows;
+}
+
+async function countActiveRows(table) {
+  const { count, error } = await supabase
+    .from(table)
+    .select('id', { count: 'exact', head: true })
+    .or('estado.is.null,estado.eq.activo');
+  if (error) throw error;
+  return Number(count || 0);
+}
+
+function cleanPostgrestSearchTerm(value) {
+  return String(value || '').trim().replace(/[(),]/g, ' ').replace(/\s+/g, ' ');
+}
+
+function normalizeUser(user) {
+  if (!user) return null;
+  return {
+    uid: user.id,
+    email: user.email || '',
+    displayName: user.user_metadata?.display_name || user.user_metadata?.full_name || null,
+    documento: user.user_metadata?.documento || null
+  };
+}
+
+function normalizeProfileRow(uid, data = {}) {
+  const row = {
+    id: uid,
+    email: String(data.email || '').trim().toLowerCase() || null,
+    display_name: data.nombre || data.displayName || null,
+    documento: data.documento || null,
+    updated_at: new Date().toISOString()
+  };
+  if (data.role !== undefined) row.role = data.role || 'empleado';
+  if (data.estado !== undefined) row.estado = data.estado || 'activo';
+  if (data.contratoCodigo !== undefined) row.contrato_codigo = data.contratoCodigo || null;
+  if (data.contratosPermitidos !== undefined) {
+    row.contratos_permitidos = Array.isArray(data.contratosPermitidos) ? data.contratosPermitidos : [];
+  }
+  return row;
+}
+
+function mapUserProfileRow(row = {}) {
+  return {
+    uid: row.id,
+    email: row.email || '',
+    displayName: row.display_name || null,
+    documento: row.documento || null,
+    role: row.role || 'empleado',
+    estado: row.estado || 'activo',
+    zonaCodigo: row.zona_codigo || null,
+    zonasPermitidas: Array.isArray(row.zonas_permitidas) ? row.zonas_permitidas : [],
+    contratoCodigo: row.contrato_codigo || null,
+    contratosPermitidos: Array.isArray(row.contratos_permitidos) ? row.contratos_permitidos : [],
+    supervisorEligible: row.supervisor_eligible === true,
+    createdAt: row.created_at || null,
+    lastModifiedAt: row.updated_at || null,
+    createdByUid: row.created_by_uid || null,
+    createdByEmail: row.created_by_email || null,
+    lastModifiedByUid: row.last_modified_by_uid || null,
+    lastModifiedByEmail: row.last_modified_by_email || null,
+    deletedAt: row.deleted_at || null,
+    deletedByUid: row.deleted_by_uid || null,
+    deletedByEmail: row.deleted_by_email || null
+  };
+}
+
+function sanitizePermissionsRecord(data = {}) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return {};
+  return Object.fromEntries(
+    Object.entries(data).map(([key, value]) => [key, value === true])
+  );
+}
+
+function mapAuditLogRow(row = {}) {
+  return {
+    id: row.id,
+    ts: row.created_at || null,
+    actorUid: row.actor_uid || null,
+    actorEmail: row.actor_email || null,
+    targetType: row.target_type || null,
+    targetId: row.target_id || null,
+    action: row.action || null,
+    before: row.before_data || null,
+    after: row.after_data || null,
+    note: row.note || null
+  };
+}
+
+async function insertProfileIfMissing(uid, data = {}) {
+  const payload = normalizeProfileRow(uid, data);
+  const { error } = await supabase
+    .from(SUPABASE_PROFILES_TABLE)
+    .insert(payload);
+  if (error?.code === '23505') return;
+  if (error) throw error;
+}
+
+function normalizeTimestamp(value) {
+  if (!value) return null;
+  return value;
+}
+
+function formatHour(value) {
+  try {
+    const d = value ? new Date(value) : null;
+    if (!d || Number.isNaN(d.getTime())) return null;
+    return d.toLocaleTimeString('es-CO', {
+      hour12: false,
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
+    });
+  } catch {
+    return null;
+  }
+}
+
+function mapCatalogRow(row = {}) {
+  return {
+    id: row.id,
+    codigo: row.codigo || null,
+    nombre: row.nombre || null,
+    contratoCodigo: row.contrato_codigo || null,
+    contratoNombre: row.contrato_nombre || null,
+    clienteNombreSnapshot: row.cliente_nombre_snapshot || null,
+    clienteNitSnapshot: row.cliente_nit_snapshot || null,
+    estado: row.estado || 'activo',
+    createdByUid: row.created_by_uid || null,
+    createdByEmail: row.created_by_email || null,
+    createdAt: normalizeTimestamp(row.created_at),
+    updatedAt: normalizeTimestamp(row.updated_at)
+  };
+}
+
+function mapContractRow(row = {}) {
+  return {
+    ...mapCatalogRow(row),
+    referenceImagePath: row.reference_image_path || null,
+    numeroContrato: row.numero_contrato || null,
+    clienteNombre: row.cliente_nombre || null,
+    clienteNit: row.cliente_nit || null,
+    clienteContacto: row.cliente_contacto || null,
+    clienteEmail: row.cliente_email || null,
+    clienteTelefono: row.cliente_telefono || null,
+    fechaInicio: row.fecha_inicio || null,
+    fechaFin: row.fecha_fin || null
+  };
+}
+
+function mapSedeRow(row = {}) {
+  return {
+    ...mapCatalogRow(row),
+    dependenciaCodigo: row.dependencia_codigo || null,
+    dependenciaNombre: row.dependencia_nombre || null,
+    zonaCodigo: row.zona_codigo || null,
+    zonaNombre: row.zona_nombre || null,
+    numeroOperarios: typeof row.numero_operarios === 'number' ? row.numero_operarios : null,
+    jornada: row.jornada || 'lun_vie',
+    qrEnabled: row.qr_enabled === true,
+    qrLatitude: row.qr_latitude == null ? null : Number(row.qr_latitude),
+    qrLongitude: row.qr_longitude == null ? null : Number(row.qr_longitude),
+    qrRadiusMeters: row.qr_radius_meters == null ? 200 : Number(row.qr_radius_meters)
+  };
+}
+
+function mapQrDeviceRow(row = {}, sites = []) {
+  const assignedSites = (sites || [])
+    .map((site) => ({
+      sedeCodigo: site.sede_codigo || null,
+      sedeNombre: site.sede_nombre || null
+    }))
+    .filter((site) => site.sedeCodigo || site.sedeNombre);
+  const fallbackSite = row.sede_codigo || row.sede_nombre
+    ? [{ sedeCodigo: row.sede_codigo || null, sedeNombre: row.sede_nombre || null }]
+    : [];
+  return {
+    id: row.id,
+    deviceName: row.device_name || null,
+    estado: row.estado || 'activo',
+    lastSeenAt: row.last_seen_at || null,
+    revokedAt: row.revoked_at || null,
+    revokedByEmail: row.revoked_by_email || null,
+    createdAt: row.created_at || null,
+    createdByEmail: row.created_by_email || null,
+    lastModifiedAt: row.last_modified_at || null,
+    lastModifiedByEmail: row.last_modified_by_email || null,
+    sedes: assignedSites.length ? assignedSites : fallbackSite
+  };
+}
+
+function mapCargoRow(row = {}) {
+  return {
+    ...mapCatalogRow(row),
+    salario: row.salario == null ? null : Number(row.salario),
+    funciones: row.funciones || '',
+    marcacionMovil: row.marcacion_movil === true,
+    alineacionCrud: row.alineacion_crud || 'empleado'
+  };
+}
+
+function mapContractCargoRow(row = {}) {
+  return {
+    id: row.id,
+    contratoCodigo: row.contrato_codigo || null,
+    contratoNombre: row.contrato_nombre || null,
+    clienteNombreSnapshot: row.cliente_nombre_snapshot || null,
+    clienteNitSnapshot: row.cliente_nit_snapshot || null,
+    cargoCodigo: row.cargo_codigo || null,
+    cargoNombreSnapshot: row.cargo_nombre_snapshot || null,
+    salario: row.salario == null ? null : Number(row.salario),
+    estado: row.estado || 'activo',
+    createdByUid: row.created_by_uid || null,
+    createdByEmail: row.created_by_email || null,
+    createdAt: row.created_at || null,
+    updatedAt: row.updated_at || null
+  };
+}
+
+function mapNovedadRow(row = {}) {
+  return {
+    ...mapCatalogRow(row),
+    codigoNovedad: row.codigo_novedad || null,
+    reemplazo: row.reemplazo || null,
+    nomina: row.nomina || null
+  };
+}
+
+function mapEmployeeRow(row = {}) {
+  return {
+    ...mapCatalogRow(row),
+    documento: row.documento || null,
+    telefono: row.telefono || null,
+    fechaNacimiento: row.fecha_nacimiento || null,
+    eps: row.eps || null,
+    afp: row.afp || null,
+    arlRiesgo: row.arl_riesgo || null,
+    dotacionCamisa: row.dotacion_camisa || null,
+    dotacionPantalon: row.dotacion_pantalon || null,
+    dotacionZapatos: row.dotacion_zapatos || null,
+    cargoCodigo: row.cargo_codigo || null,
+    cargoNombre: row.cargo_nombre || null,
+    sedeCodigo: row.sede_codigo || null,
+    sedeNombre: row.sede_nombre || null,
+    zonaCodigo: row.zona_codigo || null,
+    zonaNombre: row.zona_nombre || null,
+    contratoCodigo: row.contrato_codigo || null,
+    contratoNombre: row.contrato_nombre || null,
+    clienteNombreSnapshot: row.cliente_nombre_snapshot || null,
+    clienteNitSnapshot: row.cliente_nit_snapshot || null,
+    fechaIngreso: row.fecha_ingreso || null,
+    fechaRetiro: row.fecha_retiro || null,
+    retiroMotivo: row.retiro_motivo || null,
+    retiroObservacion: row.retiro_observacion || null,
+    lastModifiedByUid: row.last_modified_by_uid || null,
+    lastModifiedByEmail: row.last_modified_by_email || null,
+    lastModifiedAt: row.last_modified_at || null
+  };
+}
+
+function mapProfileContractAccessRow(row = {}) {
+  return {
+    userId: row.user_id || null,
+    contratoCodigo: row.contrato_codigo || null,
+    estado: row.estado || 'activo',
+    createdByUid: row.created_by_uid || null,
+    createdByEmail: row.created_by_email || null,
+    createdAt: row.created_at || null,
+    updatedAt: row.updated_at || null
+  };
+}
+
+function mapSupernumerarioContractAccessRow(row = {}) {
+  return {
+    id: row.id || null,
+    employeeId: row.employee_id || null,
+    documento: row.documento || null,
+    contratoCodigo: row.contrato_codigo || null,
+    contratoNombre: row.contrato_nombre_snapshot || null,
+    clienteNombreSnapshot: row.cliente_nombre_snapshot || null,
+    clienteNitSnapshot: row.cliente_nit_snapshot || null,
+    estado: row.estado || 'activo',
+    fechaInicio: row.fecha_inicio || null,
+    fechaFin: row.fecha_fin || null,
+    createdAt: row.created_at || null,
+    updatedAt: row.updated_at || null
+  };
+}
+
+function mapSupervisorProfileRow(row = {}) {
+  return {
+    id: row.employee_id || row.id,
+    profileId: row.id,
+    codigo: row.employee_codigo || null,
+    documento: row.documento || null,
+    nombre: row.nombre || null,
+    cargoCodigo: row.cargo_codigo || null,
+    cargoNombre: row.cargo_nombre || null,
+    sedeCodigo: row.sede_codigo || null,
+    zonaCodigo: row.zona_codigo || null,
+    zonaNombre: row.zona_nombre || null,
+    fechaIngreso: row.fecha_ingreso || null,
+    fechaRetiro: row.fecha_retiro || null,
+    estado: row.estado || 'activo',
+    createdByUid: row.created_by_uid || null,
+    createdByEmail: row.created_by_email || null,
+    createdAt: row.created_at || null,
+    lastModifiedByUid: row.last_modified_by_uid || null,
+    lastModifiedByEmail: row.last_modified_by_email || null,
+    lastModifiedAt: row.last_modified_at || null
+  };
+}
+
+function mapByDocument(rows = []) {
+  const out = new Map();
+  rows.forEach((row) => {
+    const documento = String(row?.documento || '').trim();
+    if (!documento) return;
+    out.set(documento, row);
+  });
+  return out;
+}
+
+function mapCargoHistoryRow(row = {}) {
+  return {
+    id: row.id,
+    employeeId: row.employee_id || null,
+    employeeCodigo: row.employee_codigo || null,
+    documento: row.documento || null,
+    cargoCodigo: row.cargo_codigo || null,
+    cargoNombre: row.cargo_nombre || null,
+    sedeCodigo: row.sede_codigo || null,
+    sedeNombre: row.sede_nombre || null,
+    contratoCodigo: row.contrato_codigo || null,
+    contratoNombre: row.contrato_nombre || null,
+    clienteNombreSnapshot: row.cliente_nombre_snapshot || null,
+    clienteNitSnapshot: row.cliente_nit_snapshot || null,
+    fechaIngreso: row.fecha_ingreso || null,
+    fechaRetiro: row.fecha_retiro || null,
+    source: row.source || null,
+    createdAt: row.created_at || null
+  };
+}
+
+function mapImportHistoryRow(row = {}) {
+  return {
+    id: row.id,
+    fechaOperacion: row.fecha_operacion || null,
+    ts: row.ts || null,
+    source: row.source || null,
+    plannedCount: Number(row.planned_count || 0),
+    expectedCount: Number(row.expected_count || 0),
+    foundCount: Number(row.found_count || 0),
+    missingCount: Number(row.missing_count || 0),
+    extraCount: Number(row.extra_count || 0),
+    missingSupervisorsCount: Number(row.missing_supervisors_count || 0),
+    missingSupernumerariosCount: Number(row.missing_supernumerarios_count || 0),
+    missingDocs: Array.isArray(row.missing_docs) ? row.missing_docs : [],
+    extraDocs: Array.isArray(row.extra_docs) ? row.extra_docs : [],
+    missingSupervisors: Array.isArray(row.missing_supervisors) ? row.missing_supervisors : [],
+    missingSupernumerarios: Array.isArray(row.missing_supernumerarios) ? row.missing_supernumerarios : [],
+    errores: Array.isArray(row.errores) ? row.errores : [],
+    confirmadoPorUid: row.confirmado_por_uid || null,
+    confirmadoPorEmail: row.confirmado_por_email || null,
+    planeados: Number(row.planned_count || 0),
+    contratados: Number(row.expected_count || 0),
+    closedByUid: row.confirmado_por_uid || null,
+    closedByEmail: row.confirmado_por_email || null
+  };
+}
+
+function mapAttendanceRow(row = {}) {
+  const rawNovedad = row.novedad || null;
+  const novedadText = String(rawNovedad || '').trim();
+  const novedadCodigo = /^\d+$/.test(novedadText) ? novedadText : null;
+  const createdAt = row.created_at || null;
+  return {
+    id: row.id,
+    fecha: row.fecha || null,
+    empleadoId: row.empleado_id || null,
+    documento: row.documento || null,
+    nombre: row.nombre || null,
+    sedeCodigo: row.sede_codigo || null,
+    sedeNombre: row.sede_nombre || null,
+    contratoCodigo: row.contrato_codigo || null,
+    contratoNombre: row.contrato_nombre || null,
+    clienteNombreSnapshot: row.cliente_nombre_snapshot || null,
+    clienteNitSnapshot: row.cliente_nit_snapshot || null,
+    turnoId: row.turno_id || null,
+    fechaOperativa: row.fecha_operativa || null,
+    registroEstado: row.registro_estado || null,
+    timingAlertType: row.timing_alert_type || null,
+    timingControlRequired: row.timing_control_required === true,
+    employeeReason: row.employee_reason || null,
+    requiresReview: row.requires_review === true,
+    timingAlerts: row.timing_alerts || {},
+    earlyEntryMinutes: Number(row.early_entry_minutes || 0),
+    lateEntryMinutes: Number(row.late_entry_minutes || 0),
+    earlyEntryReason: row.early_entry_reason || null,
+    lateEntryReason: row.late_entry_reason || null,
+    asistio: row.asistio === true,
+    novedad: rawNovedad,
+    novedadCodigo,
+    novedadNombre: novedadCodigo ? null : rawNovedad,
+    reportedAt: row.reported_at || null,
+    markingMethod: row.marking_method || null,
+    createdAt,
+    hora: formatHour(createdAt)
+  };
+}
+
+function mapImportReplacementRow(row = {}) {
+  return {
+    id: row.id,
+    importId: row.import_id || null,
+    fechaOperacion: row.fecha_operacion || null,
+    fecha: row.fecha || null,
+    empleadoId: row.empleado_id || null,
+    documento: row.documento || null,
+    nombre: row.nombre || null,
+    sedeCodigo: row.sede_codigo || null,
+    sedeNombre: row.sede_nombre || null,
+    contratoCodigo: row.contrato_codigo || null,
+    contratoNombre: row.contrato_nombre || null,
+    clienteNombreSnapshot: row.cliente_nombre_snapshot || null,
+    clienteNitSnapshot: row.cliente_nit_snapshot || null,
+    novedadCodigo: row.novedad_codigo || null,
+    novedadNombre: row.novedad_nombre || null,
+    decision: row.decision || 'ausentismo',
+    supernumerarioId: row.supernumerario_id || null,
+    supernumerarioDocumento: row.supernumerario_documento || null,
+    supernumerarioNombre: row.supernumerario_nombre || null,
+    ts: row.ts || null,
+    actorUid: row.actor_uid || null,
+    actorEmail: row.actor_email || null
+  };
+}
+
+function mapEmployeeDailyStatusRow(row = {}) {
+  const pagaNomina = row.paga_nomina;
+  return {
+    id: row.id,
+    fecha: row.fecha || null,
+    employeeId: row.employee_id || null,
+    documento: row.documento || null,
+    nombre: row.nombre || null,
+    tipoPersonal: row.tipo_personal || 'empleado',
+    sedeCodigo: row.sede_codigo || null,
+    sedeNombreSnapshot: row.sede_nombre_snapshot || null,
+    zonaCodigoSnapshot: row.zona_codigo_snapshot || null,
+    zonaNombreSnapshot: row.zona_nombre_snapshot || null,
+    dependenciaCodigoSnapshot: row.dependencia_codigo_snapshot || null,
+    dependenciaNombreSnapshot: row.dependencia_nombre_snapshot || null,
+    contratoCodigo: row.contrato_codigo || null,
+    contratoNombre: row.contrato_nombre || null,
+    clienteNombreSnapshot: row.cliente_nombre_snapshot || null,
+    clienteNitSnapshot: row.cliente_nit_snapshot || null,
+    estadoDia: row.estado_dia || null,
+    asistio: row.asistio === true,
+    novedadCodigo: row.novedad_codigo || null,
+    novedadNombre: row.novedad_nombre || null,
+    requiereReemplazo: row.requiere_reemplazo === true,
+    decisionCobertura: row.decision_cobertura || 'no_aplica',
+    reemplazaAEmployeeId: row.reemplaza_a_employee_id || null,
+    reemplazaADocumento: row.reemplaza_a_documento || null,
+    reemplazaANombre: row.reemplaza_a_nombre || null,
+    reemplazadoPorEmployeeId: row.reemplazado_por_employee_id || null,
+    reemplazadoPorDocumento: row.reemplazado_por_documento || null,
+    reemplazadoPorNombre: row.reemplazado_por_nombre || null,
+    servicioProgramado: row.servicio_programado === true,
+    servicioCubierto: row.servicio_cubierto === true,
+    cuentaPagoServicio: row.cuenta_pago_servicio === true,
+    cuentaNomina: row.cuenta_nomina !== false,
+    pagaNomina: pagaNomina == null ? null : pagaNomina === true,
+    motivoNomina: row.motivo_nomina || null,
+    sourceAttendanceId: row.source_attendance_id || null,
+    sourceReplacementId: row.source_replacement_id || null,
+    sourceAbsenteeismId: row.source_absenteeism_id || null,
+    sourceIncapacityId: row.source_incapacity_id || null,
+    origen: row.origen || 'manual',
+    closed: row.closed === true,
+    createdAt: row.created_at || null,
+    updatedAt: row.updated_at || null
+  };
+}
+
+function mapSedeStatusRow(row = {}) {
+  return {
+    id: row.id,
+    fecha: row.fecha || null,
+    sedeCodigo: row.sede_codigo || null,
+    sedeNombre: row.sede_nombre || null,
+    contratoCodigo: row.contrato_codigo || null,
+    contratoNombre: row.contrato_nombre || null,
+    clienteNombreSnapshot: row.cliente_nombre_snapshot || null,
+    clienteNitSnapshot: row.cliente_nit_snapshot || null,
+    operariosEsperados: Number(row.operarios_esperados || 0),
+    operariosPresentes: Number(row.operarios_presentes || 0),
+    faltantes: Number(row.faltantes || 0),
+    createdAt: row.created_at || null
+  };
+}
+
+function mapDailyMetricsRow(row = {}) {
+  return {
+    id: row.id,
+    fecha: row.fecha || null,
+    planned: Number(row.planned || 0),
+    expected: Number(row.expected || 0),
+    unique: Number(row.unique_count || 0),
+    missing: Number(row.missing || 0),
+    attendanceCount: Number(row.attendance_count || 0),
+    absenteeism: Number(row.absenteeism || 0),
+    paidServices: Number(row.paid_services || 0),
+    noContracted: Number(row.no_contracted || 0),
+    closed: row.closed === true,
+    createdAt: row.created_at || null,
+    updatedAt: row.updated_at || null
+  };
+}
+
+function mapDailyClosureRow(row = {}) {
+  return {
+    id: row.id,
+    fecha: row.fecha || null,
+    status: row.status || 'closed',
+    locked: row.locked === true,
+    planeados: Number(row.planeados || 0),
+    contratados: Number(row.contratados || 0),
+    asistencias: Number(row.asistencias || 0),
+    ausentismos: Number(row.ausentismos || 0),
+    faltan: Number(row.faltan || 0),
+    sobran: Number(row.sobran || 0),
+    noContratados: Number(row.no_contratados || 0),
+    closedByUid: row.closed_by_uid || null,
+    closedByEmail: row.closed_by_email || null,
+    closedAt: row.closed_at || null,
+    createdAt: row.created_at || null,
+    updatedAt: row.updated_at || null
+  };
+}
+
+function mapDailySedeClosureRow(row = {}) {
+  return {
+    id: row.id,
+    fecha: row.fecha || null,
+    sedeCodigo: row.sede_codigo || null,
+    sedeNombre: row.sede_nombre || null,
+    zonaCodigo: row.zona_codigo || null,
+    zonaNombre: row.zona_nombre || null,
+    dependenciaCodigo: row.dependencia_codigo || null,
+    dependenciaNombre: row.dependencia_nombre || null,
+    contratoCodigo: row.contrato_codigo || null,
+    contratoNombre: row.contrato_nombre || null,
+    clienteNombreSnapshot: row.cliente_nombre_snapshot || null,
+    clienteNitSnapshot: row.cliente_nit_snapshot || null,
+    planeados: Number(row.planeados || 0),
+    contratados: Number(row.contratados || 0),
+    registrados: Number(row.registrados || 0),
+    faltantes: Number(row.faltantes || 0),
+    sobrantes: Number(row.sobrantes || 0),
+    createdAt: row.created_at || null,
+    updatedAt: row.updated_at || null
+  };
+}
+
+function mapDailyContractMetricsRow(row = {}) {
+  return {
+    fecha: row.fecha || null,
+    contratoCodigo: row.contrato_codigo || null,
+    contratoNombre: row.contrato_nombre || null,
+    clienteNombreSnapshot: row.cliente_nombre_snapshot || null,
+    clienteNitSnapshot: row.cliente_nit_snapshot || null,
+    planeados: Number(row.planeados || 0),
+    contratados: Number(row.contratados || 0),
+    asistencias: Number(row.asistencias || 0),
+    ausentismos: Number(row.ausentismos || 0),
+    pagados: Number(row.pagados || 0),
+    noContratados: Number(row.no_contratados || 0),
+    faltan: Number(row.faltan || 0),
+    sobran: Number(row.sobran || 0),
+    registrados: Number(row.registrados || row.asistencias || 0),
+    faltantes: Number(row.faltantes || row.faltan || 0),
+    sobrantes: Number(row.sobrantes || row.sobran || 0),
+    closed: row.closed === true,
+    createdAt: row.created_at || null,
+    updatedAt: row.updated_at || null
+  };
+}
+
+function mapIncapacidadRow(row = {}) {
+  return {
+    id: row.id,
+    employeeId: row.employee_id || null,
+    documento: row.documento || null,
+    nombre: row.nombre || null,
+    contratoCodigo: row.contrato_codigo || null,
+    contratoNombre: row.contrato_nombre || null,
+    clienteNombreSnapshot: row.cliente_nombre_snapshot || null,
+    clienteNitSnapshot: row.cliente_nit_snapshot || null,
+    fechaInicio: row.fecha_inicio || null,
+    fechaFin: row.fecha_fin || null,
+    estado: row.estado || 'activo',
+    source: row.source || null,
+    canalRegistro: row.canal_registro || null,
+    soporteUrl: row.soporte_url || null,
+    soporteNombre: row.soporte_nombre || null,
+    soporteTipo: row.soporte_tipo || null,
+    soporteStoragePath: row.soporte_storage_path || null,
+    whatsappMessageId: row.whatsapp_message_id || null,
+    origenTurnoId: row.origen_turno_id || null,
+    reportedAt: row.reported_at || null,
+    requiresReview: row.requires_review === true,
+    createdAt: row.created_at || null,
+    updatedAt: row.updated_at || null
+  };
+}
+
+function mapShiftTemplateRow(row = {}) {
+  return {
+    id: row.id,
+    nombre: row.nombre || null,
+    contratoCodigo: row.contrato_codigo || null,
+    contratoNombre: row.contrato_nombre || null,
+    clienteNombreSnapshot: row.cliente_nombre_snapshot || null,
+    clienteNitSnapshot: row.cliente_nit_snapshot || null,
+    notasProgramacion: row.notas_programacion || null,
+    estado: row.estado || 'activo',
+    orden: Number(row.orden || 0),
+    createdByUid: row.created_by_uid || null,
+    createdByEmail: row.created_by_email || null,
+    createdAt: row.created_at || null,
+    updatedAt: row.updated_at || null
+  };
+}
+
+function mapShiftTemplateRuleRow(row = {}) {
+  return {
+    id: row.id,
+    templateId: row.template_id || null,
+    nombre: row.nombre || null,
+    tipoDia: row.tipo_dia || 'dia_semana',
+    diaSemana: row.dia_semana || null,
+    horaInicio: row.hora_inicio || null,
+    horaFin: row.hora_fin || null,
+    cruzaDia: row.cruza_dia === true,
+    almuerzoMinutos: row.almuerzo_minutos == null ? undefined : Number(row.almuerzo_minutos),
+    frecuenciaTipo: row.frecuencia_tipo || 'todos',
+    frecuenciaSemanas: Number(row.frecuencia_semanas || 1),
+    fechaAncla: row.fecha_ancla || null,
+    semanaMes: row.semana_mes == null ? null : Number(row.semana_mes || 0),
+    festivoModo: row.festivo_modo || 'excluir',
+    ventanaEntradaAntesMinutos: Number(row.ventana_entrada_antes_minutos || 0),
+    alertaEntradaAntesMinutos: Number(row.alerta_entrada_antes_minutos ?? row.ventana_entrada_antes_minutos ?? 0),
+    ventanaEntradaDespuesMinutos: Number(row.ventana_entrada_despues_minutos || 0),
+    alertaEntradaDespuesMinutos: Number(row.alerta_entrada_despues_minutos ?? row.ventana_entrada_despues_minutos ?? 0),
+    ventanaSalidaAntesMinutos: Number(row.ventana_salida_antes_minutos || 0),
+    alertaSalidaAntesMinutos: Number(row.alerta_salida_antes_minutos ?? row.ventana_salida_antes_minutos ?? 0),
+    ventanaSalidaDespuesMinutos: Number(row.ventana_salida_despues_minutos || 0),
+    alertaSalidaDespuesMinutos: Number(row.alerta_salida_despues_minutos ?? row.ventana_salida_despues_minutos ?? 0),
+    ventanaNovedadHoras: Number(row.ventana_novedad_horas || 0),
+    estado: row.estado || 'activo',
+    orden: Number(row.orden || 0),
+    notas: row.notas || null,
+    createdByUid: row.created_by_uid || null,
+    createdByEmail: row.created_by_email || null,
+    createdAt: row.created_at || null,
+    updatedAt: row.updated_at || null
+  };
+}
+
+function mapShiftSitePlanAssignmentRow(row = {}) {
+  return {
+    id: row.id,
+    templateId: row.template_id || null,
+    sedeCodigo: row.sede_codigo || null,
+    sedeNombre: row.sede_nombre || null,
+    contratoCodigo: row.contrato_codigo || null,
+    contratoNombre: row.contrato_nombre || null,
+    clienteNombreSnapshot: row.cliente_nombre_snapshot || null,
+    clienteNitSnapshot: row.cliente_nit_snapshot || null,
+    operariosPlaneados: Number(row.operarios_planeados || 0),
+    horizonDays: SHIFT_GENERATION_DAYS,
+    estado: row.estado || 'activo',
+    activatedAt: row.activated_at || null,
+    inactivatedAt: row.inactivated_at || null,
+    createdByUid: row.created_by_uid || null,
+    createdByEmail: row.created_by_email || null,
+    createdAt: row.created_at || null,
+    updatedAt: row.updated_at || null
+  };
+}
+
+function mapScheduledShiftRow(row = {}) {
+  return {
+    id: row.id,
+    templateId: row.template_id || null,
+    templateRuleId: row.template_rule_id || null,
+    fechaOperativa: row.fecha_operativa || null,
+    sedeCodigo: row.sede_codigo || null,
+    sedeNombre: row.sede_nombre || null,
+    contratoCodigo: row.contrato_codigo || null,
+    contratoNombre: row.contrato_nombre || null,
+    clienteNombreSnapshot: row.cliente_nombre_snapshot || null,
+    clienteNitSnapshot: row.cliente_nit_snapshot || null,
+    nombre: row.nombre || null,
+    startsAt: row.starts_at || null,
+    endsAt: row.ends_at || null,
+    estado: row.estado || 'programado',
+    operariosPlaneados: Number(row.operarios_planeados || 0),
+    almuerzoMinutos: row.almuerzo_minutos == null ? undefined : Number(row.almuerzo_minutos),
+    openedAt: row.opened_at || null,
+    closedAt: row.closed_at || null,
+    closedByUid: row.closed_by_uid || null,
+    closedByEmail: row.closed_by_email || null,
+    createdAt: row.created_at || null,
+    updatedAt: row.updated_at || null
+  };
+}
+
+function mapShiftAssignmentRow(row = {}) {
+  return {
+    id: row.id,
+    scheduledShiftId: row.scheduled_shift_id || null,
+    employeeId: row.employee_id || null,
+    documento: row.documento || null,
+    nombre: row.nombre || null,
+    cargoCodigo: row.cargo_codigo || null,
+    cargoNombre: row.cargo_nombre || null,
+    sedeCodigo: row.sede_codigo || null,
+    contratoCodigo: row.contrato_codigo || null,
+    contratoNombre: row.contrato_nombre || null,
+    clienteNombreSnapshot: row.cliente_nombre_snapshot || null,
+    clienteNitSnapshot: row.cliente_nit_snapshot || null,
+    estado: row.estado || 'asignado',
+    createdAt: row.created_at || null,
+    updatedAt: row.updated_at || null
+  };
+}
+
+function mapShiftTimeAuthorizationRow(row = {}) {
+  return {
+    id: row.id,
+    scheduledShiftId: row.scheduled_shift_id || null,
+    employeeId: row.employee_id || null,
+    documento: row.documento || null,
+    contratoCodigo: row.contrato_codigo || null,
+    contratoNombre: row.contrato_nombre || null,
+    clienteNombreSnapshot: row.cliente_nombre_snapshot || null,
+    clienteNitSnapshot: row.cliente_nit_snapshot || null,
+    authorizationType: row.authorization_type || null,
+    authorizedFrom: row.authorized_from || null,
+    authorizedUntil: row.authorized_until || null,
+    minutesAuthorized: row.minutes_authorized == null ? null : Number(row.minutes_authorized || 0),
+    reason: row.reason || null,
+    estado: row.estado || 'pendiente',
+    requestedByUid: row.requested_by_uid || null,
+    requestedByEmail: row.requested_by_email || null,
+    approvedByUid: row.approved_by_uid || null,
+    approvedByEmail: row.approved_by_email || null,
+    approvedAt: row.approved_at || null,
+    createdAt: row.created_at || null,
+    updatedAt: row.updated_at || null
+  };
+}
+
+function mapEmployeeShiftStatusRow(row = {}) {
+  return {
+    id: row.id,
+    scheduledShiftId: row.scheduled_shift_id || null,
+    fechaOperativa: row.fecha_operativa || null,
+    employeeId: row.employee_id || null,
+    documento: row.documento || null,
+    nombre: row.nombre || null,
+    sedeCodigo: row.sede_codigo || null,
+    contratoCodigo: row.contrato_codigo || null,
+    contratoNombre: row.contrato_nombre || row.contrato_nombre_snapshot || null,
+    clienteNombreSnapshot: row.cliente_nombre_snapshot || null,
+    clienteNitSnapshot: row.cliente_nit_snapshot || null,
+    estadoTurno: row.estado_turno || 'programado',
+    asistio: row.asistio === true,
+    entradaAt: row.entrada_at || null,
+    salidaAt: row.salida_at || null,
+    reviewDecisions: row.review_decisions || {},
+    novedadCodigo: row.novedad_codigo || null,
+    novedadNombre: row.novedad_nombre || null,
+    timingAlerts: row.timing_alerts || {},
+    earlyEntryMinutes: Number(row.early_entry_minutes || 0),
+    lateEntryMinutes: Number(row.late_entry_minutes || 0),
+    earlyExitMinutes: Number(row.early_exit_minutes || 0),
+    lateExitMinutes: Number(row.late_exit_minutes || 0),
+    earlyEntryReason: row.early_entry_reason || null,
+    lateEntryReason: row.late_entry_reason || null,
+    earlyExitReason: row.early_exit_reason || null,
+    lateExitReason: row.late_exit_reason || null,
+    entryAuthorizationId: row.entry_authorization_id || null,
+    exitAuthorizationId: row.exit_authorization_id || null,
+    requiresReview: row.requires_review === true,
+    requiereReemplazo: row.requiere_reemplazo === true,
+    decisionCobertura: row.decision_cobertura || 'no_aplica',
+    reemplazadoPorEmployeeId: row.reemplazado_por_employee_id || null,
+    reemplazadoPorDocumento: row.reemplazado_por_documento || null,
+    reemplazadoPorNombre: row.reemplazado_por_nombre || null,
+    closed: row.closed === true,
+    sourceAttendanceId: row.source_attendance_id || null,
+    sourceExitId: row.source_exit_id || null,
+    sourceIncapacityId: row.source_incapacity_id || null,
+    sourceReplacementId: row.source_replacement_id || null,
+    createdAt: row.created_at || null,
+    updatedAt: row.updated_at || null
+  };
+}
+
+function mapShiftClosureRow(row = {}) {
+  return {
+    id: row.id,
+    scheduledShiftId: row.scheduled_shift_id || null,
+    fechaOperativa: row.fecha_operativa || null,
+    sedeCodigo: row.sede_codigo || null,
+    contratoCodigo: row.contrato_codigo || null,
+    contratoNombre: row.contrato_nombre || null,
+    clienteNombreSnapshot: row.cliente_nombre_snapshot || null,
+    clienteNitSnapshot: row.cliente_nit_snapshot || null,
+    planeados: Number(row.planeados || 0),
+    asignados: Number(row.asignados || 0),
+    registrados: Number(row.registrados || 0),
+    ausencias: Number(row.ausencias || 0),
+    reemplazos: Number(row.reemplazos || 0),
+    faltantes: Number(row.faltantes || 0),
+    sobrantes: Number(row.sobrantes || 0),
+    entradasFueraVentana: Number(row.entradas_fuera_ventana || 0),
+    salidasFueraVentana: Number(row.salidas_fuera_ventana || 0),
+    salidasPendientes: Number(row.salidas_pendientes || 0),
+    autorizacionesPendientes: Number(row.autorizaciones_pendientes || 0),
+    ajustesPendientes: Number(row.ajustes_pendientes || 0),
+    closedByUid: row.closed_by_uid || null,
+    closedByEmail: row.closed_by_email || null,
+    closedAt: row.closed_at || null,
+    snapshot: row.snapshot || {},
+    createdAt: row.created_at || null,
+    updatedAt: row.updated_at || null
+  };
+}
+
+function mapShiftAdjustmentRow(row = {}) {
+  return {
+    id: row.id,
+    scheduledShiftId: row.scheduled_shift_id || null,
+    employeeId: row.employee_id || null,
+    documento: row.documento || null,
+    contratoCodigo: row.contrato_codigo || null,
+    contratoNombre: row.contrato_nombre || null,
+    clienteNombreSnapshot: row.cliente_nombre_snapshot || null,
+    clienteNitSnapshot: row.cliente_nit_snapshot || null,
+    tipo: row.tipo || null,
+    estado: row.estado || 'pendiente',
+    beforeSnapshot: row.before_snapshot || {},
+    afterSnapshot: row.after_snapshot || {},
+    motivo: row.motivo || null,
+    reportedAt: row.reported_at || null,
+    approvedByUid: row.approved_by_uid || null,
+    approvedByEmail: row.approved_by_email || null,
+    approvedAt: row.approved_at || null,
+    createdAt: row.created_at || null,
+    updatedAt: row.updated_at || null
+  };
+}
+
+function incapacityOverlapsRange(row = {}, dateFrom = '', dateTo = '') {
+  const from = String(dateFrom || '').trim();
+  const to = String(dateTo || '').trim();
+  const start = String(row?.fechaInicio || row?.fecha_inicio || '').trim();
+  const end = String(row?.fechaFin || row?.fecha_fin || start).trim();
+  if (!start && !end) return true;
+  if (from && end && end < from) return false;
+  if (to && start && start > to) return false;
+  return true;
+}
+
+function numberOrDefault(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function nullableNumber(value) {
+  if (value == null || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function shiftTemplatePayload(data = {}, { includeAudit = false } = {}) {
+  const payload = {};
+  if (data.nombre !== undefined) payload.nombre = String(data.nombre || '').trim() || null;
+  if (data.contratoCodigo !== undefined) payload.contrato_codigo = String(data.contratoCodigo || '').trim() || null;
+  if (data.contratoNombre !== undefined) payload.contrato_nombre = String(data.contratoNombre || '').trim() || null;
+  if (data.clienteNombreSnapshot !== undefined) payload.cliente_nombre_snapshot = String(data.clienteNombreSnapshot || '').trim() || null;
+  if (data.clienteNitSnapshot !== undefined) payload.cliente_nit_snapshot = String(data.clienteNitSnapshot || '').trim() || null;
+  if (data.notasProgramacion !== undefined) payload.notas_programacion = String(data.notasProgramacion || '').trim() || null;
+  if (data.estado !== undefined) payload.estado = String(data.estado || 'activo').trim() || 'activo';
+  if (data.orden !== undefined) payload.orden = numberOrDefault(data.orden, 0);
+  if (includeAudit) Object.assign(payload, data.audit || {});
+  return payload;
+}
+
+function shiftTemplateRulePayload(data = {}, { includeAudit = false } = {}) {
+  const payload = {};
+  if (data.templateId !== undefined) payload.template_id = data.templateId || null;
+  if (data.nombre !== undefined) payload.nombre = String(data.nombre || '').trim() || null;
+  if (data.tipoDia !== undefined) payload.tipo_dia = String(data.tipoDia || 'dia_semana').trim() || 'dia_semana';
+  if (data.diaSemana !== undefined) payload.dia_semana = String(data.diaSemana || '').trim() || null;
+  if (data.horaInicio !== undefined) payload.hora_inicio = String(data.horaInicio || '').trim() || null;
+  if (data.horaFin !== undefined) payload.hora_fin = String(data.horaFin || '').trim() || null;
+  if (data.cruzaDia !== undefined) payload.cruza_dia = data.cruzaDia === true;
+  if (data.almuerzoMinutos !== undefined) payload.almuerzo_minutos = Math.min(240, Math.max(0, numberOrDefault(data.almuerzoMinutos, 0)));
+  if (data.frecuenciaTipo !== undefined) payload.frecuencia_tipo = String(data.frecuenciaTipo || 'todos').trim() || 'todos';
+  if (data.frecuenciaSemanas !== undefined) payload.frecuencia_semanas = Math.max(1, numberOrDefault(data.frecuenciaSemanas, 1));
+  if (data.fechaAncla !== undefined) payload.fecha_ancla = String(data.fechaAncla || '').trim() || null;
+  if (data.semanaMes !== undefined) payload.semana_mes = nullableNumber(data.semanaMes);
+  if (data.festivoModo !== undefined) payload.festivo_modo = String(data.festivoModo || 'excluir').trim() || 'excluir';
+  if (data.alertaEntradaAntesMinutos !== undefined) payload.alerta_entrada_antes_minutos = Number(data.alertaEntradaAntesMinutos);
+  if (data.ventanaEntradaAntesMinutos !== undefined) payload.ventana_entrada_antes_minutos = Math.max(0, numberOrDefault(data.ventanaEntradaAntesMinutos, 0));
+  if (data.alertaEntradaDespuesMinutos !== undefined) payload.alerta_entrada_despues_minutos = Number(data.alertaEntradaDespuesMinutos);
+  if (data.ventanaEntradaDespuesMinutos !== undefined) payload.ventana_entrada_despues_minutos = Math.max(0, numberOrDefault(data.ventanaEntradaDespuesMinutos, 0));
+  if (data.alertaSalidaAntesMinutos !== undefined) payload.alerta_salida_antes_minutos = Number(data.alertaSalidaAntesMinutos);
+  if (data.ventanaSalidaAntesMinutos !== undefined) payload.ventana_salida_antes_minutos = Math.max(0, numberOrDefault(data.ventanaSalidaAntesMinutos, 0));
+  if (data.alertaSalidaDespuesMinutos !== undefined) payload.alerta_salida_despues_minutos = Number(data.alertaSalidaDespuesMinutos);
+  if (data.ventanaSalidaDespuesMinutos !== undefined) payload.ventana_salida_despues_minutos = Math.max(0, numberOrDefault(data.ventanaSalidaDespuesMinutos, 0));
+  if (data.ventanaNovedadHoras !== undefined) payload.ventana_novedad_horas = Math.max(0, numberOrDefault(data.ventanaNovedadHoras, 0));
+  if (data.estado !== undefined) payload.estado = String(data.estado || 'activo').trim() || 'activo';
+  if (data.orden !== undefined) payload.orden = numberOrDefault(data.orden, 0);
+  if (data.notas !== undefined) payload.notas = String(data.notas || '').trim() || null;
+  if (includeAudit) Object.assign(payload, data.audit || {});
+  return payload;
+}
+
+function scheduledShiftPayload(data = {}) {
+  const payload = {};
+  if (data.templateId !== undefined) payload.template_id = data.templateId || null;
+  if (data.templateRuleId !== undefined) payload.template_rule_id = data.templateRuleId || null;
+  if (data.fechaOperativa !== undefined) payload.fecha_operativa = String(data.fechaOperativa || '').trim() || null;
+  if (data.sedeCodigo !== undefined) payload.sede_codigo = String(data.sedeCodigo || '').trim() || null;
+  if (data.sedeNombre !== undefined) payload.sede_nombre = String(data.sedeNombre || '').trim() || null;
+  if (data.contratoCodigo !== undefined) payload.contrato_codigo = String(data.contratoCodigo || '').trim() || null;
+  if (data.contratoNombre !== undefined) payload.contrato_nombre = String(data.contratoNombre || '').trim() || null;
+  if (data.clienteNombreSnapshot !== undefined) payload.cliente_nombre_snapshot = String(data.clienteNombreSnapshot || '').trim() || null;
+  if (data.clienteNitSnapshot !== undefined) payload.cliente_nit_snapshot = String(data.clienteNitSnapshot || '').trim() || null;
+  if (data.nombre !== undefined) payload.nombre = String(data.nombre || '').trim() || null;
+  if (data.startsAt !== undefined) payload.starts_at = data.startsAt || null;
+  if (data.endsAt !== undefined) payload.ends_at = data.endsAt || null;
+  if (data.estado !== undefined) payload.estado = String(data.estado || 'programado').trim() || 'programado';
+  if (data.operariosPlaneados !== undefined) payload.operarios_planeados = Math.max(0, numberOrDefault(data.operariosPlaneados, 0));
+  if (data.almuerzoMinutos !== undefined) payload.almuerzo_minutos = Math.min(240, Math.max(0, numberOrDefault(data.almuerzoMinutos, 0)));
+  if (data.openedAt !== undefined) payload.opened_at = data.openedAt || null;
+  if (data.closedAt !== undefined) payload.closed_at = data.closedAt || null;
+  if (data.closedByUid !== undefined) payload.closed_by_uid = data.closedByUid || null;
+  if (data.closedByEmail !== undefined) payload.closed_by_email = data.closedByEmail || null;
+  return payload;
+}
+
+function shiftSitePlanAssignmentPayload(data = {}, audit = null) {
+  const payload = {};
+  if (data.templateId !== undefined) payload.template_id = data.templateId || null;
+  if (data.sedeCodigo !== undefined) payload.sede_codigo = String(data.sedeCodigo || '').trim() || null;
+  if (data.sedeNombre !== undefined) payload.sede_nombre = String(data.sedeNombre || '').trim() || null;
+  if (data.contratoCodigo !== undefined) payload.contrato_codigo = String(data.contratoCodigo || '').trim() || null;
+  if (data.contratoNombre !== undefined) payload.contrato_nombre = String(data.contratoNombre || '').trim() || null;
+  if (data.clienteNombreSnapshot !== undefined) payload.cliente_nombre_snapshot = String(data.clienteNombreSnapshot || '').trim() || null;
+  if (data.clienteNitSnapshot !== undefined) payload.cliente_nit_snapshot = String(data.clienteNitSnapshot || '').trim() || null;
+  if (data.operariosPlaneados !== undefined) payload.operarios_planeados = Math.max(0, numberOrDefault(data.operariosPlaneados, 0));
+  if (data.horizonDays !== undefined) payload.horizon_days = SHIFT_GENERATION_DAYS;
+  if (data.estado !== undefined) payload.estado = String(data.estado || 'activo').trim() || 'activo';
+  if (data.activatedAt !== undefined) payload.activated_at = data.activatedAt || null;
+  if (data.inactivatedAt !== undefined) payload.inactivated_at = data.inactivatedAt || null;
+  if (audit) Object.assign(payload, audit);
+  return payload;
+}
+
+function shiftAssignmentPayload(data = {}) {
+  const payload = {};
+  if (data.scheduledShiftId !== undefined) payload.scheduled_shift_id = data.scheduledShiftId || null;
+  if (data.employeeId !== undefined) payload.employee_id = data.employeeId || null;
+  if (data.documento !== undefined) payload.documento = String(data.documento || '').trim() || null;
+  if (data.nombre !== undefined) payload.nombre = String(data.nombre || '').trim() || null;
+  if (data.cargoCodigo !== undefined) payload.cargo_codigo = String(data.cargoCodigo || '').trim() || null;
+  if (data.cargoNombre !== undefined) payload.cargo_nombre = String(data.cargoNombre || '').trim() || null;
+  if (data.sedeCodigo !== undefined) payload.sede_codigo = String(data.sedeCodigo || '').trim() || null;
+  if (data.contratoCodigo !== undefined) payload.contrato_codigo = String(data.contratoCodigo || '').trim() || null;
+  if (data.contratoNombre !== undefined) payload.contrato_nombre = String(data.contratoNombre || '').trim() || null;
+  if (data.clienteNombreSnapshot !== undefined) payload.cliente_nombre_snapshot = String(data.clienteNombreSnapshot || '').trim() || null;
+  if (data.clienteNitSnapshot !== undefined) payload.cliente_nit_snapshot = String(data.clienteNitSnapshot || '').trim() || null;
+  if (data.estado !== undefined) payload.estado = String(data.estado || 'asignado').trim() || 'asignado';
+  return payload;
+}
+
+function employeeShiftStatusPayload(data = {}) {
+  const payload = {};
+  if (data.id !== undefined) payload.id = data.id || null;
+  if (data.scheduledShiftId !== undefined) payload.scheduled_shift_id = data.scheduledShiftId || null;
+  if (data.fechaOperativa !== undefined) payload.fecha_operativa = String(data.fechaOperativa || '').trim() || null;
+  if (data.employeeId !== undefined) payload.employee_id = data.employeeId || null;
+  if (data.documento !== undefined) payload.documento = String(data.documento || '').trim() || null;
+  if (data.nombre !== undefined) payload.nombre = String(data.nombre || '').trim() || null;
+  if (data.sedeCodigo !== undefined) payload.sede_codigo = String(data.sedeCodigo || '').trim() || null;
+  if (data.contratoCodigo !== undefined) payload.contrato_codigo = String(data.contratoCodigo || '').trim() || null;
+  if (data.contratoNombre !== undefined) payload.contrato_nombre = String(data.contratoNombre || '').trim() || null;
+  if (data.clienteNombreSnapshot !== undefined) payload.cliente_nombre_snapshot = String(data.clienteNombreSnapshot || '').trim() || null;
+  if (data.clienteNitSnapshot !== undefined) payload.cliente_nit_snapshot = String(data.clienteNitSnapshot || '').trim() || null;
+  if (data.estadoTurno !== undefined) payload.estado_turno = String(data.estadoTurno || 'programado').trim() || 'programado';
+  if (data.asistio !== undefined) payload.asistio = data.asistio === true;
+  if (data.entradaAt !== undefined) payload.entrada_at = data.entradaAt || null;
+  if (data.salidaAt !== undefined) payload.salida_at = data.salidaAt || null;
+  if (data.novedadCodigo !== undefined) payload.novedad_codigo = data.novedadCodigo || null;
+  if (data.novedadNombre !== undefined) payload.novedad_nombre = data.novedadNombre || null;
+  if (data.earlyEntryMinutes !== undefined) payload.early_entry_minutes = Math.max(0, numberOrDefault(data.earlyEntryMinutes, 0));
+  if (data.lateEntryMinutes !== undefined) payload.late_entry_minutes = Math.max(0, numberOrDefault(data.lateEntryMinutes, 0));
+  if (data.earlyExitMinutes !== undefined) payload.early_exit_minutes = Math.max(0, numberOrDefault(data.earlyExitMinutes, 0));
+  if (data.lateExitMinutes !== undefined) payload.late_exit_minutes = Math.max(0, numberOrDefault(data.lateExitMinutes, 0));
+  if (data.earlyEntryReason !== undefined) payload.early_entry_reason = String(data.earlyEntryReason || '').trim() || null;
+  if (data.lateEntryReason !== undefined) payload.late_entry_reason = String(data.lateEntryReason || '').trim() || null;
+  if (data.earlyExitReason !== undefined) payload.early_exit_reason = String(data.earlyExitReason || '').trim() || null;
+  if (data.lateExitReason !== undefined) payload.late_exit_reason = String(data.lateExitReason || '').trim() || null;
+  if (data.entryAuthorizationId !== undefined) payload.entry_authorization_id = data.entryAuthorizationId || null;
+  if (data.exitAuthorizationId !== undefined) payload.exit_authorization_id = data.exitAuthorizationId || null;
+  if (data.requiresReview !== undefined) payload.requires_review = data.requiresReview === true;
+  if (data.requiereReemplazo !== undefined) payload.requiere_reemplazo = data.requiereReemplazo === true;
+  if (data.decisionCobertura !== undefined) payload.decision_cobertura = data.decisionCobertura || 'no_aplica';
+  if (data.reemplazadoPorEmployeeId !== undefined) payload.reemplazado_por_employee_id = data.reemplazadoPorEmployeeId || null;
+  if (data.reemplazadoPorDocumento !== undefined) payload.reemplazado_por_documento = data.reemplazadoPorDocumento || null;
+  if (data.reemplazadoPorNombre !== undefined) payload.reemplazado_por_nombre = data.reemplazadoPorNombre || null;
+  if (data.closed !== undefined) payload.closed = data.closed === true;
+  if (data.sourceAttendanceId !== undefined) payload.source_attendance_id = data.sourceAttendanceId || null;
+  if (data.sourceExitId !== undefined) payload.source_exit_id = data.sourceExitId || null;
+  if (data.sourceIncapacityId !== undefined) payload.source_incapacity_id = data.sourceIncapacityId || null;
+  if (data.sourceReplacementId !== undefined) payload.source_replacement_id = data.sourceReplacementId || null;
+  return payload;
+}
+
+function shiftTimeAuthorizationPayload(data = {}, audit = null) {
+  const payload = {};
+  if (data.scheduledShiftId !== undefined) payload.scheduled_shift_id = data.scheduledShiftId || null;
+  if (data.employeeId !== undefined) payload.employee_id = data.employeeId || null;
+  if (data.documento !== undefined) payload.documento = String(data.documento || '').trim() || null;
+  if (data.contratoCodigo !== undefined) payload.contrato_codigo = String(data.contratoCodigo || '').trim() || null;
+  if (data.contratoNombre !== undefined) payload.contrato_nombre = String(data.contratoNombre || '').trim() || null;
+  if (data.clienteNombreSnapshot !== undefined) payload.cliente_nombre_snapshot = String(data.clienteNombreSnapshot || '').trim() || null;
+  if (data.clienteNitSnapshot !== undefined) payload.cliente_nit_snapshot = String(data.clienteNitSnapshot || '').trim() || null;
+  if (data.authorizationType !== undefined) payload.authorization_type = data.authorizationType || null;
+  if (data.authorizedFrom !== undefined) payload.authorized_from = data.authorizedFrom || null;
+  if (data.authorizedUntil !== undefined) payload.authorized_until = data.authorizedUntil || null;
+  if (data.minutesAuthorized !== undefined) payload.minutes_authorized = nullableNumber(data.minutesAuthorized);
+  if (data.reason !== undefined) payload.reason = String(data.reason || '').trim() || null;
+  if (data.estado !== undefined) payload.estado = data.estado || 'pendiente';
+  if (data.requestedByUid !== undefined) payload.requested_by_uid = data.requestedByUid || null;
+  if (data.requestedByEmail !== undefined) payload.requested_by_email = data.requestedByEmail || null;
+  if (data.approvedByUid !== undefined) payload.approved_by_uid = data.approvedByUid || null;
+  if (data.approvedByEmail !== undefined) payload.approved_by_email = data.approvedByEmail || null;
+  if (data.approvedAt !== undefined) payload.approved_at = data.approvedAt || null;
+  if (audit && payload.requested_by_uid === undefined && payload.requested_by_email === undefined) {
+    payload.requested_by_uid = audit.created_by_uid || null;
+    payload.requested_by_email = audit.created_by_email || null;
+  }
+  if (audit && data.estado && data.estado !== 'pendiente' && payload.approved_by_uid === undefined && payload.approved_by_email === undefined) {
+    payload.approved_by_uid = audit.created_by_uid || null;
+    payload.approved_by_email = audit.created_by_email || null;
+    payload.approved_at = new Date().toISOString();
+  }
+  return payload;
+}
+
+function shiftAdjustmentPayload(data = {}, audit = null) {
+  const payload = {};
+  if (data.scheduledShiftId !== undefined) payload.scheduled_shift_id = data.scheduledShiftId || null;
+  if (data.employeeId !== undefined) payload.employee_id = data.employeeId || null;
+  if (data.documento !== undefined) payload.documento = String(data.documento || '').trim() || null;
+  if (data.contratoCodigo !== undefined) payload.contrato_codigo = String(data.contratoCodigo || '').trim() || null;
+  if (data.contratoNombre !== undefined) payload.contrato_nombre = String(data.contratoNombre || '').trim() || null;
+  if (data.clienteNombreSnapshot !== undefined) payload.cliente_nombre_snapshot = String(data.clienteNombreSnapshot || '').trim() || null;
+  if (data.clienteNitSnapshot !== undefined) payload.cliente_nit_snapshot = String(data.clienteNitSnapshot || '').trim() || null;
+  if (data.tipo !== undefined) payload.tipo = data.tipo || null;
+  if (data.estado !== undefined) payload.estado = data.estado || 'pendiente';
+  if (data.beforeSnapshot !== undefined) payload.before_snapshot = data.beforeSnapshot || {};
+  if (data.afterSnapshot !== undefined) payload.after_snapshot = data.afterSnapshot || {};
+  if (data.motivo !== undefined) payload.motivo = String(data.motivo || '').trim() || null;
+  if (data.reportedAt !== undefined) payload.reported_at = data.reportedAt || null;
+  if (data.approvedByUid !== undefined) payload.approved_by_uid = data.approvedByUid || null;
+  if (data.approvedByEmail !== undefined) payload.approved_by_email = data.approvedByEmail || null;
+  if (data.approvedAt !== undefined) payload.approved_at = data.approvedAt || null;
+  if (audit && data.estado && data.estado !== 'pendiente' && payload.approved_by_uid === undefined && payload.approved_by_email === undefined) {
+    payload.approved_by_uid = audit.created_by_uid || null;
+    payload.approved_by_email = audit.created_by_email || null;
+    payload.approved_at = new Date().toISOString();
+  }
+  return payload;
+}
+
+function sanitizeStoragePathPart(value, fallback = 'general') {
+  const clean = String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .trim();
+  return clean || fallback;
+}
+
+function buildIncapacitySupportPath(file, { documento = '', employeeId = '' } = {}) {
+  const rawName = String(file?.name || 'soporte').trim();
+  const extensionMatch = rawName.match(/(\.[a-zA-Z0-9]+)$/);
+  const extension = extensionMatch ? extensionMatch[1].toLowerCase() : '';
+  const safeName = sanitizeStoragePathPart(rawName.replace(/(\.[a-zA-Z0-9]+)?$/, ''), 'soporte');
+  const owner = sanitizeStoragePathPart(documento || employeeId || 'sin-documento');
+  return `${owner}/${Date.now()}_${crypto.randomUUID()}_${safeName}${extension}`;
+}
+
+function buildNovedadReplacementRules(rows = []) {
+  const byCode = new Map();
+  const byName = new Map();
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    const code = String(row?.codigoNovedad || row?.codigo || '').trim();
+    const name = normalizeMetricText(String(row?.nombre || '').trim());
+    const replacementRaw = normalizeMetricText(String(row?.reemplazo || '').trim());
+    const requiresReplacement = ['si', 'yes', 'true', '1', 'reemplazo'].includes(replacementRaw);
+    if (code) byCode.set(code, requiresReplacement);
+    if (name) byName.set(name, requiresReplacement);
+  });
+  return { byCode, byName };
+}
+
+function normalizeMetricText(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+function baseMetricNovedadName(raw) {
+  return String(raw || '').replace(/\s*\(.*\)\s*$/, '').trim();
+}
+
+function metricAttendanceRequiresReplacement(row = {}, rules = {}) {
+  const code = String(row?.novedadCodigo || (/^\d+$/.test(String(row?.novedad || '').trim()) ? String(row?.novedad || '').trim() : '')).trim();
+  if (['1', '7'].includes(code)) return false;
+  if (['2', '3', '4', '5', '8', '9'].includes(code)) return true;
+  if (code && rules?.byCode?.has(code)) return rules.byCode.get(code) === true;
+  const name = normalizeMetricText(baseMetricNovedadName(row?.novedadNombre || row?.novedad || ''));
+  if (name && rules?.byName?.has(name)) return rules.byName.get(name) === true;
+  return false;
+}
+
+function metricReplacementKey(row = {}) {
+  return `${String(row?.fecha || '').trim()}_${String(row?.empleadoId || row?.employeeId || '').trim()}`;
+}
+
+function metricAttendanceCountsAsService(row = {}, replacementMap = new Map(), rules = {}) {
+  if (!metricAttendanceRequiresReplacement(row, rules)) return true;
+  const replacement = replacementMap.get(metricReplacementKey(row)) || null;
+  if (!replacement) return false;
+  const decision = String(replacement?.decision || '').trim().toLowerCase();
+  const hasSupernumerario = Boolean(replacement?.supernumerarioId || replacement?.supernumerarioDocumento || replacement?.supernumerarioNombre);
+  return decision === 'reemplazo' && hasSupernumerario;
+}
+
+function metricAttendanceCountsAsAbsenteeism(row = {}, replacementMap = new Map(), rules = {}) {
+  if (!metricAttendanceRequiresReplacement(row, rules)) return false;
+  const replacement = replacementMap.get(metricReplacementKey(row)) || null;
+  if (!replacement) return true;
+  const decision = String(replacement?.decision || '').trim().toLowerCase();
+  return decision !== 'reemplazo';
+}
+
+async function getCurrentAuditFields() {
+  const { data, error } = await supabase.auth.getUser();
+  if (error) throw error;
+  const user = data.user;
+  return {
+    created_by_uid: user?.id || null,
+    created_by_email: user?.email ? String(user.email).toLowerCase() : null
+  };
+}
+
+async function resolveZoneBySedeCode(sedeCodigo) {
+  const code = String(sedeCodigo || '').trim();
+  if (!code) return { zonaCodigo: null, zonaNombre: null, contratoCodigo: null, contratoNombre: null, clienteNombreSnapshot: null, clienteNitSnapshot: null };
+  const { data, error } = await supabase
+    .from('sedes')
+    .select('zona_codigo, zona_nombre, contrato_codigo, contrato_nombre, cliente_nombre_snapshot, cliente_nit_snapshot')
+    .eq('codigo', code)
+    .maybeSingle();
+  if (error) throw error;
+  return {
+    zonaCodigo: data?.zona_codigo || null,
+    zonaNombre: data?.zona_nombre || null,
+    contratoCodigo: data?.contrato_codigo || null,
+    contratoNombre: data?.contrato_nombre || null,
+    clienteNombreSnapshot: data?.cliente_nombre_snapshot || null,
+    clienteNitSnapshot: data?.cliente_nit_snapshot || null
+  };
+}
+
+async function resolveContractContextByCode(contratoCodigo) {
+  const code = String(contratoCodigo || '').trim();
+  if (!code) return { contratoCodigo: null, contratoNombre: null, clienteNombreSnapshot: null, clienteNitSnapshot: null };
+  const { data, error } = await supabase
+    .from('contracts')
+    .select('codigo, nombre, cliente_nombre, cliente_nit')
+    .eq('codigo', code)
+    .maybeSingle();
+  if (error) throw error;
+  return {
+    contratoCodigo: data?.codigo || code || null,
+    contratoNombre: data?.nombre || null,
+    clienteNombreSnapshot: data?.cliente_nombre || null,
+    clienteNitSnapshot: data?.cliente_nit || null
+  };
+}
+
+async function findCargoByCodeInternal(codigo) {
+  if (!codigo) return null;
+  const { data, error } = await supabase.from('cargos').select('*').eq('codigo', codigo).maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
+function normalizeCargoAlignment(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (['supernumerario', 'supervisor', 'empleado'].includes(normalized)) return normalized;
+  return 'empleado';
+}
+
+function toISODate(value) {
+  if (!value) return null;
+  if (typeof value === 'string') {
+    const v = value.trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
+    const dt = new Date(v);
+    if (!Number.isNaN(dt.getTime())) return dt.toISOString().slice(0, 10);
+    return null;
+  }
+  if (value instanceof Date) {
+    if (!Number.isNaN(value.getTime())) return value.toISOString().slice(0, 10);
+    return null;
+  }
+  return null;
+}
+
+function todayBogotaISO() {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Bogota' }).format(new Date());
+}
+
+function validateEmployeeDateRange(fechaIngreso, fechaRetiro) {
+  const ingreso = toISODate(fechaIngreso);
+  const retiro = toISODate(fechaRetiro);
+  if (ingreso && retiro && ingreso > retiro) {
+    throw new Error('La fecha de ingreso no puede ser posterior a la fecha de retiro.');
+  }
+}
+
+const EMPLOYEE_OPERATIONAL_REFRESH_LOOKBACK_DAYS = 31;
+
+function isEmployeeActiveForDate(emp, selectedDate) {
+  const day = toISODate(selectedDate);
+  if (!day) return false;
+  const ingreso = toISODate(emp?.fechaIngreso || emp?.fecha_ingreso);
+  if (ingreso && ingreso > day) return false;
+  const retiro = toISODate(emp?.fechaRetiro || emp?.fecha_retiro);
+  const estado = String(emp?.estado || 'activo').trim().toLowerCase();
+  if (estado === 'eliminado') return false;
+  if (estado === 'inactivo') return Boolean(retiro && retiro >= day);
+  if (retiro && retiro < day) return false;
+  return true;
+}
+
+function employeesEffectiveOnDateQuery({ select = '*', fecha = todayBogotaISO(), order = 'created_at', ascending = false, contratoCodigo = undefined, sedeCodigo = null } = {}) {
+  const day = toISODate(fecha) || todayBogotaISO();
+  const startOfDay = `${day}T00:00:00`;
+  const endOfDay = `${day}T23:59:59`;
+  let query = supabase
+    .from('employees')
+    .select(select)
+    .or('estado.is.null,estado.neq.eliminado')
+    .or(`fecha_ingreso.is.null,fecha_ingreso.lte.${endOfDay}`)
+    .or(`fecha_retiro.is.null,fecha_retiro.gte.${startOfDay}`);
+  if (contratoCodigo !== undefined) query = query.eq('contrato_codigo', contratoCodigo);
+  if (order) query = query.order(order, { ascending });
+  if (sedeCodigo) query = query.eq('sede_codigo', sedeCodigo);
+  return query;
+}
+
+async function listEmployeesEffectiveOnDate(fecha = todayBogotaISO(), options = {}) {
+  const day = toISODate(fecha) || todayBogotaISO();
+  const rows = await selectPagedRows(() => employeesEffectiveOnDateQuery({ ...options, fecha: day }));
+  return (rows || []).filter((row) => isEmployeeActiveForDate(row, day));
+}
+
+function cargoCodesByAlignment(cargos = [], alignment = 'empleado') {
+  const target = normalizeCargoAlignment(alignment);
+  return (cargos || [])
+    .filter((cargo) => normalizeCargoAlignment(cargo?.alineacion_crud || cargo?.nombre) === target)
+    .map((cargo) => String(cargo?.codigo || '').trim())
+    .filter(Boolean);
+}
+
+async function listEmployeesByCargoAlignment(alignment, { fecha = null, select = '*', order = 'created_at', ascending = false } = {}) {
+  const { data: cargos, error: cargoError } = await supabase
+    .from('cargos')
+    .select('codigo, nombre, alineacion_crud');
+  if (cargoError) throw cargoError;
+
+  const codes = cargoCodesByAlignment(cargos || [], alignment);
+  const rows = await selectPagedRows(() => {
+    let query = fecha
+      ? employeesEffectiveOnDateQuery({ select, fecha, order: null })
+      : supabase.from('employees').select(select).or('estado.is.null,estado.neq.eliminado');
+    if (codes.length) query = query.in('cargo_codigo', codes);
+    if (order) query = query.order(order, { ascending });
+    return query;
+  });
+
+  const cargoMap = new Map((cargos || []).map((row) => [String(row.codigo || '').trim(), row]));
+  return (rows || []).filter((emp) => {
+    const cargo = cargoMap.get(String(emp.cargo_codigo || '').trim()) || null;
+    return normalizeCargoAlignment(cargo?.alineacion_crud || emp.cargo_nombre) === normalizeCargoAlignment(alignment);
+  });
+}
+
+const colombiaHolidayCache = new Map();
+
+function makeUtcDate(year, month, day) {
+  return new Date(Date.UTC(year, month - 1, day));
+}
+
+function addUtcDays(date, days) {
+  const next = new Date(date.getTime());
+  next.setUTCDate(next.getUTCDate() + Number(days || 0));
+  return next;
+}
+
+function formatUtcDate(date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function easterSundayUtc(year) {
+  const a = year % 19;
+  const b = Math.floor(year / 100);
+  const c = year % 100;
+  const d = Math.floor(b / 4);
+  const e = b % 4;
+  const f = Math.floor((b + 8) / 25);
+  const g = Math.floor((b - f + 1) / 3);
+  const h = (19 * a + b - d - g + 15) % 30;
+  const i = Math.floor(c / 4);
+  const k = c % 4;
+  const l = (32 + 2 * e + 2 * i - h - k) % 7;
+  const m = Math.floor((a + 11 * h + 22 * l) / 451);
+  const month = Math.floor((h + l - 7 * m + 114) / 31);
+  const day = ((h + l - 7 * m + 114) % 31) + 1;
+  return makeUtcDate(year, month, day);
+}
+
+function moveToFollowingMondayUtc(date) {
+  const isoDow = date.getUTCDay() === 0 ? 7 : date.getUTCDay();
+  if (isoDow === 1) return date;
+  return addUtcDays(date, 8 - isoDow);
+}
+
+function getColombiaHolidaySet(year) {
+  if (colombiaHolidayCache.has(year)) return colombiaHolidayCache.get(year);
+
+  const easter = easterSundayUtc(year);
+  const holidays = new Set([
+    formatUtcDate(makeUtcDate(year, 1, 1)),
+    formatUtcDate(makeUtcDate(year, 5, 1)),
+    formatUtcDate(makeUtcDate(year, 7, 20)),
+    formatUtcDate(makeUtcDate(year, 8, 7)),
+    formatUtcDate(makeUtcDate(year, 12, 8)),
+    formatUtcDate(makeUtcDate(year, 12, 25)),
+    formatUtcDate(moveToFollowingMondayUtc(makeUtcDate(year, 1, 6))),
+    formatUtcDate(moveToFollowingMondayUtc(makeUtcDate(year, 3, 19))),
+    formatUtcDate(moveToFollowingMondayUtc(makeUtcDate(year, 6, 29))),
+    formatUtcDate(moveToFollowingMondayUtc(makeUtcDate(year, 7, 9))),
+    formatUtcDate(moveToFollowingMondayUtc(makeUtcDate(year, 8, 15))),
+    formatUtcDate(moveToFollowingMondayUtc(makeUtcDate(year, 10, 12))),
+    formatUtcDate(moveToFollowingMondayUtc(makeUtcDate(year, 11, 1))),
+    formatUtcDate(moveToFollowingMondayUtc(makeUtcDate(year, 11, 11))),
+    formatUtcDate(addUtcDays(easter, -3)),
+    formatUtcDate(addUtcDays(easter, -2)),
+    formatUtcDate(moveToFollowingMondayUtc(addUtcDays(easter, 39))),
+    formatUtcDate(moveToFollowingMondayUtc(addUtcDays(easter, 60))),
+    formatUtcDate(moveToFollowingMondayUtc(addUtcDays(easter, 68)))
+  ]);
+
+  colombiaHolidayCache.set(year, holidays);
+  return holidays;
+}
+
+function isColombiaHolidayDate(selectedDate) {
+  const iso = toISODate(selectedDate);
+  if (!iso) return false;
+  const year = Number(iso.slice(0, 4));
+  return getColombiaHolidaySet(year).has(iso);
+}
+
+function isSedeScheduledForDate(sede, selectedDate) {
+  const iso = toISODate(selectedDate);
+  if (!iso) return false;
+  const [year, month, day] = iso.split('-').map((n) => Number(n));
+  const weekday = new Date(Date.UTC(year, (month || 1) - 1, day || 1)).getUTCDay();
+  const jornada = String(sede?.jornada || 'lun_vie').trim().toLowerCase();
+  if (jornada === 'lun_dom') return true;
+  if (isColombiaHolidayDate(iso)) return false;
+  if (jornada === 'lun_sab') return weekday >= 1 && weekday <= 6;
+  return weekday >= 1 && weekday <= 5;
+}
+
+function isEmployeeExpectedForDate(emp, selectedDate, sedeRows = []) {
+  if (!selectedDate) return false;
+  const ingreso = toISODate(emp?.fechaIngreso || emp?.fecha_ingreso);
+  if (!ingreso || ingreso > selectedDate) return false;
+  const retiro = toISODate(emp?.fechaRetiro || emp?.fecha_retiro);
+  const estado = String(emp?.estado || '').trim().toLowerCase();
+  if (estado === 'inactivo') return Boolean(retiro && retiro >= selectedDate);
+  if (retiro && retiro < selectedDate) return false;
+  const sedeCodigo = String(emp?.sedeCodigo || emp?.sede_codigo || '').trim();
+  if (!sedeCodigo) return false;
+  const sede = (sedeRows || []).find((row) => String(row?.codigo || '').trim() === sedeCodigo) || null;
+  if (!isSedeScheduledForDate(sede, selectedDate)) return false;
+  return true;
+}
+
+function isEmployeeSupernumerario(emp, cargoMap = new Map()) {
+  const cargoCode = String(emp?.cargoCodigo || emp?.cargo_codigo || '').trim();
+  const cargo = cargoMap.get(cargoCode) || null;
+  const alignment = normalizeCargoAlignment(cargo?.alineacion_crud || emp?.cargoNombre || emp?.cargo_nombre);
+  return alignment === 'supernumerario';
+}
+
+function resolveEmployeeAssignmentHistoryOnDate(emp, selectedDate, historyRows = []) {
+  const day = String(selectedDate || '').trim();
+  if (!day) return null;
+  const matching = (Array.isArray(historyRows) ? historyRows : []).filter((row) => {
+    const ingreso = toISODate(row?.fechaIngreso || row?.fecha_ingreso);
+    if (!ingreso || ingreso > day) return false;
+    const retiro = toISODate(row?.fechaRetiro || row?.fecha_retiro);
+    return !retiro || retiro >= day;
+  });
+  if (!matching.length) return null;
+  matching.sort((left, right) => {
+    const leftIngreso = toISODate(left?.fechaIngreso || left?.fecha_ingreso) || '';
+    const rightIngreso = toISODate(right?.fechaIngreso || right?.fecha_ingreso) || '';
+    if (leftIngreso !== rightIngreso) return rightIngreso.localeCompare(leftIngreso);
+    const leftCreated = String(left?.createdAt || left?.created_at || '').trim();
+    const rightCreated = String(right?.createdAt || right?.created_at || '').trim();
+    if (leftCreated !== rightCreated) return rightCreated.localeCompare(leftCreated);
+    return String(right?.id || '').localeCompare(String(left?.id || ''));
+  });
+  return matching[0] || null;
+}
+
+function buildEmployeeHistoryByEmployeeId(rows = []) {
+  return (Array.isArray(rows) ? rows : []).reduce((acc, row) => {
+    const employeeId = String(row?.employeeId || row?.employee_id || '').trim();
+    if (!employeeId) return acc;
+    if (!acc.has(employeeId)) acc.set(employeeId, []);
+    acc.get(employeeId).push(row);
+    return acc;
+  }, new Map());
+}
+
+function isEmployeeAssignedToActiveSedeOnDate(emp, selectedDate, activeSedeCodes = new Set(), historyRows = []) {
+  if (!selectedDate) return false;
+  const assignment = resolveEmployeeAssignmentHistoryOnDate(emp, selectedDate, historyRows);
+  const source = assignment || emp;
+  const ingreso = toISODate(source?.fechaIngreso || source?.fecha_ingreso);
+  if (!ingreso || ingreso > selectedDate) return false;
+  const retiro = toISODate(source?.fechaRetiro || source?.fecha_retiro);
+  const estado = String(emp?.estado || '').trim().toLowerCase();
+  if (estado === 'inactivo') return Boolean(retiro && retiro >= selectedDate);
+  if (retiro && retiro < selectedDate) return false;
+  const sedeCodigo = String(source?.sedeCodigo || source?.sede_codigo || '').trim();
+  if (!sedeCodigo) return false;
+  if (activeSedeCodes.size && !activeSedeCodes.has(sedeCodigo)) return false;
+  const sede = Array.isArray(activeSedeCodes?.rows)
+    ? activeSedeCodes.rows.find((row) => String(row?.codigo || '').trim() === sedeCodigo) || null
+    : null;
+  if (sede && !isSedeScheduledForDate(sede, selectedDate)) return false;
+  return true;
+}
+
+function dedupeAttendanceRows(rows = []) {
+  const unique = new Map();
+  (Array.isArray(rows) ? rows : []).forEach((row, idx) => {
+    const documento = String(row?.documento || '').trim();
+    const empleadoId = String(row?.empleadoId || '').trim();
+    const fallback = `${String(row?.nombre || '').trim()}|${String(row?.sedeCodigo || '').trim()}|${String(row?.fecha || '').trim()}|${idx}`;
+    const key = documento || empleadoId || fallback;
+    if (!key) return;
+    if (!unique.has(key)) unique.set(key, row);
+  });
+  return Array.from(unique.values());
+}
+
+function resolveAttendanceSedeCode(attendanceRow = {}, context = {}) {
+  const rawSedeCode = String(attendanceRow?.sedeCodigo || '').trim();
+  if (context?.dayClosed) return rawSedeCode || null;
+
+  const documento = String(attendanceRow?.documento || '').trim();
+  if (documento && context?.superDocs?.has(documento)) return null;
+
+  const empleadoId = String(attendanceRow?.empleadoId || '').trim();
+  const employee = (empleadoId && context?.employeeById?.get(empleadoId))
+    || (documento && context?.employeeByDoc?.get(documento))
+    || null;
+  if (!employee) return null;
+  const historyRows = context?.historyByEmployeeId?.get(String(employee?.id || '').trim()) || [];
+  if (!isEmployeeAssignedToActiveSedeOnDate(employee, context?.selectedDate, context?.activeSedeCodes || new Set(), historyRows)) return null;
+  const assignment = resolveEmployeeAssignmentHistoryOnDate(employee, context?.selectedDate, historyRows);
+  const source = assignment || employee;
+  return String(source?.sedeCodigo || source?.sede_codigo || '').trim() || null;
+}
+
+async function computeDailyClosureSnapshot(fecha) {
+  const day = String(fecha || '').trim();
+  if (!day) {
+    return { planeados: 0, contratados: 0, registrados: 0, faltan: 0, sobran: 0, ausentismos: 0, noContratados: 0 };
+  }
+
+  const [
+    { data: statusRows, error: statusError },
+    sedesRows
+  ] = await Promise.all([
+    supabase
+      .from('employee_daily_status')
+      .select('sede_codigo, tipo_personal, servicio_programado, asistio, cuenta_pago_servicio')
+      .eq('fecha', day),
+    selectSmallTableRows('sedes', { select: '*' })
+  ]);
+  if (statusError) throw statusError;
+
+  const mappedRows = (statusRows || []).map(mapEmployeeDailyStatusRow);
+  const scheduledRows = mappedRows.filter((row) => row.tipoPersonal === 'empleado' && row.servicioProgramado === true);
+  const actualRows = mappedRows.filter((row) => row.asistio === true || row.asistio === false);
+  const sedes = (sedesRows || [])
+    .map(mapSedeRow)
+    .filter((sede) => String(sede?.estado || 'activo').trim().toLowerCase() !== 'inactivo')
+    .filter((sede) => isSedeScheduledForDate(sede, day));
+
+  const bySede = new Map();
+  scheduledRows.forEach((row) => {
+    const sedeCode = String(row?.sedeCodigo || '').trim();
+    if (!sedeCode) return;
+    const bucket = bySede.get(sedeCode) || {
+      contratados: 0,
+      asistencias: 0
+    };
+    bucket.contratados += 1;
+    if (row.cuentaPagoServicio === true) bucket.asistencias += 1;
+    bySede.set(sedeCode, bucket);
+  });
+
+  const summary = sedes.reduce((acc, sede) => {
+    const sedeCode = String(sede?.codigo || '').trim();
+    const planned = Number(sede?.numeroOperarios ?? 0) || 0;
+    const counts = bySede.get(sedeCode) || { contratados: 0, asistencias: 0 };
+    const ausentismos = computeOperationalAbsenteeism(planned, counts.contratados, counts.asistencias);
+    acc.planeados += planned;
+    acc.contratados += counts.contratados;
+    acc.registrados += counts.asistencias;
+    acc.faltan += Math.max(0, planned - counts.contratados);
+    acc.sobran += Math.max(0, counts.contratados - planned);
+    acc.ausentismos += ausentismos;
+    return acc;
+  }, {
+    planeados: 0,
+    contratados: 0,
+    registrados: 0,
+    faltan: 0,
+    sobran: 0,
+    ausentismos: 0,
+    noContratados: 0
+  });
+
+  if (summary.planeados === 0 && summary.contratados === 0 && actualRows.length) {
+    summary.registrados = actualRows.filter((row) => row.asistio === true).length;
+    summary.ausentismos = 0;
+    summary.faltan = 0;
+    summary.sobran = summary.registrados;
+  }
+
+  summary.noContratados = Math.max(0, summary.planeados - summary.contratados);
+  return summary;
+}
+
+function computeOperationalAbsenteeism(planeados, contratados, cubiertos) {
+  const planned = Math.max(0, Number(planeados || 0));
+  const contracted = Math.max(0, Number(contratados || 0));
+  const covered = Math.max(0, Number(cubiertos || 0));
+  if (planned <= 0) return 0;
+  return Math.max(0, Math.min(planned, contracted) - covered);
+}
+
+async function computeDailySedeClosureSnapshot(fecha) {
+  const day = String(fecha || '').trim();
+  if (!day) return [];
+
+  await refreshOperationalSnapshotsFromEmployeeDailyStatus(day);
+  const [{ data: statusRows, error: statusError }, sedesRows] = await Promise.all([
+    supabase.from('sede_status').select('*').eq('fecha', day),
+    selectSmallTableRows('sedes', { select: '*' })
+  ]);
+  if (statusError) throw statusError;
+
+  const statusBySede = new Map((statusRows || []).map((row) => [String(row?.sede_codigo || '').trim(), mapSedeStatusRow(row)]));
+  return (sedesRows || [])
+    .map(mapSedeRow)
+    .filter((sede) => String(sede?.estado || 'activo').trim().toLowerCase() !== 'inactivo')
+    .filter((sede) => isSedeScheduledForDate(sede, day))
+    .map((sede) => {
+      const sedeCode = String(sede?.codigo || '').trim();
+      const planeados = Number(sede?.numeroOperarios ?? 0) || 0;
+      const status = statusBySede.get(sedeCode) || {};
+      const contratados = Number(status.operariosEsperados || 0);
+      const registrados = Number(status.operariosPresentes || 0);
+      const faltantes = Number(status.faltantes || 0);
+      const sobrantes = Math.max(0, registrados - planeados);
+      return {
+        id: `${day}_${sedeCode}`,
+        fecha: day,
+        sede_codigo: sedeCode,
+        sede_nombre: sede?.nombre || sedeCode || null,
+        zona_codigo: sede?.zonaCodigo || null,
+        zona_nombre: sede?.zonaNombre || null,
+        dependencia_codigo: sede?.dependenciaCodigo || null,
+        dependencia_nombre: sede?.dependenciaNombre || null,
+        contrato_codigo: sede?.contratoCodigo || null,
+        contrato_nombre: sede?.contratoNombre || null,
+        cliente_nombre_snapshot: sede?.clienteNombreSnapshot || null,
+        cliente_nit_snapshot: sede?.clienteNitSnapshot || null,
+        planeados,
+        contratados,
+        registrados,
+        faltantes,
+        sobrantes
+      };
+    });
+}
+
+async function getCargoCrudAlignmentByCode(cargoCodigo, cargoNombre = null) {
+  const code = String(cargoCodigo || '').trim();
+  const inferByName = (name) => {
+    const n = String(name || '').trim().toLowerCase();
+    if (!n) return 'empleado';
+    if (n.includes('supernumer')) return 'supernumerario';
+    if (n.includes('supervisor')) return 'supervisor';
+    return 'empleado';
+  };
+  if (!code) return inferByName(cargoNombre);
+  const cargo = await findCargoByCodeInternal(code);
+  if (!cargo) return inferByName(cargoNombre);
+  return normalizeCargoAlignment(cargo.alineacion_crud || cargoNombre);
+}
+
+async function appendEmployeeCargoHistory({
+  employeeId,
+  employeeCodigo,
+  documento,
+  cargoCodigo,
+  cargoNombre,
+  sedeCodigo = null,
+  sedeNombre = null,
+  contratoCodigo = null,
+  contratoNombre = null,
+  clienteNombreSnapshot = null,
+  clienteNitSnapshot = null,
+  fechaIngreso,
+  fechaRetiro = null,
+  source = 'manual'
+}) {
+  if (!employeeId) return;
+  const { error } = await supabase.from('employee_cargo_history').insert({
+    employee_id: employeeId,
+    employee_codigo: employeeCodigo || null,
+    documento: documento || null,
+    cargo_codigo: cargoCodigo || null,
+    cargo_nombre: cargoNombre || null,
+    sede_codigo: sedeCodigo || null,
+    sede_nombre: sedeNombre || null,
+    contrato_codigo: contratoCodigo || null,
+    contrato_nombre: contratoNombre || null,
+    cliente_nombre_snapshot: clienteNombreSnapshot || null,
+    cliente_nit_snapshot: clienteNitSnapshot || null,
+    fecha_ingreso: fechaIngreso || null,
+    fecha_retiro: fechaRetiro || null,
+    source
+  });
+  if (error) throw error;
+  await notifyTableReload('employee_cargo_history');
+}
+
+async function appendEmployeeCargoHistoryBulk(rows = [], notifyReload = true) {
+  const items = Array.isArray(rows) ? rows.filter((row) => row?.employee_id) : [];
+  if (!items.length) return;
+  const { error } = await supabase.from('employee_cargo_history').insert(items);
+  if (error) throw error;
+  if (notifyReload) {
+    await notifyTableReload('employee_cargo_history');
+  }
+}
+
+async function closeActiveEmployeeHistory(employeeId, fechaRetiro, notifyReload = true) {
+  const empId = String(employeeId || '').trim();
+  if (!empId || !fechaRetiro) return;
+  const { error } = await supabase
+    .from('employee_cargo_history')
+    .update({ fecha_retiro: fechaRetiro })
+    .eq('employee_id', empId)
+    .is('fecha_retiro', null);
+  if (error) throw error;
+  if (notifyReload) {
+    await notifyTableReload('employee_cargo_history');
+  }
+}
+
+async function cancelFutureEmployeeHistoryForRetirement(employeeId, fechaRetiro, { allowCancel = false } = {}) {
+  const empId = String(employeeId || '').trim();
+  const retiro = toISODate(fechaRetiro);
+  if (!empId || !retiro) return [];
+
+  const { data: rows, error } = await supabase
+    .from('employee_cargo_history')
+    .select('*')
+    .eq('employee_id', empId)
+    .order('fecha_ingreso', { ascending: true })
+    .order('created_at', { ascending: true });
+  if (error) throw error;
+
+  const futureRows = (rows || []).filter((row) => {
+    const ingreso = toISODate(row?.fecha_ingreso);
+    return ingreso && ingreso > retiro && !row?.fecha_retiro;
+  });
+  if (!futureRows.length) return [];
+  if (!allowCancel) {
+    throw new Error('El empleado tiene cambios programados posteriores al retiro. Confirma la cancelacion de esos cambios antes de retirar.');
+  }
+
+  const futureIds = futureRows.map((row) => row.id).filter(Boolean);
+  if (futureIds.length) {
+    const { error: deleteError } = await supabase
+      .from('employee_cargo_history')
+      .delete()
+      .in('id', futureIds);
+    if (deleteError) throw deleteError;
+  }
+
+  const previous = (rows || [])
+    .filter((row) => !futureIds.includes(row.id))
+    .filter((row) => {
+      const ingreso = toISODate(row?.fecha_ingreso);
+      return ingreso && ingreso <= retiro;
+    })
+    .sort((left, right) => {
+      const a = toISODate(left?.fecha_ingreso) || '';
+      const b = toISODate(right?.fecha_ingreso) || '';
+      if (a !== b) return b.localeCompare(a);
+      return String(right?.created_at || '').localeCompare(String(left?.created_at || ''));
+    })[0] || null;
+  if (previous?.id && previous.fecha_retiro) {
+    const { error: reopenError } = await supabase
+      .from('employee_cargo_history')
+      .update({ fecha_retiro: null })
+      .eq('id', previous.id);
+    if (reopenError) throw reopenError;
+  }
+
+  return futureRows.map(mapCargoHistoryRow);
+}
+
+async function patchActiveEmployeeHistory(employeeId, patch = {}, notifyReload = true) {
+  const empId = String(employeeId || '').trim();
+  const updates = Object.fromEntries(Object.entries(patch || {}).filter(([, value]) => value !== undefined));
+  if (!empId || !Object.keys(updates).length) return;
+  const { error } = await supabase
+    .from('employee_cargo_history')
+    .update(updates)
+    .eq('employee_id', empId)
+    .is('fecha_retiro', null);
+  if (error) throw error;
+  if (notifyReload) {
+    await notifyTableReload('employee_cargo_history');
+  }
+}
+
+async function patchProgrammedEmployeeHistory(employeeId, fechaIngreso, patch = {}, notifyReload = true) {
+  const empId = String(employeeId || '').trim();
+  const ingreso = toISODate(fechaIngreso);
+  const updates = Object.fromEntries(Object.entries(patch || {}).filter(([, value]) => value !== undefined));
+  if (!empId || !ingreso || !Object.keys(updates).length) return false;
+
+  const { data: rows, error: fetchError } = await supabase
+    .from('employee_cargo_history')
+    .select('id, fecha_ingreso, fecha_retiro')
+    .eq('employee_id', empId)
+    .is('fecha_retiro', null)
+    .order('created_at', { ascending: false })
+    .limit(20);
+  if (fetchError) throw fetchError;
+  const target = (rows || []).find((row) => toISODate(row?.fecha_ingreso) === ingreso) || null;
+  if (!target?.id) return false;
+
+  const { error } = await supabase
+    .from('employee_cargo_history')
+    .update(updates)
+    .eq('id', target.id);
+  if (error) throw error;
+  if (notifyReload) {
+    await notifyTableReload('employee_cargo_history');
+  }
+  return true;
+}
+
+async function getProgrammedEmployeeHistoryContext(historyId) {
+  const id = String(historyId || '').trim();
+  if (!id) throw new Error('No se encontro la programacion.');
+  const { data: target, error: targetError } = await supabase
+    .from('employee_cargo_history')
+    .select('*')
+    .eq('id', id)
+    .maybeSingle();
+  if (targetError) throw targetError;
+  if (!target?.id) throw new Error('No se encontro la programacion.');
+
+  const targetIngreso = toISODate(target.fecha_ingreso);
+  if (!targetIngreso || targetIngreso <= todayBogotaISO() || target.fecha_retiro) {
+    throw new Error('Solo se pueden corregir programaciones futuras que aun no han iniciado.');
+  }
+
+  const employeeId = String(target.employee_id || '').trim();
+  const [{ data: employee, error: employeeError }, { data: historyRows, error: historyError }] = await Promise.all([
+    supabase.from('employees').select('*').eq('id', employeeId).maybeSingle(),
+    supabase
+      .from('employee_cargo_history')
+      .select('*')
+      .eq('employee_id', employeeId)
+      .order('fecha_ingreso', { ascending: true })
+  ]);
+  if (employeeError) throw employeeError;
+  if (historyError) throw historyError;
+  if (!employee?.id) throw new Error('No se encontro el empleado de la programacion.');
+
+  const previous = (historyRows || [])
+    .filter((row) => String(row?.id || '') !== id)
+    .filter((row) => {
+      const ingreso = toISODate(row?.fecha_ingreso);
+      return ingreso && ingreso < targetIngreso;
+    })
+    .sort((left, right) => {
+      const a = toISODate(left?.fecha_ingreso) || '';
+      const b = toISODate(right?.fecha_ingreso) || '';
+      if (a !== b) return b.localeCompare(a);
+      return String(right?.created_at || '').localeCompare(String(left?.created_at || ''));
+    })[0] || null;
+
+  return { target, targetIngreso, employee, previous };
+}
+
+export async function updateProgrammedEmployeeAssignment(historyId, data = {}) {
+  const { target, employee, previous } = await getProgrammedEmployeeHistoryContext(historyId);
+  const nextIngreso = toISODate(data.fechaIngreso || data.fecha_ingreso || target.fecha_ingreso);
+  if (!nextIngreso || nextIngreso <= todayBogotaISO()) {
+    throw new Error('La nueva fecha de inicio debe ser posterior a hoy.');
+  }
+  if (previous) {
+    const previousIngreso = toISODate(previous.fecha_ingreso);
+    const previousRetiro = addDaysToIsoDate(nextIngreso, -1);
+    if (previousIngreso && previousRetiro && previousRetiro < previousIngreso) {
+      throw new Error('La fecha de inicio deja invalido el tramo anterior.');
+    }
+  }
+
+  const cargoCodigo = data.cargoCodigo !== undefined ? String(data.cargoCodigo || '').trim() || null : target.cargo_codigo || null;
+  const cargoNombre = data.cargoNombre !== undefined ? String(data.cargoNombre || '').trim() || null : target.cargo_nombre || null;
+  const sedeCodigo = data.sedeCodigo !== undefined ? String(data.sedeCodigo || '').trim() || null : target.sede_codigo || null;
+  const sedeNombre = data.sedeNombre !== undefined ? String(data.sedeNombre || '').trim() || null : target.sede_nombre || null;
+  const zone = await resolveZoneBySedeCode(sedeCodigo);
+  const audit = await getCurrentAuditFields();
+
+  if (previous) {
+    const { error: previousError } = await supabase
+      .from('employee_cargo_history')
+      .update({ fecha_retiro: addDaysToIsoDate(nextIngreso, -1) })
+      .eq('id', previous.id);
+    if (previousError) throw previousError;
+  }
+
+  const { data: updatedHistory, error: historyError } = await supabase
+    .from('employee_cargo_history')
+    .update({
+      employee_codigo: employee.codigo || null,
+      documento: employee.documento || target.documento || null,
+      cargo_codigo: cargoCodigo,
+      cargo_nombre: cargoNombre,
+      sede_codigo: sedeCodigo,
+      sede_nombre: sedeNombre,
+      contrato_codigo: zone.contratoCodigo || null,
+      contrato_nombre: zone.contratoNombre || null,
+      cliente_nombre_snapshot: zone.clienteNombreSnapshot || null,
+      cliente_nit_snapshot: zone.clienteNitSnapshot || null,
+      fecha_ingreso: nextIngreso,
+      source: 'scheduled_assignment_update'
+    })
+    .eq('id', target.id)
+    .select('*')
+    .single();
+  if (historyError) throw historyError;
+
+  const { data: updatedEmployee, error: employeeError } = await supabase
+    .from('employees')
+    .update({
+      cargo_codigo: cargoCodigo,
+      cargo_nombre: cargoNombre,
+      sede_codigo: sedeCodigo,
+      sede_nombre: sedeNombre,
+      zona_codigo: zone.zonaCodigo || null,
+      zona_nombre: zone.zonaNombre || null,
+      contrato_codigo: zone.contratoCodigo || null,
+      contrato_nombre: zone.contratoNombre || null,
+      cliente_nombre_snapshot: zone.clienteNombreSnapshot || null,
+      cliente_nit_snapshot: zone.clienteNitSnapshot || null,
+      fecha_ingreso: nextIngreso,
+      last_modified_by_uid: audit.created_by_uid,
+      last_modified_by_email: audit.created_by_email,
+      last_modified_at: new Date().toISOString()
+    })
+    .eq('id', employee.id)
+    .select('*')
+    .single();
+  if (employeeError) throw employeeError;
+
+  if (await getCargoCrudAlignmentByCode(updatedEmployee.cargo_codigo, updatedEmployee.cargo_nombre) === 'supervisor') {
+    await upsertSupervisorProfileFromEmployee(mapEmployeeRow(updatedEmployee));
+  }
+
+  await Promise.all([
+    notifyTableReload('employees'),
+    notifyTableReload('employee_cargo_history')
+  ]);
+  return {
+    employee: mapEmployeeRow(updatedEmployee),
+    history: mapCargoHistoryRow(updatedHistory),
+    previous: previous ? mapCargoHistoryRow(previous) : null
+  };
+}
+
+export async function cancelProgrammedEmployeeAssignment(historyId) {
+  const { target, employee, previous } = await getProgrammedEmployeeHistoryContext(historyId);
+  if (!previous?.id) {
+    throw new Error('No hay una asignacion anterior para restaurar.');
+  }
+  const zone = await resolveZoneBySedeCode(previous.sede_codigo);
+  const audit = await getCurrentAuditFields();
+
+  const { error: reopenError } = await supabase
+    .from('employee_cargo_history')
+    .update({ fecha_retiro: null })
+    .eq('id', previous.id);
+  if (reopenError) throw reopenError;
+
+  const { error: deleteError } = await supabase
+    .from('employee_cargo_history')
+    .delete()
+    .eq('id', target.id);
+  if (deleteError) throw deleteError;
+
+  const { data: updatedEmployee, error: employeeError } = await supabase
+    .from('employees')
+    .update({
+      cargo_codigo: previous.cargo_codigo || null,
+      cargo_nombre: previous.cargo_nombre || null,
+      sede_codigo: previous.sede_codigo || null,
+      sede_nombre: previous.sede_nombre || null,
+      zona_codigo: zone.zonaCodigo || null,
+      zona_nombre: zone.zonaNombre || null,
+      contrato_codigo: previous.contrato_codigo || zone.contratoCodigo || null,
+      contrato_nombre: previous.contrato_nombre || zone.contratoNombre || null,
+      cliente_nombre_snapshot: previous.cliente_nombre_snapshot || zone.clienteNombreSnapshot || null,
+      cliente_nit_snapshot: previous.cliente_nit_snapshot || zone.clienteNitSnapshot || null,
+      fecha_ingreso: previous.fecha_ingreso || null,
+      fecha_retiro: null,
+      estado: 'activo',
+      last_modified_by_uid: audit.created_by_uid,
+      last_modified_by_email: audit.created_by_email,
+      last_modified_at: new Date().toISOString()
+    })
+    .eq('id', employee.id)
+    .select('*')
+    .single();
+  if (employeeError) throw employeeError;
+
+  if (await getCargoCrudAlignmentByCode(updatedEmployee.cargo_codigo, updatedEmployee.cargo_nombre) === 'supervisor') {
+    await upsertSupervisorProfileFromEmployee(mapEmployeeRow(updatedEmployee));
+  }
+
+  await Promise.all([
+    notifyTableReload('employees'),
+    notifyTableReload('employee_cargo_history')
+  ]);
+  return {
+    employee: mapEmployeeRow(updatedEmployee),
+    cancelled: mapCargoHistoryRow(target),
+    restored: mapCargoHistoryRow({ ...previous, fecha_retiro: null })
+  };
+}
+
+async function upsertSupervisorProfileFromEmployee(employee, override = {}) {
+  const audit = await getCurrentAuditFields();
+  const payload = {
+    employee_id: employee.id,
+    employee_codigo: override.codigo ?? employee.codigo ?? null,
+    documento: override.documento ?? employee.documento ?? null,
+    nombre: override.nombre ?? employee.nombre ?? null,
+    cargo_codigo: override.cargoCodigo ?? employee.cargoCodigo ?? null,
+    cargo_nombre: override.cargoNombre ?? employee.cargoNombre ?? null,
+    sede_codigo: override.sedeCodigo ?? employee.sedeCodigo ?? null,
+    zona_codigo: override.zonaCodigo ?? employee.zonaCodigo ?? null,
+    zona_nombre: override.zonaNombre ?? employee.zonaNombre ?? null,
+    fecha_ingreso: override.fechaIngreso ?? employee.fechaIngreso ?? null,
+    fecha_retiro: override.fechaRetiro ?? employee.fechaRetiro ?? null,
+    estado: override.estado ?? employee.estado ?? 'activo',
+    created_by_uid: audit.created_by_uid,
+    created_by_email: audit.created_by_email,
+    last_modified_by_uid: audit.created_by_uid,
+    last_modified_by_email: audit.created_by_email,
+    last_modified_at: new Date().toISOString()
+  };
+  const { data, error } = await supabase
+    .from('supervisor_profile')
+    .upsert(payload, { onConflict: 'documento' })
+    .select('*')
+    .single();
+  if (error) throw error;
+  await syncSupervisorAccessProfilesByDocument(payload.documento, payload.zona_codigo, audit);
+  await notifyTableReload('supervisor_profile');
+  return data;
+}
+
+function unwrapRpcSingleRow(data) {
+  if (Array.isArray(data)) return data[0] || null;
+  return data || null;
+}
+
+async function getDailyMetricsRowByDate(fecha) {
+  const day = String(fecha || '').trim();
+  if (!day) return null;
+  const { data, error } = await supabase.from('daily_metrics').select('*').eq('fecha', day).maybeSingle();
+  if (error) throw error;
+  return data || null;
+}
+
+async function normalizeZeroDemandDailyMetrics(fecha) {
+  const row = await getDailyMetricsRowByDate(fecha);
+  if (!row) return null;
+  const planned = Number(row?.planned || 0);
+  const expected = Number(row?.expected || 0);
+  if (planned !== 0 || expected !== 0) return row;
+  const attendanceCount = Number(row?.attendance_count || 0);
+  if (Number(row?.absenteeism || 0) === 0 && Number(row?.missing || 0) === 0 && Number(row?.paid_services || 0) === attendanceCount) {
+    return row;
+  }
+  const { data, error } = await supabase
+    .from('daily_metrics')
+    .update({
+      absenteeism: 0,
+      missing: 0,
+      paid_services: attendanceCount
+    })
+    .eq('fecha', String(fecha || '').trim())
+    .select('*')
+    .maybeSingle();
+  if (error) throw error;
+  return data || row;
+}
+
+async function refreshEmployeeDailyStatusSnapshot(fecha) {
+  const day = String(fecha || '').trim();
+  if (!day) return null;
+  const { data, error } = await supabase.rpc('refresh_employee_daily_status', { p_fecha: day });
+  if (error) throw error;
+  await notifyTableReload('employee_daily_status');
+  return data ?? 0;
+}
+
+async function refreshOperationalSnapshotsFromEmployeeDailyStatus(fecha) {
+  const day = String(fecha || '').trim();
+  if (!day) return null;
+
+  const { data, error } = await supabase.rpc('refresh_operational_snapshots_from_employee_daily_status', { p_fecha: day });
+  if (error) throw error;
+  await normalizeZeroDemandDailyMetrics(day);
+
+  await notifyTableReload('sede_status');
+  await notifyTableReload('daily_metrics');
+  await notifyTableReload('daily_contract_metrics');
+  await notifyTableReload('daily_sede_closures');
+  return unwrapRpcSingleRow(data);
+}
+
+async function refreshOperationalState(fecha) {
+  const day = String(fecha || '').trim();
+  if (!day) return null;
+  if (await isOperationDayClosed(day)) return getDailyMetricsRowByDate(day);
+
+  const refreshed = await refreshOperationalSnapshotsFromEmployeeDailyStatus(day);
+  if (refreshed !== null) {
+    return getDailyMetricsRowByDate(day);
+  }
+
+  return getDailyMetricsRowByDate(day);
+}
+
+async function recomputeDailyMetrics(fecha) {
+  const day = String(fecha || '').trim();
+  if (!day) return null;
+
+  const data = await refreshOperationalSnapshotsFromEmployeeDailyStatus(day);
+  await normalizeZeroDemandDailyMetrics(day);
+  await notifyTableReload('daily_metrics');
+  await notifyTableReload('daily_contract_metrics');
+  await notifyTableReload('daily_sede_closures');
+  return (await getDailyMetricsRowByDate(day)) || unwrapRpcSingleRow(data);
+}
+
+async function recomputeSedeStatusSnapshot(fecha) {
+  const day = String(fecha || '').trim();
+  if (!day) return;
+  if (await isOperationDayClosed(day)) return null;
+
+  await refreshEmployeeDailyStatusSnapshot(day);
+  const { data, error } = await supabase.rpc('recompute_sede_status_from_employee_daily_status', { p_fecha: day });
+  if (error) throw error;
+  await notifyTableReload('sede_status');
+  return data ?? null;
+}
+
+function addDaysToIsoDate(value, days = 1) {
+  const iso = String(value || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return null;
+  const [year, month, day] = iso.split('-').map((n) => Number(n));
+  const utc = new Date(Date.UTC(year, (month || 1) - 1, day || 1));
+  utc.setUTCDate(utc.getUTCDate() + Number(days || 0));
+  const y = utc.getUTCFullYear();
+  const m = String(utc.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(utc.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function splitIsoDateRange(dateFrom, dateTo, chunkDays = EMPLOYEE_DAILY_STATUS_RANGE_CHUNK_DAYS) {
+  const start = String(dateFrom || '').trim();
+  const end = String(dateTo || '').trim();
+  const size = Math.max(1, Number(chunkDays || 1));
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end) || start > end) return [];
+
+  const ranges = [];
+  let current = start;
+  while (current && current <= end) {
+    const nextEnd = addDaysToIsoDate(current, size - 1) || current;
+    const chunkEnd = nextEnd > end ? end : nextEnd;
+    ranges.push([current, chunkEnd]);
+    current = addDaysToIsoDate(chunkEnd, 1);
+  }
+  return ranges;
+}
+
+function collectEmployeeOperationalRefreshDays(before = {}, after = {}, extraHints = []) {
+  const today = todayBogotaISO();
+  if (!today) return [];
+
+  const oldest = addDaysToIsoDate(today, -EMPLOYEE_OPERATIONAL_REFRESH_LOOKBACK_DAYS) || today;
+  const hints = [
+    today,
+    addDaysToIsoDate(today, -1),
+    toISODate(before?.fechaIngreso || before?.fecha_ingreso),
+    toISODate(after?.fechaIngreso || after?.fecha_ingreso),
+    toISODate(before?.fechaRetiro || before?.fecha_retiro),
+    toISODate(after?.fechaRetiro || after?.fecha_retiro),
+    ...((Array.isArray(extraHints) ? extraHints : []).map((value) => toISODate(value)))
+  ]
+    .filter((day) => /^\d{4}-\d{2}-\d{2}$/.test(String(day || '')))
+    .filter((day) => day <= today)
+    .sort();
+
+  const start = hints.length ? (hints[0] < oldest ? oldest : hints[0]) : today;
+  const days = [];
+  let cursor = start;
+  while (cursor && cursor <= today) {
+    days.push(cursor);
+    if (days.length > EMPLOYEE_OPERATIONAL_REFRESH_LOOKBACK_DAYS + 2) break;
+    cursor = addDaysToIsoDate(cursor, 1);
+  }
+  return days;
+}
+
+async function reconcileOperationalSnapshotsForEmployeeChange(before = {}, after = {}, extraHints = []) {
+  const days = collectEmployeeOperationalRefreshDays(before, after, extraHints);
+  for (const day of days) {
+    await refreshOperationalState(day);
+  }
+}
+
+function normalizeDailyDocument(value) {
+  return String(value || '').replace(/\D+/g, '').trim();
+}
+
+async function assertNoEmployeeAttendanceTodayBeforeSedeTransfer(currentRow = {}, transferDate, currentSedeCode = null) {
+  const day = String(transferDate || '').trim();
+  const employeeId = String(currentRow?.id || '').trim();
+  const documento = normalizeDailyDocument(currentRow?.documento);
+  const previousSede = String(currentSedeCode || currentRow?.sede_codigo || currentRow?.sedeCodigo || '').trim();
+  if (!day || !employeeId) return;
+
+  const queries = [
+    supabase
+      .from('attendance')
+      .select('id, sede_codigo, sede_nombre')
+      .eq('fecha', day)
+      .eq('empleado_id', employeeId)
+  ];
+  if (documento) {
+    queries.push(
+      supabase
+        .from('attendance')
+        .select('id, sede_codigo, sede_nombre')
+        .eq('fecha', day)
+        .eq('documento', documento)
+    );
+  }
+
+  const results = await Promise.all(queries);
+  const rows = [];
+  for (const { data, error } of results) {
+    if (error) throw error;
+    rows.push(...(data || []));
+  }
+
+  const matchingRegistration = rows.find((row) => {
+    const sede = String(row?.sede_codigo || '').trim();
+    return !sede || !previousSede || sede === previousSede;
+  });
+  if (matchingRegistration) {
+    const sedeLabel = matchingRegistration.sede_nombre || matchingRegistration.sede_codigo || previousSede || 'la sede anterior';
+    throw new Error(`El empleado ya se registro hoy en ${sedeLabel}. No se puede iniciar el cambio de sede hoy.`);
+  }
+}
+
+async function assertNoEmployeeOperationalRecordsAfterRetirement(currentRow = {}, fechaRetiro = null) {
+  const retiro = toISODate(fechaRetiro);
+  const employeeId = String(currentRow?.id || '').trim();
+  const documento = normalizeDailyDocument(currentRow?.documento);
+  if (!retiro || (!employeeId && !documento)) return;
+
+  const attendanceQueries = [];
+  if (employeeId) {
+    attendanceQueries.push(
+      supabase
+        .from('attendance')
+        .select('fecha, sede_codigo, sede_nombre')
+        .gt('fecha', retiro)
+        .eq('empleado_id', employeeId)
+        .order('fecha', { ascending: true })
+        .limit(5)
+    );
+  }
+  if (documento) {
+    attendanceQueries.push(
+      supabase
+        .from('attendance')
+        .select('fecha, sede_codigo, sede_nombre')
+        .gt('fecha', retiro)
+        .eq('documento', documento)
+        .order('fecha', { ascending: true })
+        .limit(5)
+    );
+  }
+
+  const attendanceResults = await Promise.all(attendanceQueries);
+  const attendanceRows = [];
+  for (const { data, error } of attendanceResults) {
+    if (error) throw error;
+    attendanceRows.push(...(data || []));
+  }
+  const attendance = attendanceRows
+    .sort((a, b) => String(a?.fecha || '').localeCompare(String(b?.fecha || '')))[0] || null;
+  if (attendance) {
+    const sedeLabel = attendance.sede_nombre || attendance.sede_codigo || 'una sede';
+    throw new Error(`No se puede retirar con fecha ${retiro}: el empleado tiene registro de asistencia posterior el ${attendance.fecha} en ${sedeLabel}.`);
+  }
+
+  const statusQueries = [];
+  if (employeeId) {
+    statusQueries.push(
+      supabase
+        .from('employee_daily_status')
+        .select('fecha, sede_codigo, sede_nombre_snapshot, estado_dia, asistio, source_attendance_id')
+        .gt('fecha', retiro)
+        .eq('employee_id', employeeId)
+        .order('fecha', { ascending: true })
+        .limit(10)
+    );
+  }
+  if (documento) {
+    statusQueries.push(
+      supabase
+        .from('employee_daily_status')
+        .select('fecha, sede_codigo, sede_nombre_snapshot, estado_dia, asistio, source_attendance_id')
+        .gt('fecha', retiro)
+        .eq('documento', documento)
+        .order('fecha', { ascending: true })
+        .limit(10)
+    );
+  }
+
+  const statusResults = await Promise.all(statusQueries);
+  const statusRows = [];
+  for (const { data, error } of statusResults) {
+    if (error) throw error;
+    statusRows.push(...(data || []));
+  }
+  const activeStatus = statusRows
+    .filter((row) => row?.asistio === true || row?.source_attendance_id)
+    .sort((a, b) => String(a?.fecha || '').localeCompare(String(b?.fecha || '')))[0] || null;
+  if (activeStatus) {
+    const sedeLabel = activeStatus.sede_nombre_snapshot || activeStatus.sede_codigo || 'una sede';
+    throw new Error(`No se puede retirar con fecha ${retiro}: el empleado tiene estado diario posterior el ${activeStatus.fecha} en ${sedeLabel}.`);
+  }
+}
+
+export async function getEmployeeLastAttendanceDay(employee = {}) {
+  const employeeId = String(employee?.id || employee?.employeeId || '').trim();
+  const documento = normalizeDailyDocument(employee?.documento);
+  if (!employeeId && !documento) return null;
+
+  const attendanceQueries = [];
+  if (employeeId) {
+    attendanceQueries.push(
+      supabase
+        .from('attendance')
+        .select('fecha, sede_codigo, sede_nombre')
+        .eq('empleado_id', employeeId)
+        .order('fecha', { ascending: false })
+        .limit(1)
+    );
+  }
+  if (documento) {
+    attendanceQueries.push(
+      supabase
+        .from('attendance')
+        .select('fecha, sede_codigo, sede_nombre')
+        .eq('documento', documento)
+        .order('fecha', { ascending: false })
+        .limit(1)
+    );
+  }
+
+  const statusQueries = [];
+  if (employeeId) {
+    statusQueries.push(
+      supabase
+        .from('employee_daily_status')
+        .select('fecha, sede_codigo, sede_nombre_snapshot, asistio, source_attendance_id')
+        .eq('employee_id', employeeId)
+        .or('asistio.eq.true,source_attendance_id.not.is.null')
+        .order('fecha', { ascending: false })
+        .limit(1)
+    );
+  }
+  if (documento) {
+    statusQueries.push(
+      supabase
+        .from('employee_daily_status')
+        .select('fecha, sede_codigo, sede_nombre_snapshot, asistio, source_attendance_id')
+        .eq('documento', documento)
+        .or('asistio.eq.true,source_attendance_id.not.is.null')
+        .order('fecha', { ascending: false })
+        .limit(1)
+    );
+  }
+
+  const results = await Promise.all([...attendanceQueries, ...statusQueries]);
+  const rows = [];
+  for (const { data, error } of results) {
+    if (error) throw error;
+    rows.push(...(data || []));
+  }
+
+  const latest = rows
+    .map((row) => ({
+      fecha: toISODate(row?.fecha),
+      sedeCodigo: row?.sede_codigo || null,
+      sedeNombre: row?.sede_nombre || row?.sede_nombre_snapshot || null
+    }))
+    .filter((row) => row.fecha)
+    .sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')))[0] || null;
+
+  return latest;
+}
+
+function buildDailyRecordId(fecha, documento = null, empleadoId = null) {
+  const day = String(fecha || '').trim();
+  const doc = normalizeDailyDocument(documento);
+  if (day && doc) return `${day}_${doc}`;
+  const employee = String(empleadoId || '').trim();
+  if (day && employee) return `${day}_${employee}`;
+  return `${day}_${crypto.randomUUID()}`;
+}
+
+function incapacitySourceToNoveltyCode(source) {
+  const raw = String(source || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toLowerCase();
+  if (raw.includes('accidente laboral')) return '2';
+  if (raw.includes('enfermedad general')) return '3';
+  if (raw.includes('calamidad')) return '4';
+  if (raw.includes('licencia no remunerada')) return '5';
+  if (raw.includes('licencia remunerada')) return '6';
+  if (raw.includes('vacaciones')) return '9';
+  return '3';
+}
+
+async function propagateIncapacitiesToNextDay(day) {
+  const nextDay = addDaysToIsoDate(day, 1);
+  if (!nextDay) return;
+  if (await isOperationDayClosed(nextDay)) return;
+
+  const { data: incapRows, error: incapError } = await supabase
+    .from('incapacitados')
+    .select('*')
+    .eq('estado', 'activo')
+    .lte('fecha_inicio', nextDay)
+    .gte('fecha_fin', nextDay);
+  if (incapError) throw incapError;
+
+  for (const incap of incapRows || []) {
+    const employeeId = incap.employee_id || null;
+    if (!employeeId) continue;
+
+    const { data: employee, error: employeeError } = await supabase
+      .from('employees')
+      .select('*')
+      .eq('id', employeeId)
+      .maybeSingle();
+    if (employeeError) throw employeeError;
+    if (!employee) continue;
+
+    const normalizedDocument = normalizeDailyDocument(employee.documento);
+    if (!normalizedDocument) continue;
+
+    const { data: existingAttendance, error: existingAttendanceError } = await supabase
+      .from('attendance')
+      .select('id')
+      .eq('fecha', nextDay)
+      .eq('documento', normalizedDocument)
+      .limit(1)
+      .maybeSingle();
+    if (existingAttendanceError) throw existingAttendanceError;
+    if (existingAttendance?.id) continue;
+
+    const noveltyCode = incapacitySourceToNoveltyCode(incap.source);
+    const attendanceId = buildDailyRecordId(nextDay, normalizedDocument, employee.id);
+    const { error: attendanceError } = await supabase.from('attendance').upsert({
+      id: attendanceId,
+      fecha: nextDay,
+      empleado_id: employee.id,
+      documento: normalizedDocument,
+      nombre: employee.nombre || null,
+      sede_codigo: employee.sede_codigo || null,
+      sede_nombre: employee.sede_nombre || null,
+      asistio: false,
+      novedad: noveltyCode
+    }, { onConflict: 'id' });
+    if (attendanceError) throw attendanceError;
+
+    const { error: absenteeismError } = await supabase.from('absenteeism').upsert({
+      id: attendanceId,
+      fecha: nextDay,
+      empleado_id: employee.id,
+      documento: normalizedDocument,
+      nombre: employee.nombre || null,
+      sede_codigo: employee.sede_codigo || null,
+      sede_nombre: employee.sede_nombre || null,
+      estado: 'programado_incapacidad'
+    }, { onConflict: 'id' });
+    if (absenteeismError) throw absenteeismError;
+  }
+
+  await refreshOperationalState(nextDay);
+  await notifyTableReload('attendance');
+  await notifyTableReload('absenteeism');
+}
+
+async function getNextPrefixedCode(table, prefix, width = 4) {
+  const rows = await reservePrefixedCodes(table, prefix, 1, width);
+  const code = String(rows[0]?.code || '').trim();
+  if (!code) throw new Error('No se pudo reservar el consecutivo.');
+  return code;
+}
+
+async function reservePrefixedCodes(table, prefix, count = 1, width = 4) {
+  const safeCount = Math.max(1, Number(count) || 1);
+  const { data, error } = await supabase.rpc('reserve_prefixed_codes', {
+    p_scope: table,
+    p_prefix: prefix,
+    p_count: safeCount,
+    p_width: width
+  });
+  if (error) throw error;
+  return Array.isArray(data) ? data : [];
+}
+
+function chunkArray(items = [], size = 250) {
+  const out = [];
+  const safeSize = Math.max(1, Number(size) || 1);
+  for (let i = 0; i < items.length; i += safeSize) {
+    out.push(items.slice(i, i + safeSize));
+  }
+  return out;
+}
+
+async function insertEmployeeRecord({
+  codigo,
+  documento,
+  nombre,
+  telefono,
+  fechaNacimiento,
+  eps,
+  afp,
+  arlRiesgo,
+  dotacionCamisa,
+  dotacionPantalon,
+  dotacionZapatos,
+  cargoCodigo,
+  cargoNombre,
+  sedeCodigo,
+  sedeNombre,
+  fechaIngreso,
+  audit,
+  zone,
+  notifyEmployeesReload = true,
+  historySource = 'create_employee'
+}) {
+  const normalizedPhone = normalizeStoredPhone(telefono);
+  const payload = applyEmployeeExtendedFields({
+    codigo: codigo || null,
+    documento: String(documento || '').trim() || null,
+    nombre: nombre || null,
+    telefono: normalizedPhone,
+    cargo_codigo: cargoCodigo || null,
+    cargo_nombre: cargoNombre || null,
+    sede_codigo: sedeCodigo || null,
+    sede_nombre: sedeNombre || null,
+    zona_codigo: zone?.zonaCodigo || null,
+    zona_nombre: zone?.zonaNombre || null,
+    contrato_codigo: zone?.contratoCodigo || null,
+    contrato_nombre: zone?.contratoNombre || null,
+    cliente_nombre_snapshot: zone?.clienteNombreSnapshot || null,
+    cliente_nit_snapshot: zone?.clienteNitSnapshot || null,
+    fecha_ingreso: fechaIngreso || null,
+    fecha_retiro: null,
+    estado: 'activo',
+    created_by_uid: audit?.created_by_uid || null,
+    created_by_email: audit?.created_by_email || null,
+    last_modified_by_uid: audit?.created_by_uid || null,
+    last_modified_by_email: audit?.created_by_email || null,
+    last_modified_at: new Date().toISOString()
+  }, {
+    fechaNacimiento,
+    eps,
+    afp,
+    arlRiesgo,
+    dotacionCamisa,
+    dotacionPantalon,
+    dotacionZapatos
+  });
+  const { data, error } = await supabase
+    .from('employees')
+    .insert(payload)
+    .select('*')
+    .single();
+  if (error) throw error;
+  await appendEmployeeCargoHistory({
+    employeeId: data.id,
+    employeeCodigo: data.codigo,
+    documento: data.documento,
+    cargoCodigo: data.cargo_codigo,
+    cargoNombre: data.cargo_nombre,
+    sedeCodigo: data.sede_codigo,
+    sedeNombre: data.sede_nombre,
+    contratoCodigo: data.contrato_codigo,
+    contratoNombre: data.contrato_nombre,
+    clienteNombreSnapshot: data.cliente_nombre_snapshot,
+    clienteNitSnapshot: data.cliente_nit_snapshot,
+    fechaIngreso: data.fecha_ingreso,
+    source: historySource
+  });
+  if (notifyEmployeesReload) {
+    await notifyTableReload('employees');
+  }
+  return data;
+}
+
+function streamTable(table, mapper, onData, {
+  order = 'created_at',
+  onError = null,
+  onStatus = null,
+  contratoCodigo = undefined
+} = {}) {
+  if (contratoCodigo !== undefined && !contratoCodigo) { onData([]); return () => {}; }
+  let active = true;
+  let retryTimer = null;
+  let retryDelayMs = 2000;
+  const emit = async () => {
+    if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+    try {
+      const loader = table === 'employees' || table === 'incapacitados'
+        ? selectAdminStreamRows
+        : selectSmallTableRows;
+      const data = await loader(table, { select: '*', order, ascending: false, contratoCodigo });
+      if (!active) return;
+      retryDelayMs = 2000;
+      onData((data || []).map((row) => mapper(row)));
+    } catch (error) {
+      if (!active) return;
+      console.error(`No se pudo cargar ${table}:`, error);
+      onError?.(error, 'LOAD_ERROR');
+      onData([]);
+      retryTimer = setTimeout(() => { retryTimer = null; emit(); }, retryDelayMs);
+      retryDelayMs = Math.min(retryDelayMs * 2, 30000);
+    }
+  };
+
+  emit();
+  const unregister = registerTableReloader(table, emit);
+
+  const realtime = subscribeToRealtime(
+    supabase
+      .channel(nextRealtimeChannelName(`${table}-watch`))
+      .on('postgres_changes', { event: '*', schema: 'public', table, ...(contratoCodigo ? { filter: `contrato_codigo=eq.${contratoCodigo}` } : {}) }, emit),
+    { label: table, onError, onStatus }
+  );
+  const channel = realtime.subscription;
+
+  return () => {
+    active = false;
+    if (retryTimer) clearTimeout(retryTimer);
+    unregister();
+    realtime.cancel();
+    supabase.removeChannel(channel);
+  };
+}
+
+export const authState = (cb) => {
+  supabase.auth.getSession().then(async ({ data, error }) => {
+    if (error) {
+      console.error('No se pudo consultar la sesion de Supabase:', error);
+      if (/invalid refresh token|refresh token not found/i.test(String(error?.message || ''))) {
+        try { await supabase.auth.signOut({ scope: 'local' }); } catch {}
+      }
+      cb(null);
+      return;
+    }
+    await syncRealtimeAuth(data.session || null);
+    cb(normalizeUser(data.session?.user || null), null);
+  });
+
+  const { data } = supabase.auth.onAuthStateChange(async (_event, session) => {
+    await syncRealtimeAuth(session || null);
+    cb(normalizeUser(session?.user || null), _event);
+  });
+
+  return () => data.subscription.unsubscribe();
+};
+
+export async function login(email, pass) {
+  const { data, error } = await supabase.auth.signInWithPassword({
+    email: String(email || '').trim(),
+    password: pass
+  });
+  if (error) throw error;
+  return { user: normalizeUser(data.user) };
+}
+
+export async function register(email, pass, profile = {}) {
+  const cleanEmail = String(email || '').trim().toLowerCase();
+  const emailRedirectTo = (() => {
+    try {
+      return window.location.origin;
+    } catch {
+      return undefined;
+    }
+  })();
+  const { data, error } = await supabase.auth.signUp({
+    email: cleanEmail,
+    password: pass,
+    options: {
+      ...(emailRedirectTo ? { emailRedirectTo } : {}),
+      data: {
+        display_name: profile?.displayName || profile?.nombre || null,
+        full_name: profile?.displayName || profile?.nombre || null,
+        documento: profile?.documento || null
+      }
+    }
+  });
+  if (error) throw error;
+  return {
+    user: normalizeUser(data.user),
+    session: data.session || null
+  };
+}
+
+export async function requestPasswordReset(email) {
+  const cleanEmail = String(email || '').trim().toLowerCase();
+  const redirectTo = (() => {
+    try {
+      return `${window.location.origin}${window.location.pathname}?reset_password=1`;
+    } catch {
+      return undefined;
+    }
+  })();
+  const { error } = await supabase.auth.resetPasswordForEmail(cleanEmail, {
+    ...(redirectTo ? { redirectTo } : {})
+  });
+  if (error) throw error;
+}
+
+export async function updatePassword(pass) {
+  const session = await ensureAuthSessionFromUrl();
+  if (!session) {
+    throw new Error('La sesion de recuperacion no esta activa. Solicita un nuevo enlace desde recuperar contraseña.');
+  }
+  const { data, error } = await supabase.auth.updateUser({ password: pass });
+  if (error) throw error;
+  return { user: normalizeUser(data.user) };
+}
+
+export async function logout() {
+  const { error } = await supabase.auth.signOut();
+  if (error) throw error;
+}
+
+export async function createUserProfile(uid, data) {
+  if (!uid) return;
+  const existing = await loadUserProfile(uid);
+  if (existing) return existing;
+  await insertProfileIfMissing(uid, data);
+  return loadUserProfile(uid);
+}
+
+export async function ensureUserProfile(user) {
+  if (!user?.uid) return;
+  const existing = await loadUserProfile(user.uid);
+  if (existing) return;
+  await insertProfileIfMissing(user.uid, {
+    email: user.email,
+    displayName: user.displayName,
+    documento: user.documento
+  });
+}
+
+export async function loadUserProfile(uid) {
+  const { data, error } = await supabase
+    .from(SUPABASE_PROFILES_TABLE)
+    .select('*')
+    .eq('id', uid)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) return null;
+  return {
+    uid: data.id,
+    email: data.email || '',
+    displayName: data.display_name || null,
+    documento: data.documento || null,
+    estado: data.estado || 'activo',
+    role: data.role || null,
+    zonaCodigo: data.zona_codigo || null,
+    zonasPermitidas: Array.isArray(data.zonas_permitidas) ? data.zonas_permitidas : [],
+    supervisorEligible: data.supervisor_eligible === true
+  };
+}
+
+export async function getUserOverrides(uid = null) {
+  const currentUser = (await supabase.auth.getUser()).data.user;
+  const targetUid = String(uid || currentUser?.id || '').trim();
+  if (!targetUid) return {};
+  const { data, error } = await supabase
+    .from('user_overrides')
+    .select('permissions')
+    .eq('user_id', targetUid)
+    .maybeSingle();
+  if (error) throw error;
+  return data?.permissions || {};
+}
+
+export async function setUserOverrides(uid, permissions = {}) {
+  const targetUid = String(uid || '').trim();
+  if (!targetUid) throw new Error('Falta el usuario para guardar overrides.');
+  const payload = {
+    user_id: targetUid,
+    permissions: sanitizePermissionsRecord(permissions),
+    updated_at: new Date().toISOString()
+  };
+  const { error } = await supabase
+    .from('user_overrides')
+    .upsert(payload, { onConflict: 'user_id' });
+  if (error) throw error;
+  await notifyTableReload('user_overrides');
+}
+
+export async function clearUserOverrides(uid) {
+  const targetUid = String(uid || '').trim();
+  if (!targetUid) throw new Error('Falta el usuario para limpiar overrides.');
+  const { error } = await supabase
+    .from('user_overrides')
+    .delete()
+    .eq('user_id', targetUid);
+  if (error) throw error;
+  await notifyTableReload('user_overrides');
+}
+
+export async function setRolePermissions(role, permissions = {}) {
+  const cleanRole = String(role || '').trim().toLowerCase();
+  if (!cleanRole) throw new Error('Falta el rol a actualizar.');
+  const { error } = await supabase
+    .from('roles_matrix')
+    .upsert({
+      role: cleanRole,
+      permissions: sanitizePermissionsRecord(permissions),
+      updated_at: new Date().toISOString()
+    }, { onConflict: 'role' });
+  if (error) throw error;
+  await notifyTableReload('roles_matrix');
+}
+
+export function streamRoleMatrix(onData, onError = null, onStatus = null) {
+  let active = true;
+  const emit = async () => {
+    const { data, error } = await supabase
+      .from('roles_matrix')
+      .select('role, permissions');
+    if (!active) return;
+    if (error) {
+      console.error('No se pudo cargar roles_matrix:', error);
+      onError?.(error, 'LOAD_ERROR');
+      onData({});
+      return;
+    }
+    const map = {};
+    (data || []).forEach((row) => {
+      map[row.role] = row.permissions || {};
+    });
+    onData(map);
+  };
+
+  emit();
+
+  const unregister = registerTableReloader('roles_matrix', emit);
+  const realtime = subscribeToRealtime(
+    supabase
+      .channel(nextRealtimeChannelName('roles-matrix-watch'))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'roles_matrix' }, emit),
+    { label: 'roles_matrix', onError, onStatus }
+  );
+  const channel = realtime.subscription;
+
+  return () => {
+    active = false;
+    unregister();
+    realtime.cancel();
+    supabase.removeChannel(channel);
+  };
+}
+
+export function streamUsers(onData) {
+  let active = true;
+  const emit = async () => {
+    try {
+      const rows = await selectSmallTableRows(SUPABASE_PROFILES_TABLE, {
+        select: '*',
+        order: 'email',
+        ascending: true
+      });
+      if (!active) return;
+      onData((rows || []).map(mapUserProfileRow));
+    } catch (error) {
+      console.error('No se pudo cargar profiles:', error);
+      if (!active) return;
+      onData([]);
+    }
+  };
+
+  emit();
+
+  const unregister = registerTableReloader(SUPABASE_PROFILES_TABLE, emit);
+  const channel = supabase
+    .channel('profiles-watch')
+    .on('postgres_changes', { event: '*', schema: 'public', table: SUPABASE_PROFILES_TABLE }, emit)
+    .subscribe();
+
+  return () => {
+    active = false;
+    unregister();
+    supabase.removeChannel(channel);
+  };
+}
+
+export async function findUserByEmail(email) {
+  const cleanEmail = String(email || '').trim().toLowerCase();
+  if (!cleanEmail) return null;
+  const { data, error } = await supabase
+    .from(SUPABASE_PROFILES_TABLE)
+    .select('*')
+    .eq('email', cleanEmail)
+    .maybeSingle();
+  if (error) throw error;
+  return data ? mapUserProfileRow(data) : null;
+}
+
+function oneZoneArray(zonaCodigo) {
+  const code = String(zonaCodigo || '').trim();
+  return code ? [code] : [];
+}
+
+async function resolveSupervisorAccessByDocument(documento) {
+  const doc = String(documento || '').trim();
+  if (!doc) return null;
+
+  const { data: supervisorProfile, error: supervisorProfileError } = await supabase
+    .from('supervisor_profile')
+    .select('*')
+    .eq('documento', doc)
+    .maybeSingle();
+  if (supervisorProfileError) throw supervisorProfileError;
+
+  const mappedSupervisor = supervisorProfile ? mapSupervisorProfileRow(supervisorProfile) : null;
+  if (mappedSupervisor?.zonaCodigo) {
+    return {
+      zonaCodigo: mappedSupervisor.zonaCodigo,
+      zonaNombre: mappedSupervisor.zonaNombre || null,
+      source: 'supervisor_profile'
+    };
+  }
+
+  const employee = await findEmployeeByDocument(doc);
+  if (!employee) return null;
+  const alignment = await getCargoCrudAlignmentByCode(employee.cargoCodigo, employee.cargoNombre);
+  if (alignment !== 'supervisor' || !employee.zonaCodigo) return null;
+  return {
+    zonaCodigo: employee.zonaCodigo,
+    zonaNombre: employee.zonaNombre || null,
+    source: 'employees'
+  };
+}
+
+async function supervisorAccessPatchForUser(uid) {
+  const targetUid = String(uid || '').trim();
+  if (!targetUid) throw new Error('Falta el usuario a sincronizar.');
+  const { data: profile, error } = await supabase
+    .from(SUPABASE_PROFILES_TABLE)
+    .select('id,email,documento')
+    .eq('id', targetUid)
+    .maybeSingle();
+  if (error) throw error;
+  if (!profile) throw new Error('No se encontro el perfil del usuario.');
+
+  const documento = String(profile.documento || '').trim();
+  if (!documento) {
+    throw new Error('El usuario no tiene documento en su perfil. No se puede validar como supervisor.');
+  }
+
+  const supervisorAccess = await resolveSupervisorAccessByDocument(documento);
+  if (!supervisorAccess?.zonaCodigo) {
+    throw new Error('El usuario no tiene una zona asignada en el modulo Supervisores.');
+  }
+
+  return {
+    supervisor_eligible: true,
+    zona_codigo: supervisorAccess.zonaCodigo,
+    zonas_permitidas: oneZoneArray(supervisorAccess.zonaCodigo)
+  };
+}
+
+async function syncSupervisorAccessProfilesByDocument(documento, zonaCodigo, audit = null) {
+  const doc = String(documento || '').trim();
+  const zone = String(zonaCodigo || '').trim();
+  if (!doc || !zone) return 0;
+
+  const { data: profiles, error } = await supabase
+    .from(SUPABASE_PROFILES_TABLE)
+    .select('id')
+    .eq('documento', doc)
+    .eq('role', 'supervisor');
+  if (error) throw error;
+
+  const rows = Array.isArray(profiles) ? profiles : [];
+  for (const profile of rows) {
+    const { error: updateError } = await supabase
+      .from(SUPABASE_PROFILES_TABLE)
+      .update({
+        supervisor_eligible: true,
+        zona_codigo: zone,
+        zonas_permitidas: oneZoneArray(zone),
+        updated_at: new Date().toISOString(),
+        last_modified_by_uid: audit?.created_by_uid || null,
+        last_modified_by_email: audit?.created_by_email || null
+      })
+      .eq('id', profile.id);
+    if (updateError) throw updateError;
+  }
+
+  if (rows.length) await notifyTableReload(SUPABASE_PROFILES_TABLE);
+  return rows.length;
+}
+
+export async function syncSupervisorAccessForUser(uid) {
+  const targetUid = String(uid || '').trim();
+  if (!targetUid) throw new Error('Falta el usuario a sincronizar.');
+  const audit = await getCurrentAuditFields();
+  const patch = {
+    ...(await supervisorAccessPatchForUser(targetUid)),
+    updated_at: new Date().toISOString(),
+    last_modified_by_uid: audit.created_by_uid,
+    last_modified_by_email: audit.created_by_email
+  };
+  const { error } = await supabase
+    .from(SUPABASE_PROFILES_TABLE)
+    .update(patch)
+    .eq('id', targetUid)
+    .eq('role', 'supervisor');
+  if (error) throw error;
+  await notifyTableReload(SUPABASE_PROFILES_TABLE);
+}
+
+export async function setUserRole(uid, role) {
+  const targetUid = String(uid || '').trim();
+  const nextRole = String(role || '').trim().toLowerCase();
+  if (!targetUid) throw new Error('Falta el usuario a actualizar.');
+  if (!nextRole) throw new Error('Falta el rol a asignar.');
+  const audit = await getCurrentAuditFields();
+  const patch = {
+    role: nextRole,
+    updated_at: new Date().toISOString(),
+    last_modified_by_uid: audit.created_by_uid,
+    last_modified_by_email: audit.created_by_email
+  };
+  if (nextRole === 'supervisor') {
+    Object.assign(patch, await supervisorAccessPatchForUser(targetUid));
+  } else {
+    patch.supervisor_eligible = false;
+  }
+  const { error } = await supabase
+    .from(SUPABASE_PROFILES_TABLE)
+    .update(patch)
+    .eq('id', targetUid);
+  if (error) throw error;
+  await notifyTableReload(SUPABASE_PROFILES_TABLE);
+}
+
+export async function setUserStatus(uid, estado) {
+  const targetUid = String(uid || '').trim();
+  const nextStatus = String(estado || '').trim().toLowerCase();
+  if (!targetUid) throw new Error('Falta el usuario a actualizar.');
+  if (!nextStatus) throw new Error('Falta el estado a asignar.');
+  const audit = await getCurrentAuditFields();
+  const patch = {
+    estado: nextStatus,
+    updated_at: new Date().toISOString(),
+    last_modified_by_uid: audit.created_by_uid,
+    last_modified_by_email: audit.created_by_email
+  };
+  if (nextStatus !== 'eliminado') {
+    patch.deleted_at = null;
+    patch.deleted_by_uid = null;
+    patch.deleted_by_email = null;
+  }
+  const { error } = await supabase
+    .from(SUPABASE_PROFILES_TABLE)
+    .update(patch)
+    .eq('id', targetUid);
+  if (error) throw error;
+  await notifyTableReload(SUPABASE_PROFILES_TABLE);
+}
+
+export async function softDeleteUser(uid) {
+  const targetUid = String(uid || '').trim();
+  if (!targetUid) throw new Error('Falta el usuario a eliminar.');
+  const audit = await getCurrentAuditFields();
+  const timestamp = new Date().toISOString();
+  const { error } = await supabase
+    .from(SUPABASE_PROFILES_TABLE)
+    .update({
+      estado: 'eliminado',
+      role: 'empleado',
+      updated_at: timestamp,
+      last_modified_by_uid: audit.created_by_uid,
+      last_modified_by_email: audit.created_by_email,
+      deleted_at: timestamp,
+      deleted_by_uid: audit.created_by_uid,
+      deleted_by_email: audit.created_by_email
+    })
+    .eq('id', targetUid);
+  if (error) throw error;
+  await clearUserOverrides(targetUid);
+  await notifyTableReload(SUPABASE_PROFILES_TABLE);
+}
+
+export async function addAuditLog({
+  targetType = null,
+  targetId = null,
+  action = null,
+  before = null,
+  after = null,
+  note = null
+} = {}) {
+  const audit = await getCurrentAuditFields();
+  const { error } = await supabase
+    .from('audit_logs')
+    .insert({
+      actor_uid: audit.created_by_uid,
+      actor_email: audit.created_by_email,
+      target_type: targetType,
+      target_id: targetId == null ? null : String(targetId),
+      action,
+      before_data: before,
+      after_data: after,
+      note
+    });
+  if (error) throw error;
+  await notifyTableReload('audit_logs');
+}
+
+export function streamAuditLogs(onData, max = 200) {
+  let active = true;
+  const emit = async () => {
+    const { data, error } = await supabase
+      .from('audit_logs')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(max);
+    if (!active) return;
+    if (error) {
+      console.error('No se pudo cargar audit_logs:', error);
+      onData([]);
+      return;
+    }
+    onData((data || []).map(mapAuditLogRow));
+  };
+
+  emit();
+
+  const unregister = registerTableReloader('audit_logs', emit);
+  const channel = supabase
+    .channel('audit-logs-watch')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'audit_logs' }, emit)
+    .subscribe();
+
+  return () => {
+    active = false;
+    unregister();
+    supabase.removeChannel(channel);
+  };
+}
+
+export function streamAuditLogsByKind(kind = 'activity', onData, max = 100) {
+  let active = true;
+  const closureTargets = '(daily_closure,shift_closure)';
+  const emit = async () => {
+    let query = supabase
+      .from('audit_logs')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(max);
+    if (kind === 'closure') {
+      query = query.filter('target_type', 'in', closureTargets);
+    } else {
+      query = query.or(`target_type.is.null,target_type.not.in.${closureTargets}`);
+    }
+    const { data, error } = await query;
+    if (!active) return;
+    if (error) {
+      console.error(`No se pudo cargar audit_logs (${kind}):`, error);
+      onData([]);
+      return;
+    }
+    onData((data || []).map(mapAuditLogRow));
+  };
+
+  emit();
+
+  const unregister = registerTableReloader('audit_logs', emit);
+  const channel = supabase
+    .channel(`audit-logs-watch-${kind}`)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'audit_logs' }, emit)
+    .subscribe();
+
+  return () => {
+    active = false;
+    unregister();
+    supabase.removeChannel(channel);
+  };
+}
+
+export async function listEmployeeAuditLogsRange(dateFrom, dateTo, max = 1000) {
+  const from = toISODate(dateFrom) || todayBogotaISO();
+  const to = toISODate(dateTo) || from;
+  const start = `${from}T00:00:00`;
+  const end = `${to}T23:59:59`;
+  const { data, error } = await supabase
+    .from('audit_logs')
+    .select('*')
+    .eq('target_type', 'employee')
+    .gte('created_at', start)
+    .lte('created_at', end)
+    .order('created_at', { ascending: false })
+    .limit(Math.max(1, Math.min(Number(max || 1000), 5000)));
+  if (error) throw error;
+  return (data || []).map(mapAuditLogRow);
+}
+
+export function streamUserOverrides(uid, onData, onError = null, onStatus = null) {
+  let active = true;
+  const emit = async () => {
+    const { data, error } = await supabase
+      .from('user_overrides')
+      .select('permissions')
+      .eq('user_id', uid)
+      .maybeSingle();
+    if (!active) return;
+    if (error) {
+      console.error('No se pudo cargar user_overrides:', error);
+      onError?.(error, 'LOAD_ERROR');
+      onData({});
+      return;
+    }
+    onData(data?.permissions || {});
+  };
+
+  emit();
+
+  const unregister = registerTableReloader('user_overrides', emit);
+  const realtime = subscribeToRealtime(
+    supabase
+      .channel(nextRealtimeChannelName(`user-overrides-${uid}`))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'user_overrides', filter: `user_id=eq.${uid}` }, emit),
+    { label: `user_overrides:${uid}`, onError, onStatus }
+  );
+  const channel = realtime.subscription;
+
+  return () => {
+    active = false;
+    unregister();
+    realtime.cancel();
+    supabase.removeChannel(channel);
+  };
+}
+
+export function streamContracts(onData, onError = null, onStatus = null) {
+  return streamTable('contracts', mapContractRow, onData, { onError, onStatus });
+}
+
+export function countActiveContracts() {
+  return countActiveRows('contracts');
+}
+
+export async function getNextContractCode(prefix = 'CON', width = 4) {
+  return getNextPrefixedCode('contracts', prefix, width);
+}
+
+export async function createContract({
+  codigo,
+  nombre,
+  numeroContrato,
+  clienteNombre,
+  clienteNit,
+  clienteContacto,
+  clienteEmail,
+  clienteTelefono,
+  fechaInicio,
+  fechaFin
+}) {
+  const audit = await getCurrentAuditFields();
+  const finalCodigo = String(codigo || '').trim() || await getNextContractCode();
+  const { data, error } = await supabase
+    .from('contracts')
+    .insert({
+      codigo: finalCodigo,
+      nombre: nombre || null,
+      numero_contrato: numeroContrato || null,
+      cliente_nombre: clienteNombre || null,
+      cliente_nit: clienteNit || null,
+      cliente_contacto: clienteContacto || null,
+      cliente_email: clienteEmail || null,
+      cliente_telefono: clienteTelefono || null,
+      fecha_inicio: fechaInicio || null,
+      fecha_fin: fechaFin || null,
+      estado: 'activo',
+      ...audit
+    })
+    .select('id')
+    .single();
+  if (error) throw error;
+  await notifyTableReload('contracts');
+  return data.id;
+}
+
+async function syncContractCatalogReferences(previousCodigo, contract = {}) {
+  const previousCode = String(previousCodigo || '').trim();
+  if (!previousCode) return;
+  const updateFields = {
+    contrato_codigo: contract.codigo || null,
+    contrato_nombre: contract.nombre || null,
+    cliente_nombre_snapshot: contract.clienteNombre || null,
+    cliente_nit_snapshot: contract.clienteNit || null
+  };
+  const tables = ['dependencies', 'zones', 'sedes', 'employees', 'employee_cargo_history'];
+  const results = await Promise.all(tables.map((table) =>
+    supabase.from(table).update(updateFields).eq('contrato_codigo', previousCode)
+  ));
+  const failed = results.find((result) => result.error);
+  if (failed?.error) throw failed.error;
+  await Promise.all(['dependencies', 'zones', 'sedes', 'employees'].map((table) => notifyTableReload(table)));
+}
+
+export async function updateContract(id, data = {}) {
+  const patch = {};
+  if (typeof data.nombre === 'string') patch.nombre = data.nombre;
+  if (typeof data.numeroContrato === 'string') patch.numero_contrato = data.numeroContrato || null;
+  if (typeof data.clienteNombre === 'string') patch.cliente_nombre = data.clienteNombre || null;
+  if (typeof data.clienteNit === 'string') patch.cliente_nit = data.clienteNit || null;
+  if (typeof data.clienteContacto === 'string') patch.cliente_contacto = data.clienteContacto || null;
+  if (typeof data.clienteEmail === 'string') patch.cliente_email = data.clienteEmail || null;
+  if (typeof data.clienteTelefono === 'string') patch.cliente_telefono = data.clienteTelefono || null;
+  if (data.fechaInicio !== undefined) patch.fecha_inicio = data.fechaInicio || null;
+  if (data.fechaFin !== undefined) patch.fecha_fin = data.fechaFin || null;
+  const shouldSyncReferences = ['nombre', 'cliente_nombre', 'cliente_nit'].some((key) => Object.prototype.hasOwnProperty.call(patch, key));
+  let previous = null;
+  if (shouldSyncReferences) {
+    const { data: previousRow, error: previousError } = await supabase
+      .from('contracts')
+      .select('codigo,nombre,cliente_nombre,cliente_nit')
+      .eq('id', id)
+      .maybeSingle();
+    if (previousError) throw previousError;
+    previous = previousRow;
+  }
+  const { error } = await supabase.from('contracts').update(patch).eq('id', id);
+  if (error) throw error;
+  if (previous) {
+    const nextContext = {
+      codigo: previous.codigo,
+      nombre: Object.prototype.hasOwnProperty.call(patch, 'nombre') ? patch.nombre : previous.nombre,
+      clienteNombre: Object.prototype.hasOwnProperty.call(patch, 'cliente_nombre') ? patch.cliente_nombre : previous.cliente_nombre,
+      clienteNit: Object.prototype.hasOwnProperty.call(patch, 'cliente_nit') ? patch.cliente_nit : previous.cliente_nit
+    };
+    const changed = nextContext.codigo !== previous.codigo
+      || nextContext.nombre !== previous.nombre
+      || nextContext.clienteNombre !== previous.cliente_nombre
+      || nextContext.clienteNit !== previous.cliente_nit;
+    if (changed) await syncContractCatalogReferences(previous.codigo, nextContext);
+  }
+  await notifyTableReload('contracts');
+}
+
+export async function setContractStatus(id, estado) {
+  const { error } = await supabase.from('contracts').update({ estado }).eq('id', id);
+  if (error) throw error;
+  await notifyTableReload('contracts');
+}
+
+export async function updateContractReferenceImage(id, path) {
+  const { error } = await supabase.from('contracts')
+    .update({ reference_image_path: path || null }).eq('id', id).select('id').single();
+  if (error) throw error;
+  await notifyTableReload('contracts');
+}
+
+export async function findContractByCode(codigo) {
+  if (!codigo) return null;
+  const { data, error } = await supabase.from('contracts').select('*').eq('codigo', codigo).maybeSingle();
+  if (error) throw error;
+  return data ? mapContractRow(data) : null;
+}
+
+export function streamProfileContractAccess(onData, onError = null, onStatus = null) {
+  return streamTable('profile_contract_access', mapProfileContractAccessRow, onData, { onError, onStatus });
+}
+
+export async function setUserContractAccess(uid, contratoCodigos = []) {
+  const userId = String(uid || '').trim();
+  if (!userId) throw new Error('Falta el usuario para asignar contratos.');
+  const codes = [...new Set((Array.isArray(contratoCodigos) ? contratoCodigos : [contratoCodigos])
+    .map((code) => String(code || '').trim())
+    .filter(Boolean))];
+  const audit = await getCurrentAuditFields();
+  const { data: existing, error: existingError } = await supabase
+    .from('profile_contract_access')
+    .select('contrato_codigo')
+    .eq('user_id', userId);
+  if (existingError) throw existingError;
+  const existingCodes = new Set((existing || []).map((row) => String(row.contrato_codigo || '').trim()).filter(Boolean));
+  const nextCodes = new Set(codes);
+  const toDelete = [...existingCodes].filter((code) => !nextCodes.has(code));
+  if (toDelete.length) {
+    const { error: deleteError } = await supabase
+      .from('profile_contract_access')
+      .delete()
+      .eq('user_id', userId)
+      .in('contrato_codigo', toDelete);
+    if (deleteError) throw deleteError;
+  }
+  if (codes.length) {
+    const rows = codes.map((code) => ({
+      user_id: userId,
+      contrato_codigo: code,
+      estado: 'activo',
+      ...audit
+    }));
+    const { error: upsertError } = await supabase
+      .from('profile_contract_access')
+      .upsert(rows, { onConflict: 'user_id,contrato_codigo' });
+    if (upsertError) throw upsertError;
+  }
+  const { error: profileError } = await supabase
+    .from(SUPABASE_PROFILES_TABLE)
+    .update({
+      contrato_codigo: codes[0] || null,
+      contratos_permitidos: codes,
+      updated_at: new Date().toISOString(),
+      last_modified_by_uid: audit.created_by_uid,
+      last_modified_by_email: audit.created_by_email
+    })
+    .eq('id', userId);
+  if (profileError) throw profileError;
+  await notifyTableReload(SUPABASE_PROFILES_TABLE);
+  await notifyTableReload('profile_contract_access');
+}
+
+export function streamZones(onData, onError = null, onStatus = null) {
+  return streamTable('zones', mapCatalogRow, onData, { onError, onStatus });
+}
+
+export async function getNextZoneCode(prefix = 'ZON', width = 4) {
+  return getNextPrefixedCode('zones', prefix, width);
+}
+
+export async function createZone({ codigo, nombre, contratoCodigo, contratoNombre, clienteNombreSnapshot, clienteNitSnapshot }) {
+  const audit = await getCurrentAuditFields();
+  const contract = await resolveContractContextByCode(contratoCodigo);
+  const { data, error } = await supabase
+    .from('zones')
+    .insert({
+      codigo: codigo || null,
+      nombre: nombre || null,
+      contrato_codigo: contract.contratoCodigo || contratoCodigo || null,
+      contrato_nombre: contract.contratoNombre || contratoNombre || null,
+      cliente_nombre_snapshot: contract.clienteNombreSnapshot || clienteNombreSnapshot || null,
+      cliente_nit_snapshot: contract.clienteNitSnapshot || clienteNitSnapshot || null,
+      estado: 'activo',
+      ...audit
+    })
+    .select('id')
+    .single();
+  if (error) throw error;
+  await notifyTableReload('zones');
+  return data.id;
+}
+
+export async function updateZone(id, { codigo, nombre, contratoCodigo, contratoNombre, clienteNombreSnapshot, clienteNitSnapshot }) {
+  const patch = {};
+  if (typeof codigo === 'string') patch.codigo = codigo;
+  if (typeof nombre === 'string') patch.nombre = nombre;
+  if (typeof contratoCodigo === 'string') {
+    const contract = await resolveContractContextByCode(contratoCodigo);
+    patch.contrato_codigo = contract.contratoCodigo || contratoCodigo || null;
+    patch.contrato_nombre = contract.contratoNombre || contratoNombre || null;
+    patch.cliente_nombre_snapshot = contract.clienteNombreSnapshot || clienteNombreSnapshot || null;
+    patch.cliente_nit_snapshot = contract.clienteNitSnapshot || clienteNitSnapshot || null;
+  }
+  const { error } = await supabase.from('zones').update(patch).eq('id', id);
+  if (error) throw error;
+  await notifyTableReload('zones');
+}
+
+export async function setZoneStatus(id, estado) {
+  const { error } = await supabase.from('zones').update({ estado }).eq('id', id);
+  if (error) throw error;
+  await notifyTableReload('zones');
+}
+
+export async function findZoneByCode(codigo) {
+  if (!codigo) return null;
+  const { data, error } = await supabase.from('zones').select('*').eq('codigo', codigo).maybeSingle();
+  if (error) throw error;
+  return data ? mapCatalogRow(data) : null;
+}
+
+export function streamDependencies(onData, onError = null, onStatus = null) {
+  return streamTable('dependencies', mapCatalogRow, onData, { onError, onStatus });
+}
+
+export async function getNextDependencyCode(prefix = 'DEP', width = 4) {
+  return getNextPrefixedCode('dependencies', prefix, width);
+}
+
+export async function createDependency({ codigo, nombre, contratoCodigo, contratoNombre, clienteNombreSnapshot, clienteNitSnapshot }) {
+  const audit = await getCurrentAuditFields();
+  const contract = await resolveContractContextByCode(contratoCodigo);
+  const { data, error } = await supabase
+    .from('dependencies')
+    .insert({
+      codigo: codigo || null,
+      nombre: nombre || null,
+      contrato_codigo: contract.contratoCodigo || contratoCodigo || null,
+      contrato_nombre: contract.contratoNombre || contratoNombre || null,
+      cliente_nombre_snapshot: contract.clienteNombreSnapshot || clienteNombreSnapshot || null,
+      cliente_nit_snapshot: contract.clienteNitSnapshot || clienteNitSnapshot || null,
+      estado: 'activo',
+      ...audit
+    })
+    .select('id')
+    .single();
+  if (error) throw error;
+  await notifyTableReload('dependencies');
+  return data.id;
+}
+
+export async function updateDependency(id, { codigo, nombre, contratoCodigo, contratoNombre, clienteNombreSnapshot, clienteNitSnapshot }) {
+  const patch = {};
+  if (typeof codigo === 'string') patch.codigo = codigo;
+  if (typeof nombre === 'string') patch.nombre = nombre;
+  if (typeof contratoCodigo === 'string') {
+    const contract = await resolveContractContextByCode(contratoCodigo);
+    patch.contrato_codigo = contract.contratoCodigo || contratoCodigo || null;
+    patch.contrato_nombre = contract.contratoNombre || contratoNombre || null;
+    patch.cliente_nombre_snapshot = contract.clienteNombreSnapshot || clienteNombreSnapshot || null;
+    patch.cliente_nit_snapshot = contract.clienteNitSnapshot || clienteNitSnapshot || null;
+  }
+  const { error } = await supabase.from('dependencies').update(patch).eq('id', id);
+  if (error) throw error;
+  await notifyTableReload('dependencies');
+}
+
+export async function setDependencyStatus(id, estado) {
+  const { error } = await supabase.from('dependencies').update({ estado }).eq('id', id);
+  if (error) throw error;
+  await notifyTableReload('dependencies');
+}
+
+export async function findDependencyByCode(codigo) {
+  if (!codigo) return null;
+  const { data, error } = await supabase.from('dependencies').select('*').eq('codigo', codigo).maybeSingle();
+  if (error) throw error;
+  return data ? mapCatalogRow(data) : null;
+}
+
+export function streamSedes(onData, onError = null, onStatus = null, options = {}) {
+  return streamTable('sedes', mapSedeRow, onData, { ...options, onError, onStatus });
+}
+
+export function countActiveSedes() {
+  return countActiveRows('sedes');
+}
+
+export async function listQrDevices() {
+  const [devices, sites] = await Promise.all([
+    selectSmallTableRows('sede_devices', { select: 'id,sede_codigo,sede_nombre,device_name,estado,last_seen_at,revoked_at,revoked_by_email,created_at,created_by_email,last_modified_at,last_modified_by_email', order: 'created_at', ascending: false }),
+    selectSmallTableRows('sede_device_sites', { select: 'device_id,sede_codigo,sede_nombre', order: 'sede_nombre', ascending: true })
+  ]);
+  const sitesByDevice = new Map();
+  (sites || []).forEach((site) => {
+    const deviceId = String(site?.device_id || '').trim();
+    if (!deviceId) return;
+    if (!sitesByDevice.has(deviceId)) sitesByDevice.set(deviceId, []);
+    sitesByDevice.get(deviceId).push(site);
+  });
+  return (devices || []).map((row) => mapQrDeviceRow(row, sitesByDevice.get(String(row?.id || '').trim()) || []));
+}
+
+export function streamQrDevices(onData, onError = null, onStatus = null) {
+  let active = true;
+  listQrDevices()
+    .then((devices) => {
+      if (!active) return;
+      onData(devices);
+      onStatus?.('LOADED', null);
+    })
+    .catch((error) => {
+      if (!active) return;
+      console.error('No se pudo cargar tablets QR:', error);
+      onError?.(error, 'LOAD_ERROR');
+      onData([]);
+    });
+  return () => {
+    active = false;
+  };
+}
+
+export function streamShiftTemplates(onData, onError = null, onStatus = null, options = {}) {
+  return streamTable('shift_templates', mapShiftTemplateRow, onData, { ...options, order: 'orden', onError, onStatus });
+}
+
+export async function listShiftTemplateRuleCounts(templateIds = []) {
+  const ids = [...new Set(templateIds.filter(Boolean))];
+  const counts = new Map(ids.map(id => [id, 0]));
+  for (const chunk of chunkArray(ids, 200)) {
+    const rows = await selectPagedRows(() => supabase.from('shift_template_rules')
+      .select('template_id').in('template_id', chunk).eq('estado', 'activo').order('id'));
+    for (const row of rows) counts.set(row.template_id, (counts.get(row.template_id) || 0) + 1);
+  }
+  return [...counts].map(([templateId, count]) => ({ templateId, count }));
+}
+
+export async function listShiftTemplates({ includeInactive = false, contratoCodigo = null } = {}) {
+  const contractCode = String(contratoCodigo || '').trim();
+  let query = supabase
+    .from('shift_templates')
+    .select('*')
+    .order('orden', { ascending: true })
+    .order('nombre', { ascending: true });
+  if (!includeInactive) query = query.eq('estado', 'activo');
+  if (contractCode) query = query.eq('contrato_codigo', contractCode);
+  const { data, error } = await query;
+  if (error) throw error;
+  return (data || []).map(mapShiftTemplateRow);
+}
+
+export async function createShiftTemplate(data = {}) {
+  const audit = await getCurrentAuditFields();
+  const payload = {
+    ...shiftTemplatePayload(data),
+    created_by_uid: audit.created_by_uid,
+    created_by_email: audit.created_by_email
+  };
+  const { data: row, error } = await supabase
+    .from('shift_templates')
+    .insert(payload)
+    .select('*')
+    .single();
+  if (error) throw error;
+  await notifyTableReload('shift_templates');
+  return mapShiftTemplateRow(row);
+}
+
+export async function updateShiftTemplate(id, data = {}) {
+  const templateId = String(id || '').trim();
+  if (!templateId) throw new Error('Falta el turno base para actualizar.');
+  const patch = shiftTemplatePayload(data);
+  const { data: row, error } = await supabase
+    .from('shift_templates')
+    .update(patch)
+    .eq('id', templateId)
+    .select('*')
+    .single();
+  if (error) throw error;
+  await notifyTableReload('shift_templates');
+  return mapShiftTemplateRow(row);
+}
+
+export async function setShiftTemplateStatus(id, estado = 'activo') {
+  return updateShiftTemplate(id, { estado });
+}
+
+export async function listShiftTemplateRules(templateId, { includeInactive = true } = {}) {
+  const targetTemplateId = String(templateId || '').trim();
+  if (!targetTemplateId) return [];
+  let query = supabase
+    .from('shift_template_rules')
+    .select('*')
+    .eq('template_id', targetTemplateId)
+    .order('tipo_dia', { ascending: true })
+    .order('dia_semana', { ascending: true })
+    .order('orden', { ascending: true })
+    .order('hora_inicio', { ascending: true });
+  if (!includeInactive) query = query.eq('estado', 'activo');
+  const { data, error } = await query;
+  if (error) throw error;
+  return (data || []).map(mapShiftTemplateRuleRow);
+}
+
+export function streamShiftTemplateRules(templateId, onData, onError = null, onStatus = null) {
+  const targetTemplateId = String(templateId || '').trim();
+  if (!targetTemplateId) {
+    onData([]);
+    return () => {};
+  }
+  let active = true;
+  const emit = async () => {
+    try {
+      const rows = await listShiftTemplateRules(targetTemplateId);
+      if (active) onData(rows);
+    } catch (error) {
+      if (!active) return;
+      console.error('No se pudo cargar shift_template_rules:', error);
+      onError?.(error, 'LOAD_ERROR');
+      onData([]);
+    }
+  };
+  const onChange = (payload) => {
+    const nextVal = String(payload?.new?.template_id || '').trim();
+    const prevVal = String(payload?.old?.template_id || '').trim();
+    if ((nextVal || prevVal) && nextVal !== targetTemplateId && prevVal !== targetTemplateId) return;
+    emit();
+  };
+  emit();
+  const unregister = registerTableReloader('shift_template_rules', emit);
+  const realtime = subscribeToRealtime(
+    supabase.channel(nextRealtimeChannelName(`shift-template-rules-${targetTemplateId}`)).on('postgres_changes', { event: '*', schema: 'public', table: 'shift_template_rules' }, onChange),
+    { label: `shift_template_rules:${targetTemplateId}`, onError, onStatus }
+  );
+  const channel = realtime.subscription;
+  return () => {
+    active = false;
+    unregister();
+    realtime.cancel();
+    supabase.removeChannel(channel);
+  };
+}
+
+export async function createShiftTemplateRule(data = {}) {
+  const audit = await getCurrentAuditFields();
+  const payload = {
+    ...shiftTemplateRulePayload(data),
+    created_by_uid: audit.created_by_uid,
+    created_by_email: audit.created_by_email
+  };
+  const { data: row, error } = await supabase
+    .from('shift_template_rules')
+    .insert(payload)
+    .select('*')
+    .single();
+  if (error) throw error;
+  await notifyTableReload('shift_template_rules');
+  return mapShiftTemplateRuleRow(row);
+}
+
+export async function updateShiftTemplateRule(id, data = {}) {
+  const ruleId = String(id || '').trim();
+  if (!ruleId) throw new Error('Falta la regla de turno para actualizar.');
+  const { data: row, error } = await supabase
+    .from('shift_template_rules')
+    .update(shiftTemplateRulePayload(data))
+    .eq('id', ruleId)
+    .select('*')
+    .single();
+  if (error) throw error;
+  await notifyTableReload('shift_template_rules');
+  return mapShiftTemplateRuleRow(row);
+}
+
+export async function setShiftTemplateRuleStatus(id, estado = 'activo') {
+  return updateShiftTemplateRule(id, { estado });
+}
+
+export async function saveShiftTemplateRules({ templateId = null, rules = [], inactiveRuleIds = [] } = {}) {
+  const targetTemplateId = String(templateId || '').trim();
+  if (!targetTemplateId) throw new Error('Falta el plan para guardar horarios.');
+  const rows = (Array.isArray(rules) ? rules : [])
+    .map((row) => ({
+      id: String(row.id || '').trim() || null,
+      payload: shiftTemplateRulePayload({ ...row, templateId: targetTemplateId, estado: row.estado || 'activo' })
+    }))
+    .filter((row) => row.payload.template_id && row.payload.hora_inicio && row.payload.hora_fin);
+  const updates = rows
+    .filter((row) => row.id)
+    .map((row) => ({ id: row.id, ...row.payload }));
+  const audit = rows.some(row => !row.id) ? await getCurrentAuditFields() : {};
+  const inserts = rows
+    .filter((row) => !row.id)
+    .map((row) => ({
+      ...row.payload,
+      created_by_uid: audit.created_by_uid,
+      created_by_email: audit.created_by_email
+    }));
+  const inactiveIds = [...new Set((Array.isArray(inactiveRuleIds) ? inactiveRuleIds : [])
+    .map((id) => String(id || '').trim())
+    .filter(Boolean))];
+
+  for (const chunk of chunkArray(updates, 250)) {
+    const { error } = await supabase.from('shift_template_rules').upsert(chunk, { onConflict: 'id' });
+    if (error) throw error;
+  }
+  for (const chunk of chunkArray(inserts, 250)) {
+    const { error } = await supabase.from('shift_template_rules').insert(chunk);
+    if (error) throw error;
+  }
+  for (const chunk of chunkArray(inactiveIds, 250)) {
+    const { error } = await supabase
+      .from('shift_template_rules')
+      .update({ estado: 'inactivo' })
+      .in('id', chunk);
+    if (error) throw error;
+  }
+
+  await notifyTableReload('shift_template_rules');
+  return {
+    saved: updates.length + inserts.length,
+    inserted: inserts.length,
+    updated: updates.length,
+    inactivated: inactiveIds.length
+  };
+}
+
+export async function listShiftSitePlanAssignments({ includeInactive = false, templateId = null, sedeCodigo = null, contratoCodigo = null } = {}) {
+  let query = supabase
+    .from('shift_site_plan_assignments')
+    .select('*')
+    .order('sede_nombre', { ascending: true })
+    .order('activated_at', { ascending: false });
+  if (!includeInactive) query = query.eq('estado', 'activo');
+  if (templateId) query = query.eq('template_id', String(templateId).trim());
+  if (sedeCodigo) query = query.eq('sede_codigo', String(sedeCodigo).trim());
+  if (contratoCodigo) query = query.eq('contrato_codigo', String(contratoCodigo).trim());
+  const { data, error } = await query;
+  if (error) throw error;
+  return (data || []).map(mapShiftSitePlanAssignmentRow);
+}
+
+export async function activateShiftPlanForSites({ templateId = null, sedeCodigos = [], sedeOperarios = {}, contratoCodigo = null } = {}) {
+  const targetTemplate = String(templateId || '').trim();
+  const targetContract = String(contratoCodigo || '').trim();
+  if (!targetTemplate) throw new Error('Selecciona un plan.');
+  const selectedSedeCodes = [...new Set((Array.isArray(sedeCodigos) ? sedeCodigos : [])
+    .map((code) => String(code || '').trim())
+    .filter(Boolean))];
+  if (!selectedSedeCodes.length) throw new Error('Selecciona al menos una sede.');
+  const days = SHIFT_GENERATION_DAYS;
+  const dateFrom = addIsoDays(todayBogota(), 1);
+  const dateTo = addIsoDays(dateFrom, days - 1);
+
+  const [templates, sedeRows, activeAssignments] = await Promise.all([
+    listShiftTemplates({ includeInactive: false, contratoCodigo: targetContract || null }),
+    selectPagedRows(() => supabase
+      .from('sedes')
+      .select('*')
+      .in('codigo', selectedSedeCodes)
+      .neq('estado', 'inactivo')
+      .order('nombre', { ascending: true })),
+    listShiftSitePlanAssignments({ includeInactive: false, contratoCodigo: targetContract || null })
+  ]);
+
+  const template = templates.find((row) => String(row.id || '') === targetTemplate);
+  if (!template) throw new Error('El plan seleccionado no esta activo.');
+  const sedesByCode = new Map((sedeRows || []).map(mapSedeRow).map((sede) => [String(sede.codigo || '').trim(), sede]));
+  const validSedeCodes = selectedSedeCodes.filter((code) => sedesByCode.has(code));
+  if (!validSedeCodes.length) throw new Error('No hay sedes activas para activar el plan.');
+  if (targetContract) {
+    const invalidSede = validSedeCodes
+      .map((code) => sedesByCode.get(code))
+      .find((sede) => String(sede?.contratoCodigo || '').trim() !== targetContract);
+    if (invalidSede) throw new Error(`La sede ${invalidSede.nombre || invalidSede.codigo || '-'} pertenece a otro contrato.`);
+    if (template.contratoCodigo && String(template.contratoCodigo || '').trim() !== targetContract) {
+      throw new Error('El plan seleccionado pertenece a otro contrato.');
+    }
+  }
+
+  for (const code of validSedeCodes) {
+    validateShiftPlanCapacity(sedesByCode.get(code), activeAssignments, targetTemplate, sedeOperarios?.[code] ?? 0);
+  }
+  const activeBySedeForTemplate = new Map(activeAssignments
+    .filter(row => row.templateId === targetTemplate)
+    .filter((row) => validSedeCodes.includes(String(row.sedeCodigo || '').trim()))
+    .map((row) => [String(row.sedeCodigo || '').trim(), row]));
+  const nowIso = new Date().toISOString();
+  const audit = await getCurrentAuditFields();
+
+  const updateRows = validSedeCodes
+    .filter((code) => activeBySedeForTemplate.has(code))
+    .map((code) => {
+      const sede = sedesByCode.get(code) || {};
+      return {
+        id: activeBySedeForTemplate.get(code).id,
+        payload: shiftSitePlanAssignmentPayload({
+          sedeNombre: sede.nombre || null,
+          contratoCodigo: sede.contratoCodigo || null,
+          contratoNombre: sede.contratoNombre || null,
+          clienteNombreSnapshot: sede.clienteNombreSnapshot || null,
+          clienteNitSnapshot: sede.clienteNitSnapshot || null,
+          operariosPlaneados: sedeOperarios?.[code] ?? 0,
+          horizonDays: days,
+          estado: 'activo',
+          inactivatedAt: null
+        })
+      };
+    });
+
+  const insertRows = validSedeCodes.filter((code) => !activeBySedeForTemplate.has(code)).map((code) => {
+    const sede = sedesByCode.get(code) || {};
+    return shiftSitePlanAssignmentPayload({
+      templateId: targetTemplate,
+      sedeCodigo: code,
+      sedeNombre: sede.nombre || null,
+      contratoCodigo: sede.contratoCodigo || null,
+      contratoNombre: sede.contratoNombre || null,
+      clienteNombreSnapshot: sede.clienteNombreSnapshot || null,
+      clienteNitSnapshot: sede.clienteNitSnapshot || null,
+      operariosPlaneados: sedeOperarios?.[code] ?? 0,
+      horizonDays: days,
+      estado: 'activo',
+      activatedAt: nowIso,
+      inactivatedAt: null
+    }, audit);
+  });
+
+  const savedAssignments = [];
+  for (const row of updateRows) {
+    const { data, error } = await supabase
+      .from('shift_site_plan_assignments')
+      .update(row.payload)
+      .eq('id', row.id)
+      .select('*')
+      .single();
+    if (error) throw error;
+    savedAssignments.push(mapShiftSitePlanAssignmentRow(data));
+  }
+
+  if (insertRows.length) {
+    const { data, error } = await supabase
+      .from('shift_site_plan_assignments')
+      .insert(insertRows)
+      .select('*');
+    if (error) throw error;
+    savedAssignments.push(...(data || []).map(mapShiftSitePlanAssignmentRow));
+  }
+
+  const generation = await generateScheduledShiftsFromPlans({
+    dateFrom,
+    dateTo,
+    templateId: targetTemplate,
+    sedeCodigos: validSedeCodes,
+    sedeOperarios
+  });
+
+  await Promise.all([
+    notifyTableReload('shift_site_plan_assignments'),
+    notifyTableReload('scheduled_shifts')
+  ]);
+
+  return {
+    assignments: savedAssignments,
+    generation,
+    dateFrom,
+    dateTo,
+    horizonDays: days,
+    updated: updateRows.length,
+    inserted: insertRows.length
+  };
+}
+
+export async function renewActiveShiftPlans({ contratoCodigo = null } = {}) {
+  const assignments = await listShiftSitePlanAssignments({ includeInactive: false, contratoCodigo });
+  const results = [];
+  for (const assignment of assignments) {
+    const dateFrom = addIsoDays(todayBogota(), 1);
+    const dateTo = addIsoDays(dateFrom, SHIFT_GENERATION_DAYS - 1);
+    const generation = await generateScheduledShiftsFromPlans({
+      dateFrom,
+      dateTo,
+      templateId: assignment.templateId,
+      contratoCodigo,
+      sedeCodigos: [assignment.sedeCodigo],
+      sedeOperarios: { [assignment.sedeCodigo]: assignment.operariosPlaneados }
+    });
+    results.push({ assignment, generation, dateFrom, dateTo });
+  }
+  await renewShiftRotations(contratoCodigo);
+  return results;
+}
+
+export function streamScheduledShiftsByDate(fechaOperativa, onData, onError = null, onStatus = null) {
+  const day = String(fechaOperativa || '').trim();
+  if (!day) {
+    onData([]);
+    return () => {};
+  }
+  let active = true;
+  const emit = async () => {
+    const { data, error } = await supabase
+      .from('scheduled_shifts')
+      .select('*')
+      .eq('fecha_operativa', day)
+      .order('starts_at', { ascending: true });
+    if (!active) return;
+    if (error) {
+      console.error('No se pudo cargar scheduled_shifts:', error);
+      onError?.(error, 'LOAD_ERROR');
+      onData([]);
+      return;
+    }
+    onData((data || []).map(mapScheduledShiftRow));
+  };
+  const onChange = (payload) => {
+    if (!shouldRefreshForDay(payload, day, 'fecha_operativa')) return;
+    emit();
+  };
+  emit();
+  const unregister = registerTableReloader('scheduled_shifts', emit);
+  const realtime = subscribeToRealtime(
+    supabase.channel(nextRealtimeChannelName(`scheduled-shifts-${day}`)).on('postgres_changes', { event: '*', schema: 'public', table: 'scheduled_shifts' }, onChange),
+    { label: `scheduled_shifts:${day}`, onError, onStatus }
+  );
+  const channel = realtime.subscription;
+  return () => {
+    active = false;
+    unregister();
+    realtime.cancel();
+    supabase.removeChannel(channel);
+  };
+}
+
+export async function listScheduledShiftsRange(dateFrom, dateTo, { sedeCodigo = null, sedeCodigos = [], templateIds = [], contratoCodigo = null, estados = [] } = {}) {
+  if (!dateFrom || !dateTo) return [];
+  const rows = await selectPagedRows(() => {
+    let query = supabase
+      .from('scheduled_shifts')
+      .select('*')
+      .gte('fecha_operativa', dateFrom)
+      .lte('fecha_operativa', dateTo)
+      .order('fecha_operativa', { ascending: true })
+      .order('starts_at', { ascending: true });
+    if (sedeCodigo) query = query.eq('sede_codigo', String(sedeCodigo).trim());
+    if (sedeCodigos.length) query = query.in('sede_codigo', sedeCodigos);
+    if (templateIds.length) query = query.in('template_id', templateIds);
+    if (contratoCodigo) query = query.eq('contrato_codigo', String(contratoCodigo).trim());
+    if (Array.isArray(estados) && estados.length) query = query.in('estado', estados);
+    return query;
+  });
+  return rows.map(mapScheduledShiftRow);
+}
+
+export async function generateScheduledShiftsFromPlans({ dateFrom, dateTo, sedeCodigo = null, sedeCodigos = [], sedeOperarios = {}, templateId = null } = {}) {
+  const dates = listIsoDatesInRange(dateFrom, dateTo, 370);
+  const targetTemplate = String(templateId || '').trim();
+  if (!targetTemplate) throw new Error('Selecciona un plan.');
+  const selectedSedeCodes = [...new Set([
+    ...((Array.isArray(sedeCodigos) ? sedeCodigos : []).map((code) => String(code || '').trim())),
+    String(sedeCodigo || '').trim()
+  ].filter(Boolean))];
+  if (!selectedSedeCodes.length) throw new Error('Selecciona al menos una sede.');
+  const operariosBySede = Object.fromEntries(Object.entries(sedeOperarios || {}).map(([code, value]) => [
+    String(code || '').trim(),
+    Math.max(0, numberOrDefault(value, 0))
+  ]).filter(([code]) => code));
+
+  const [templates, rules, sedeRows, existing] = await Promise.all([
+    listShiftTemplates({ includeInactive: false }),
+    listShiftTemplateRules(targetTemplate, { includeInactive: false }),
+    selectPagedRows(() => supabase
+      .from('sedes')
+      .select('*')
+      .in('codigo', selectedSedeCodes)
+      .neq('estado', 'inactivo')
+      .order('nombre', { ascending: true })),
+    listScheduledShiftsRange(dateFrom, dateTo, { sedeCodigos: selectedSedeCodes, templateIds: [targetTemplate] })
+  ]);
+
+  const templatesById = new Map(templates.map((row) => [row.id, row]));
+  const template = templatesById.get(targetTemplate);
+  if (!template) throw new Error('El plan seleccionado no esta activo.');
+  const eligibleSites = (sedeRows || []).map(mapSedeRow).map((sede) => ({
+    id: null,
+    templateId: targetTemplate,
+    sedeCodigo: sede.codigo || null,
+    sedeNombre: sede.nombre || null,
+    contratoCodigo: sede.contratoCodigo || null,
+    contratoNombre: sede.contratoNombre || null,
+    clienteNombreSnapshot: sede.clienteNombreSnapshot || null,
+    clienteNitSnapshot: sede.clienteNitSnapshot || null,
+    operariosPlaneados: operariosBySede[String(sede.codigo || '').trim()] || 0
+  }));
+  const existingKeys = new Set(existing
+    .filter((row) => row.sedeCodigo && row.templateRuleId && row.fechaOperativa)
+    .map((row) => `${row.sedeCodigo}|${row.templateRuleId}|${row.fechaOperativa}`));
+
+  let skippedExisting = 0;
+  let skippedInvalid = 0;
+  const rows = [];
+
+  for (const site of eligibleSites) {
+    for (const fechaOperativa of dates) {
+      for (const rule of rules) {
+        if (!shiftRuleAppliesOnDate(rule, fechaOperativa)) continue;
+        const key = `${site.sedeCodigo}|${rule.id}|${fechaOperativa}`;
+        if (existingKeys.has(key)) {
+          skippedExisting += 1;
+          continue;
+        }
+        const candidate = buildScheduledShiftCandidate({ template, site, rule, fechaOperativa });
+        if (!candidate) {
+          skippedInvalid += 1;
+          continue;
+        }
+        rows.push(scheduledShiftPayload(candidate));
+        existingKeys.add(key);
+      }
+    }
+  }
+
+  const createdRows = [];
+  const chunkSize = 500;
+  for (let index = 0; index < rows.length; index += chunkSize) {
+    const chunk = rows.slice(index, index + chunkSize);
+    const { data, error } = await supabase
+      .from('scheduled_shifts')
+      .insert(chunk)
+      .select('*');
+    if (error) throw error;
+    createdRows.push(...(data || []).map(mapScheduledShiftRow));
+  }
+
+  if (createdRows.length) await notifyTableReload('scheduled_shifts');
+  return {
+    created: createdRows.length,
+    skippedExisting,
+    skippedInvalid,
+    sites: eligibleSites.length,
+    templates: 1,
+    days: dates.length,
+    rows: createdRows
+  };
+}
+
+export async function createScheduledShift(data = {}) {
+  const { data: row, error } = await supabase
+    .from('scheduled_shifts')
+    .insert(scheduledShiftPayload(data))
+    .select('*')
+    .single();
+  if (error) throw error;
+  await notifyTableReload('scheduled_shifts');
+  return mapScheduledShiftRow(row);
+}
+
+export async function updateScheduledShift(id, data = {}) {
+  const shiftId = String(id || '').trim();
+  if (!shiftId) throw new Error('Falta el turno programado para actualizar.');
+  const { data: row, error } = await supabase
+    .from('scheduled_shifts')
+    .update(scheduledShiftPayload(data))
+    .eq('id', shiftId)
+    .select('*')
+    .single();
+  if (error) throw error;
+  await notifyTableReload('scheduled_shifts');
+  return mapScheduledShiftRow(row);
+}
+
+export async function setScheduledShiftStatus(id, estado = 'programado') {
+  return updateScheduledShift(id, { estado });
+}
+
+export async function listShiftAssignmentsByShift(scheduledShiftId) {
+  const shiftId = String(scheduledShiftId || '').trim();
+  if (!shiftId) return [];
+  const rows = await selectPagedRows(() => supabase
+    .from('shift_assignments')
+    .select('*')
+    .eq('scheduled_shift_id', shiftId)
+    .order('nombre', { ascending: true }));
+  return rows.map(mapShiftAssignmentRow);
+}
+
+export async function listShiftAssignmentsForShifts(scheduledShiftIds = [], { summaryOnly = false } = {}) {
+  const ids = [...new Set((Array.isArray(scheduledShiftIds) ? scheduledShiftIds : [])
+    .map((id) => String(id || '').trim())
+    .filter(Boolean))];
+  if (!ids.length) return [];
+  const batches = [];
+  for (const chunk of chunkArray(ids, 200)) batches.push(await selectPagedRows(() => supabase
+      .from('shift_assignments')
+      .select(summaryOnly ? 'id,scheduled_shift_id,employee_id,documento,estado' : '*')
+      .in('scheduled_shift_id', chunk)
+      .order('id', { ascending: true })));
+  const rows = batches.flat();
+  return rows.map(mapShiftAssignmentRow);
+}
+
+export async function listShiftAssignmentOverlapCandidates({
+  dateFrom = null,
+  dateTo = null,
+  employeeIds = [],
+  documentos = [],
+  contratoCodigo = null,
+  excludeShiftIds = []
+} = {}) {
+  if (!dateFrom || !dateTo) return [];
+  const cleanEmployeeIds = [...new Set((Array.isArray(employeeIds) ? employeeIds : [])
+    .map((id) => String(id || '').trim())
+    .filter(Boolean))];
+  const cleanDocumentos = [...new Set((Array.isArray(documentos) ? documentos : [])
+    .map((doc) => String(doc || '').trim())
+    .filter(Boolean))];
+  if (!cleanEmployeeIds.length && !cleanDocumentos.length) return [];
+
+  const assignmentQueries = [
+    ...chunkArray(cleanEmployeeIds, 200).map((chunk) => selectPagedRows(() => supabase
+      .from('shift_assignments')
+      .select('*')
+      .in('employee_id', chunk)
+      .or('estado.is.null,estado.neq.cancelado'))),
+    ...chunkArray(cleanDocumentos, 200).map((chunk) => selectPagedRows(() => supabase
+      .from('shift_assignments')
+      .select('*')
+      .in('documento', chunk)
+      .or('estado.is.null,estado.neq.cancelado')))
+  ];
+  const assignmentRows = (await Promise.all(assignmentQueries)).flat();
+
+  const uniqueAssignments = Array.from(new Map(assignmentRows
+    .filter((row) => row?.scheduled_shift_id)
+    .map((row) => [String(row.id || `${row.scheduled_shift_id}:${row.employee_id || row.documento}`), row])).values());
+  const excluded = new Set((Array.isArray(excludeShiftIds) ? excludeShiftIds : [])
+    .map((id) => String(id || '').trim())
+    .filter(Boolean));
+  const shiftIds = [...new Set(uniqueAssignments
+    .map((row) => String(row.scheduled_shift_id || '').trim())
+    .filter((id) => id && !excluded.has(id)))];
+  if (!shiftIds.length) return [];
+
+  const shiftBatches = await Promise.all(chunkArray(shiftIds, 200).map((chunk) => selectPagedRows(() => {
+      let query = supabase
+        .from('scheduled_shifts')
+        .select('*')
+        .in('id', chunk)
+        .gte('fecha_operativa', dateFrom)
+        .lte('fecha_operativa', dateTo)
+        .in('estado', ['programado', 'abierto']);
+      const cleanContract = String(contratoCodigo || '').trim();
+      if (cleanContract) query = query.eq('contrato_codigo', cleanContract);
+      return query;
+    })));
+  const shifts = shiftBatches.flat();
+
+  const shiftById = new Map(shifts.map((row) => [String(row.id || '').trim(), mapScheduledShiftRow(row)]));
+  return uniqueAssignments
+    .map((row) => {
+      const shift = shiftById.get(String(row.scheduled_shift_id || '').trim());
+      if (!shift) return null;
+      return {
+        assignment: mapShiftAssignmentRow(row),
+        shift
+      };
+    })
+    .filter(Boolean);
+}
+
+export function streamShiftAssignmentsByShift(scheduledShiftId, onData, onError = null, onStatus = null) {
+  const shiftId = String(scheduledShiftId || '').trim();
+  if (!shiftId) {
+    onData([]);
+    return () => {};
+  }
+  let active = true;
+  const emit = async () => {
+    try {
+      const rows = await listShiftAssignmentsByShift(shiftId);
+      if (active) onData(rows);
+    } catch (error) {
+      if (!active) return;
+      console.error('No se pudo cargar shift_assignments:', error);
+      onError?.(error, 'LOAD_ERROR');
+      onData([]);
+    }
+  };
+  const onChange = (payload) => {
+    const nextVal = String(payload?.new?.scheduled_shift_id || '').trim();
+    const prevVal = String(payload?.old?.scheduled_shift_id || '').trim();
+    if ((nextVal || prevVal) && nextVal !== shiftId && prevVal !== shiftId) return;
+    emit();
+  };
+  emit();
+  const unregister = registerTableReloader('shift_assignments', emit);
+  const realtime = subscribeToRealtime(
+    supabase.channel(nextRealtimeChannelName(`shift-assignments-${shiftId}`)).on('postgres_changes', { event: '*', schema: 'public', table: 'shift_assignments' }, onChange),
+    { label: `shift_assignments:${shiftId}`, onError, onStatus }
+  );
+  const channel = realtime.subscription;
+  return () => {
+    active = false;
+    unregister();
+    realtime.cancel();
+    supabase.removeChannel(channel);
+  };
+}
+
+export async function upsertShiftAssignments(assignments = []) {
+  const rows = (Array.isArray(assignments) ? assignments : [])
+    .map((row) => shiftAssignmentPayload(row))
+    .filter((row) => row.scheduled_shift_id && (row.employee_id || row.documento));
+  if (!rows.length) return { saved: 0 };
+
+  const assignmentKey = (row = {}) => {
+    const shiftId = String(row.scheduled_shift_id || '').trim();
+    const employeeId = String(row.employee_id || '').trim();
+    const documento = String(row.documento || '').trim();
+    return employeeId ? `${shiftId}|employee|${employeeId}` : `${shiftId}|documento|${documento}`;
+  };
+  const uniqueRows = Array.from(new Map(rows.map((row) => [assignmentKey(row), row])).values());
+  const shiftIds = [...new Set(uniqueRows.map((row) => String(row.scheduled_shift_id || '').trim()).filter(Boolean))];
+  const existingRows = await selectPagedRows(() => supabase
+    .from('shift_assignments')
+    .select('id, scheduled_shift_id, employee_id, documento')
+    .in('scheduled_shift_id', shiftIds));
+  const existingByKey = new Map((existingRows || [])
+    .map((row) => [assignmentKey(row), row.id])
+    .filter(([key, id]) => key && id));
+  const updates = [];
+  const inserts = [];
+  uniqueRows.forEach((row) => {
+    const id = existingByKey.get(assignmentKey(row));
+    if (id) updates.push({ id, ...row });
+    else inserts.push(row);
+  });
+
+  for (const chunk of chunkArray(updates, 500)) {
+    const { error } = await supabase.from('shift_assignments').upsert(chunk, { onConflict: 'id' });
+    if (error) throw error;
+  }
+  for (const chunk of chunkArray(inserts, 500)) {
+    const { error } = await supabase.from('shift_assignments').insert(chunk);
+    if (error) throw error;
+  }
+
+  await seedEmployeeShiftStatusFromAssignments(uniqueRows);
+  await notifyTableReload('shift_assignments');
+  return { saved: uniqueRows.length, inserted: inserts.length, updated: updates.length };
+}
+
+async function seedEmployeeShiftStatusFromAssignments(assignments = []) {
+  const rows = (Array.isArray(assignments) ? assignments : [])
+    .filter((row) => row.scheduled_shift_id && (row.employee_id || row.documento));
+  if (!rows.length) return { saved: 0 };
+  const shiftIds = [...new Set(rows.map((row) => String(row.scheduled_shift_id || '').trim()).filter(Boolean))];
+  const shifts = await selectPagedRows(() => supabase
+    .from('scheduled_shifts')
+    .select('id,fecha_operativa,sede_codigo,contrato_codigo,contrato_nombre,cliente_nombre_snapshot,cliente_nit_snapshot')
+    .in('id', shiftIds));
+  const shiftById = new Map((shifts || []).map((row) => [String(row.id || '').trim(), row]));
+  const statusRows = rows
+    .map((row) => {
+      const shiftId = String(row.scheduled_shift_id || '').trim();
+      const shift = shiftById.get(shiftId);
+      const employeeId = String(row.employee_id || '').trim();
+      const documento = String(row.documento || '').trim();
+      const identity = employeeId || documento;
+      if (!shift?.fecha_operativa || !identity) return null;
+      return {
+        id: `${shiftId}_${identity}`,
+        scheduled_shift_id: shiftId,
+        fecha_operativa: shift.fecha_operativa,
+        employee_id: employeeId || null,
+        documento: documento || null,
+        nombre: row.nombre || null,
+        sede_codigo: row.sede_codigo || shift.sede_codigo || null,
+        contrato_codigo: row.contrato_codigo || shift.contrato_codigo || null,
+        contrato_nombre: row.contrato_nombre || shift.contrato_nombre || null,
+        cliente_nombre_snapshot: row.cliente_nombre_snapshot || shift.cliente_nombre_snapshot || null,
+        cliente_nit_snapshot: row.cliente_nit_snapshot || shift.cliente_nit_snapshot || null,
+        estado_turno: 'programado',
+        asistio: false
+      };
+    })
+    .filter(Boolean);
+  if (!statusRows.length) return { saved: 0 };
+  for (const chunk of chunkArray(statusRows, 500)) {
+    const { error } = await supabase
+      .from('employee_shift_status')
+      .upsert(chunk, { onConflict: 'id', ignoreDuplicates: true });
+    if (error) throw error;
+  }
+  await notifyTableReload('employee_shift_status');
+  return { saved: statusRows.length };
+}
+
+export async function updateShiftAssignment(id, data = {}) {
+  const assignmentId = String(id || '').trim();
+  if (!assignmentId) throw new Error('Falta la asignacion para actualizar.');
+  const { data: row, error } = await supabase
+    .from('shift_assignments')
+    .update(shiftAssignmentPayload(data))
+    .eq('id', assignmentId)
+    .select('*')
+    .single();
+  if (error) throw error;
+  await notifyTableReload('shift_assignments');
+  return mapShiftAssignmentRow(row);
+}
+
+export async function removeShiftAssignment(id) {
+  const assignmentId = String(id || '').trim();
+  if (!assignmentId) return;
+  const existing = await selectPagedRows(() => supabase
+    .from('shift_assignments')
+    .select('scheduled_shift_id,employee_id,documento')
+    .eq('id', assignmentId));
+  const { error } = await supabase.from('shift_assignments').delete().eq('id', assignmentId);
+  if (error) throw error;
+  await cancelEmployeeShiftStatusForAssignments(existing);
+  await notifyTableReload('shift_assignments');
+}
+
+export async function removeShiftAssignments(ids = []) {
+  const cleanIds = [...new Set((Array.isArray(ids) ? ids : [])
+    .map((id) => String(id || '').trim())
+    .filter(Boolean))];
+  if (!cleanIds.length) return { removed: 0 };
+  const existing = await selectPagedRows(() => supabase
+    .from('shift_assignments')
+    .select('scheduled_shift_id,employee_id,documento')
+    .in('id', cleanIds));
+  for (const chunk of chunkArray(cleanIds, 500)) {
+    const { error } = await supabase.from('shift_assignments').delete().in('id', chunk);
+    if (error) throw error;
+  }
+  await cancelEmployeeShiftStatusForAssignments(existing);
+  await notifyTableReload('shift_assignments');
+  return { removed: cleanIds.length };
+}
+
+async function cancelEmployeeShiftStatusForAssignments(assignments = []) {
+  const statusIds = (Array.isArray(assignments) ? assignments : [])
+    .map((row) => {
+      const shiftId = String(row.scheduled_shift_id || '').trim();
+      const identity = String(row.employee_id || row.documento || '').trim();
+      return shiftId && identity ? `${shiftId}_${identity}` : '';
+    })
+    .filter(Boolean);
+  if (!statusIds.length) return { cancelled: 0 };
+  for (const chunk of chunkArray(statusIds, 500)) {
+    const { error } = await supabase
+      .from('employee_shift_status')
+      .update({ estado_turno: 'cancelado' })
+      .in('id', chunk)
+      .eq('closed', false)
+      .is('source_attendance_id', null);
+    if (error) throw error;
+  }
+  await notifyTableReload('employee_shift_status');
+  return { cancelled: statusIds.length };
+}
+
+export async function listEmployeeShiftStatusRange(dateFrom, dateTo, { sedeCodigo = null, contratoCodigo = null, scheduledShiftId = null, requiresReview = null, reviewableOnly = false } = {}) {
+  if (!dateFrom || !dateTo) return [];
+  const rows = await selectPagedRows(() => {
+    let query = supabase
+      .from('employee_shift_status')
+      .select('*')
+      .gte('fecha_operativa', dateFrom)
+      .lte('fecha_operativa', dateTo)
+      .order('fecha_operativa', { ascending: true })
+      .order('nombre', { ascending: true });
+    if (sedeCodigo) query = query.eq('sede_codigo', String(sedeCodigo).trim());
+    if (contratoCodigo) query = query.eq('contrato_codigo', String(contratoCodigo).trim());
+    if (scheduledShiftId) query = query.eq('scheduled_shift_id', String(scheduledShiftId).trim());
+    if (typeof requiresReview === 'boolean') query = query.eq('requires_review', requiresReview);
+    if (reviewableOnly) query = query.or('requires_review.eq.true,estado_turno.in.(post_cierre_pendiente,salida_pendiente,retiro_anticipado,trabajado_tardio)');
+    return query;
+  });
+  return rows.map(mapEmployeeShiftStatusRow);
+}
+
+export async function upsertEmployeeShiftStatus(rows = []) {
+  const payload = (Array.isArray(rows) ? rows : [])
+    .map((row) => employeeShiftStatusPayload(row))
+    .filter((row) => row.id && row.scheduled_shift_id && row.fecha_operativa);
+  if (!payload.length) return { saved: 0 };
+  const { error } = await supabase
+    .from('employee_shift_status')
+    .upsert(payload, { onConflict: 'id' });
+  if (error) throw error;
+  await syncEmployeeShiftReviewSourceRows(payload);
+  await notifyTableReload('employee_shift_status');
+  return { saved: payload.length };
+}
+
+async function syncEmployeeShiftReviewSourceRows(rows = []) {
+  let touchedAttendance = false;
+  let touchedExits = false;
+  for (const row of rows || []) {
+    if (row.source_attendance_id) {
+      const update = {};
+      if (row.requires_review !== undefined) update.requires_review = row.requires_review === true;
+      if (row.entry_authorization_id !== undefined) update.entry_authorization_id = row.entry_authorization_id || null;
+      if (row.early_entry_reason !== undefined) update.early_entry_reason = row.early_entry_reason || null;
+      if (row.late_entry_reason !== undefined) update.late_entry_reason = row.late_entry_reason || null;
+      if (Object.keys(update).length) {
+        const { error } = await supabase
+          .from('attendance')
+          .update(update)
+          .eq('id', row.source_attendance_id);
+        if (error) throw error;
+        touchedAttendance = true;
+      }
+    }
+    if (row.source_exit_id) {
+      const update = {};
+      if (row.requires_review !== undefined) update.requires_review = row.requires_review === true;
+      if (row.exit_authorization_id !== undefined) update.exit_authorization_id = row.exit_authorization_id || null;
+      if (row.early_exit_reason !== undefined) update.early_exit_reason = row.early_exit_reason || null;
+      if (row.late_exit_reason !== undefined) update.late_exit_reason = row.late_exit_reason || null;
+      if (Object.keys(update).length) {
+        const { error } = await supabase
+          .from('employee_daily_exits')
+          .update(update)
+          .eq('id', row.source_exit_id);
+        if (error) throw error;
+        touchedExits = true;
+      }
+    }
+  }
+  if (touchedAttendance) await notifyTableReload('attendance');
+  if (touchedExits) await notifyTableReload('employee_daily_exits');
+}
+
+export async function listShiftClosuresRange(dateFrom, dateTo, { sedeCodigo = null, contratoCodigo = null } = {}) {
+  if (!dateFrom || !dateTo) return [];
+  const rows = await selectPagedRows(() => {
+    let query = supabase
+      .from('shift_closures')
+      .select('*')
+      .gte('fecha_operativa', dateFrom)
+      .lte('fecha_operativa', dateTo)
+      .order('fecha_operativa', { ascending: true })
+      .order('closed_at', { ascending: true });
+    if (sedeCodigo) query = query.eq('sede_codigo', String(sedeCodigo).trim());
+    if (contratoCodigo) query = query.eq('contrato_codigo', String(contratoCodigo).trim());
+    return query;
+  });
+  return rows.map(mapShiftClosureRow);
+}
+
+export async function listPendingShiftAdjustments({ scheduledShiftId = null, contratoCodigo = null } = {}) {
+  const rows = await selectPagedRows(() => {
+    let query = supabase
+      .from('shift_adjustments')
+      .select('*')
+      .eq('estado', 'pendiente')
+      .order('reported_at', { ascending: false });
+    if (scheduledShiftId) query = query.eq('scheduled_shift_id', String(scheduledShiftId).trim());
+    if (contratoCodigo) query = query.eq('contrato_codigo', String(contratoCodigo).trim());
+    return query;
+  });
+  return rows.map(mapShiftAdjustmentRow);
+}
+
+export async function createShiftAdjustment(data = {}) {
+  const audit = await getCurrentAuditFields();
+  const { data: row, error } = await supabase
+    .from('shift_adjustments')
+    .insert(shiftAdjustmentPayload(data, audit))
+    .select('*')
+    .single();
+  if (error) throw error;
+  await notifyTableReload('shift_adjustments');
+  return mapShiftAdjustmentRow(row);
+}
+
+export async function resolveShiftReviewDecision({ statusId, circumstance, effect, minutes, reason, expectedUpdatedAt }) {
+  const { data, error } = await supabase.rpc('resolve_shift_review_decision', {
+    p_status_id: statusId, p_circumstance: circumstance, p_effect: effect,
+    p_minutes: minutes, p_reason: reason, p_expected_updated_at: expectedUpdatedAt
+  });
+  if (error) throw error;
+  await Promise.all(['employee_shift_status', 'shift_adjustments', 'shift_time_authorizations'].map(notifyTableReload));
+  return data;
+}
+
+export async function updateShiftAdjustment(id, data = {}) {
+  const adjustmentId = String(id || '').trim();
+  if (!adjustmentId) throw new Error('Falta el ajuste para actualizar.');
+  const audit = await getCurrentAuditFields();
+  const { data: row, error } = await supabase
+    .from('shift_adjustments')
+    .update(shiftAdjustmentPayload(data, audit))
+    .eq('id', adjustmentId)
+    .select('*')
+    .single();
+  if (error) throw error;
+  await notifyTableReload('shift_adjustments');
+  return mapShiftAdjustmentRow(row);
+}
+
+export async function listShiftTimeAuthorizations({ scheduledShiftId = null, employeeId = null, documento = null, estado = null, contratoCodigo = null } = {}) {
+  const rows = await selectPagedRows(() => {
+    let query = supabase
+      .from('shift_time_authorizations')
+      .select('*')
+      .order('created_at', { ascending: false });
+    if (scheduledShiftId) query = query.eq('scheduled_shift_id', String(scheduledShiftId).trim());
+    if (employeeId) query = query.eq('employee_id', String(employeeId).trim());
+    if (documento) query = query.eq('documento', String(documento).trim());
+    if (estado) query = query.eq('estado', String(estado).trim());
+    if (contratoCodigo) query = query.eq('contrato_codigo', String(contratoCodigo).trim());
+    return query;
+  });
+  return rows.map(mapShiftTimeAuthorizationRow);
+}
+
+export async function createShiftTimeAuthorization(data = {}) {
+  const audit = await getCurrentAuditFields();
+  const { data: row, error } = await supabase
+    .from('shift_time_authorizations')
+    .insert(shiftTimeAuthorizationPayload(data, audit))
+    .select('*')
+    .single();
+  if (error) throw error;
+  await notifyTableReload('shift_time_authorizations');
+  return mapShiftTimeAuthorizationRow(row);
+}
+
+export async function updateShiftTimeAuthorization(id, data = {}) {
+  const authorizationId = String(id || '').trim();
+  if (!authorizationId) throw new Error('Falta la autorizacion para actualizar.');
+  const { data: row, error } = await supabase
+    .from('shift_time_authorizations')
+    .update(shiftTimeAuthorizationPayload(data))
+    .eq('id', authorizationId)
+    .select('*')
+    .single();
+  if (error) throw error;
+  await notifyTableReload('shift_time_authorizations');
+  return mapShiftTimeAuthorizationRow(row);
+}
+
+export async function getNextSedeCode(prefix = 'SED', width = 4) {
+  return getNextPrefixedCode('sedes', prefix, width);
+}
+
+export async function createSede({ codigo, nombre, contratoCodigo, contratoNombre, clienteNombreSnapshot, clienteNitSnapshot, dependenciaCodigo, dependenciaNombre, zonaCodigo, zonaNombre, numeroOperarios, jornada, qrEnabled = false, qrLatitude = null, qrLongitude = null, qrRadiusMeters = 200 }, options = {}) {
+  const normalizedQrLatitude = parseCoordinate(qrLatitude);
+  const normalizedQrLongitude = parseCoordinate(qrLongitude);
+  if ((normalizedQrLatitude !== null || normalizedQrLongitude !== null) && !hasValidSedeLocation(normalizedQrLatitude, normalizedQrLongitude)) throw new Error('Registra una ubicacion valida de la sede.');
+  if (qrEnabled === true && !hasValidSedeLocation(normalizedQrLatitude, normalizedQrLongitude)) throw new Error('Para activar QR debes registrar una ubicacion valida de la sede.');
+  const audit = await getCurrentAuditFields();
+  const contract = await resolveContractContextByCode(contratoCodigo);
+  const { data, error } = await supabase
+    .from('sedes')
+    .insert({
+      codigo: codigo || null,
+      nombre: nombre || null,
+      contrato_codigo: contract.contratoCodigo || contratoCodigo || null,
+      contrato_nombre: contract.contratoNombre || contratoNombre || null,
+      cliente_nombre_snapshot: contract.clienteNombreSnapshot || clienteNombreSnapshot || null,
+      cliente_nit_snapshot: contract.clienteNitSnapshot || clienteNitSnapshot || null,
+      dependencia_codigo: dependenciaCodigo || null,
+      dependencia_nombre: dependenciaNombre || null,
+      zona_codigo: zonaCodigo || null,
+      zona_nombre: zonaNombre || null,
+      numero_operarios: typeof numeroOperarios === 'number' ? numeroOperarios : null,
+      jornada: jornada || 'lun_vie',
+      qr_enabled: qrEnabled === true,
+      qr_latitude: normalizedQrLatitude,
+      qr_longitude: normalizedQrLongitude,
+      qr_radius_meters: typeof qrRadiusMeters === 'number' && Number.isFinite(qrRadiusMeters) ? qrRadiusMeters : 200,
+      estado: 'activo',
+      ...audit
+    })
+    .select('id')
+    .single();
+  if (error) throw error;
+  await notifyTableReload('sedes');
+  if (options.refreshOperational !== false) await refreshOperationalState(todayBogotaISO());
+  return data.id;
+}
+
+export async function createSedesBulk(rows = []) {
+  const items = Array.isArray(rows) ? rows.filter(Boolean) : [];
+  const missingCodeCount = items.filter((row) => !String(row?.codigo || '').trim()).length;
+  const reservedCodes = missingCodeCount ? await reservePrefixedCodes('sedes', 'SED', missingCodeCount, 4) : [];
+  if (reservedCodes.length < missingCodeCount) throw new Error('No se pudieron reservar todos los codigos de sedes.');
+  let reservedCodeIndex = 0;
+  let created = 0;
+  for (const row of items) {
+    const codigo = String(row.codigo || '').trim() || reservedCodes[reservedCodeIndex++]?.code || null;
+    await createSede({
+      codigo,
+      nombre: row.nombre || null,
+      contratoCodigo: row.contratoCodigo || null,
+      contratoNombre: row.contratoNombre || null,
+      clienteNombreSnapshot: row.clienteNombreSnapshot || null,
+      clienteNitSnapshot: row.clienteNitSnapshot || null,
+      dependenciaCodigo: row.dependenciaCodigo || null,
+      dependenciaNombre: row.dependenciaNombre || null,
+      zonaCodigo: row.zonaCodigo || null,
+      zonaNombre: row.zonaNombre || null,
+      numeroOperarios: typeof row.numeroOperarios === 'number' ? row.numeroOperarios : Number(row.numeroOperarios || 0),
+      jornada: row.jornada || 'lun_vie',
+      qrEnabled: row.qrEnabled === true,
+      qrLatitude: row.qrLatitude,
+      qrLongitude: row.qrLongitude,
+      qrRadiusMeters: typeof row.qrRadiusMeters === 'number' ? row.qrRadiusMeters : Number(row.qrRadiusMeters || 200)
+    }, { refreshOperational: false });
+    created += 1;
+  }
+  if (created > 0) await refreshOperationalState(todayBogotaISO());
+  return { created };
+}
+
+export async function updateSede(id, { codigo, nombre, contratoCodigo, contratoNombre, clienteNombreSnapshot, clienteNitSnapshot, dependenciaCodigo, dependenciaNombre, zonaCodigo, zonaNombre, numeroOperarios, jornada, qrEnabled, qrLatitude, qrLongitude, qrRadiusMeters }) {
+  const previous = await supabase.from('sedes').select('*').eq('id', id).single();
+  if (previous.error) throw previous.error;
+  const previousRow = previous.data || {};
+  const effectiveQrEnabled = typeof qrEnabled === 'boolean' ? qrEnabled : previousRow.qr_enabled === true;
+  const normalizedQrLatitude = qrLatitude !== undefined ? parseCoordinate(qrLatitude) : undefined;
+  const normalizedQrLongitude = qrLongitude !== undefined ? parseCoordinate(qrLongitude) : undefined;
+  const effectiveQrLatitude = normalizedQrLatitude !== undefined ? normalizedQrLatitude : (previousRow.qr_latitude == null ? null : Number(previousRow.qr_latitude));
+  const effectiveQrLongitude = normalizedQrLongitude !== undefined ? normalizedQrLongitude : (previousRow.qr_longitude == null ? null : Number(previousRow.qr_longitude));
+  if ((qrLatitude !== undefined || qrLongitude !== undefined) && (effectiveQrLatitude !== null || effectiveQrLongitude !== null) && !hasValidSedeLocation(effectiveQrLatitude, effectiveQrLongitude)) throw new Error('Registra una ubicacion valida de la sede.');
+  if (effectiveQrEnabled && !hasValidSedeLocation(effectiveQrLatitude, effectiveQrLongitude)) throw new Error('Para activar QR debes registrar una ubicacion valida de la sede.');
+  const patch = {};
+  if (typeof codigo === 'string') patch.codigo = codigo;
+  if (typeof nombre === 'string') patch.nombre = nombre;
+  if (typeof contratoCodigo === 'string') {
+    const contract = await resolveContractContextByCode(contratoCodigo);
+    patch.contrato_codigo = contract.contratoCodigo || contratoCodigo || null;
+    patch.contrato_nombre = contract.contratoNombre || contratoNombre || null;
+    patch.cliente_nombre_snapshot = contract.clienteNombreSnapshot || clienteNombreSnapshot || null;
+    patch.cliente_nit_snapshot = contract.clienteNitSnapshot || clienteNitSnapshot || null;
+  }
+  if (typeof dependenciaCodigo === 'string') patch.dependencia_codigo = dependenciaCodigo;
+  if (typeof dependenciaNombre === 'string') patch.dependencia_nombre = dependenciaNombre;
+  if (typeof zonaCodigo === 'string') patch.zona_codigo = zonaCodigo;
+  if (typeof zonaNombre === 'string') patch.zona_nombre = zonaNombre;
+  if (typeof numeroOperarios === 'number') patch.numero_operarios = numeroOperarios;
+  if (typeof jornada === 'string') patch.jornada = jornada;
+  if (typeof qrEnabled === 'boolean') patch.qr_enabled = qrEnabled;
+  if (qrLatitude !== undefined) patch.qr_latitude = normalizedQrLatitude;
+  if (qrLongitude !== undefined) patch.qr_longitude = normalizedQrLongitude;
+  if (typeof qrRadiusMeters === 'number' && Number.isFinite(qrRadiusMeters)) patch.qr_radius_meters = qrRadiusMeters;
+  const { data: updated, error } = await supabase.from('sedes').update(patch).eq('id', id).select('*').single();
+  if (error) throw error;
+  try {
+    await syncSedeCatalogReferences(previousRow, updated || previousRow);
+  } catch (syncError) {
+    console.warn('No se pudieron sincronizar referencias de sede desde el cliente. Verifica que la migracion phase26 este aplicada.', syncError);
+  }
+  await Promise.all([
+    notifyTableReload('sedes'),
+    notifyTableReload('employees'),
+    notifyTableReload('employee_cargo_history'),
+    notifyTableReload('supervisor_profile'),
+    notifyTableReload('sede_devices')
+  ]);
+  await refreshOperationalState(todayBogotaISO());
+}
+
+async function syncSedeCatalogReferences(previous = {}, current = {}) {
+  const previousCode = String(previous?.codigo || '').trim();
+  const currentCode = String(current?.codigo || previousCode || '').trim();
+  if (!previousCode || !currentCode) return;
+
+  const currentName = String(current?.nombre || '').trim() || null;
+  const currentZoneCode = current?.zona_codigo || null;
+  const currentZoneName = current?.zona_nombre || null;
+  const currentContractCode = current?.contrato_codigo || null;
+  const currentContractName = current?.contrato_nombre || null;
+  const currentClientName = current?.cliente_nombre_snapshot || null;
+  const currentClientNit = current?.cliente_nit_snapshot || null;
+  const updateSedeFields = {
+    sede_codigo: currentCode,
+    sede_nombre: currentName
+  };
+  const updateContractFields = {
+    contrato_codigo: currentContractCode,
+    contrato_nombre: currentContractName,
+    cliente_nombre_snapshot: currentClientName,
+    cliente_nit_snapshot: currentClientNit
+  };
+  const updateSedeZoneFields = {
+    ...updateSedeFields,
+    ...updateContractFields,
+    zona_codigo: currentZoneCode,
+    zona_nombre: currentZoneName
+  };
+
+  const updates = [
+    supabase.from('employees').update(updateSedeZoneFields).eq('sede_codigo', previousCode),
+    supabase.from('employee_cargo_history').update({ ...updateSedeFields, ...updateContractFields }).eq('sede_codigo', previousCode),
+    supabase.from('sede_devices').update(updateSedeFields).eq('sede_codigo', previousCode),
+    supabase.from('sede_device_sites').update(updateSedeFields).eq('sede_codigo', previousCode),
+    supabase.from('supervisor_profile').update({
+      sede_codigo: currentCode,
+      zona_codigo: currentZoneCode,
+      zona_nombre: currentZoneName
+    }).eq('sede_codigo', previousCode)
+  ];
+
+  for (const request of updates) {
+    const { error } = await request;
+    if (error) throw error;
+  }
+}
+
+export async function setSedeStatus(id, estado) {
+  const { error } = await supabase.from('sedes').update({ estado }).eq('id', id);
+  if (error) throw error;
+  await notifyTableReload('sedes');
+  await refreshOperationalState(todayBogotaISO());
+}
+
+function backendApiBase() {
+  return String(EMPLOYEE_PORTAL_API_BASE || '').replace(/\/+$/, '');
+}
+
+async function getAccessToken() {
+  const { data, error } = await supabase.auth.getSession();
+  if (error) throw error;
+  const token = String(data?.session?.access_token || '').trim();
+  if (!token) throw new Error('Debes iniciar sesion nuevamente.');
+  return token;
+}
+
+async function backendJson(path, { method = 'GET', body = null, headers = {}, timeoutMs = 0 } = {}) {
+  const base = backendApiBase();
+  if (!base) throw new Error('Configura EMPLOYEE_PORTAL_API_BASE para usar el backend.');
+  const controller = timeoutMs > 0 ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  try {
+    const response = await fetch(`${base}${path}`, {
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        ...headers
+      },
+      body: body ? JSON.stringify(body) : null,
+      signal: controller?.signal
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload?.ok === false) throw new Error(payload?.error || `Error backend ${response.status}`);
+    return payload;
+  } catch (error) {
+    if (error?.name === 'AbortError') throw new Error('La validacion tardo demasiado. Intenta nuevamente.');
+    throw error;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function backendBlob(path, { method = 'GET', body = null, headers = {} } = {}) {
+  const base = backendApiBase();
+  if (!base) throw new Error('Configura EMPLOYEE_PORTAL_API_BASE para usar el backend.');
+  const response = await fetch(`${base}${path}`, {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      ...headers
+    },
+    body: body ? JSON.stringify(body) : null
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload?.error || `Error backend ${response.status}`);
+  }
+  const blob = await response.blob();
+  const disposition = String(response.headers.get('content-disposition') || '');
+  const filename = disposition.match(/filename="([^"]+)"/)?.[1] || 'certificado-laboral.pdf';
+  return { blob, filename };
+}
+
+function downloadBrowserBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename || 'archivo.pdf';
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+export async function createQrDevice({ sedeCodigo, sedeCodigos = [], deviceName }) {
+  const token = await getAccessToken();
+  const result = await backendJson('/api/attendance-qr/devices', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: { sedeCodigo, sedeCodigos, deviceName }
+  });
+  await Promise.all([
+    notifyTableReload('sede_devices'),
+    notifyTableReload('sede_device_sites')
+  ]);
+  return result;
+}
+
+export async function setQrDeviceStatus(deviceId, estado) {
+  const id = String(deviceId || '').trim();
+  const nextStatus = String(estado || '').trim().toLowerCase();
+  if (!id) throw new Error('Selecciona una tablet QR.');
+  if (!['activo', 'inactivo'].includes(nextStatus)) throw new Error('Estado de tablet invalido.');
+  const token = await getAccessToken();
+  const result = await backendJson(`/api/attendance-qr/devices/${encodeURIComponent(id)}/status`, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${token}` },
+    body: { estado: nextStatus }
+  });
+  await notifyTableReload('sede_devices');
+  return result;
+}
+
+export async function scanAttendanceQr({ qrValue, deviceToken, timeoutMs = 0 }) {
+  return backendJson('/api/attendance-qr/scan', {
+    method: 'POST',
+    headers: { 'X-QR-Device-Token': deviceToken },
+    body: { qrValue },
+    timeoutMs
+  });
+}
+
+export async function listDailyQrRecords(date, { contratoCodigo = null } = {}) {
+  const token = await getAccessToken();
+  const day = String(date || '').trim();
+  const params = new URLSearchParams();
+  if (day) params.set('date', day);
+  const cleanContract = String(contratoCodigo || '').trim();
+  if (cleanContract) params.set('contratoCodigo', cleanContract);
+  const query = params.toString() ? `?${params.toString()}` : '';
+  const payload = await backendJson(`/api/attendance-qr/daily${query}`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  return {
+    rows: payload?.rows || [],
+    pendingRows: payload?.pendingRows || []
+  };
+}
+
+export async function generateEmployeeCertificate(employeeId, type = 'basic') {
+  const id = String(employeeId || '').trim();
+  if (!id) throw new Error('Selecciona un empleado.');
+  const token = await getAccessToken();
+  const result = await backendBlob(`/api/certificates/employees/${encodeURIComponent(id)}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: { type }
+  });
+  downloadBrowserBlob(result.blob, result.filename);
+  return result;
+}
+
+export function streamDailyQrRecords(date, onData, onError = null, onStatus = null) {
+  const day = String(date || '').trim();
+  if (!day) {
+    onData({ rows: [], pendingRows: [] });
+    return () => {};
+  }
+  let active = true;
+  let loading = false;
+  let queued = false;
+  let scopeReady = false;
+  let scopedEmployeeIds = new Set();
+  let scopedDocuments = new Set();
+  let scopedSedeCodes = new Set();
+  let scopedShiftIds = new Set();
+  const updateScope = (summary = {}) => {
+    const rows = [
+      ...(Array.isArray(summary?.rows) ? summary.rows : []),
+      ...(Array.isArray(summary?.pendingRows) ? summary.pendingRows : [])
+    ];
+    scopedEmployeeIds = new Set(rows.map((row) => String(row?.employeeId || row?.employee_id || '').trim()).filter(Boolean));
+    scopedDocuments = new Set(rows.map((row) => String(row?.documento || '').trim()).filter(Boolean));
+    scopedSedeCodes = new Set(rows.map((row) => String(row?.sedeCodigo || row?.sede_codigo || '').trim()).filter(Boolean));
+    scopedShiftIds = new Set(rows.map((row) => String(row?.turnoId || row?.turno_id || '').trim()).filter(Boolean));
+    scopeReady = true;
+  };
+  const payloadRows = (payload = {}) => [payload?.new || null, payload?.old || null].filter(Boolean);
+  const payloadHasAny = (payload = {}, fields = []) => payloadRows(payload).some((row) => fields.some((field) => String(row?.[field] || '').trim()));
+  const payloadMatchesEmployeeScope = (payload = {}, idFields = ['id', 'employee_id', 'empleado_id'], documentFields = ['documento']) => {
+    if (!scopeReady) return true;
+    return payloadRows(payload).some((row) => (
+      idFields.some((field) => scopedEmployeeIds.has(String(row?.[field] || '').trim()))
+      || documentFields.some((field) => scopedDocuments.has(String(row?.[field] || '').trim()))
+    ));
+  };
+  const payloadMatchesSedeScope = (payload = {}) => {
+    if (!scopeReady) return true;
+    return payloadRows(payload).some((row) => (
+      scopedSedeCodes.has(String(row?.codigo || row?.sede_codigo || '').trim())
+      || row?.qr_enabled === true
+    ));
+  };
+  // shift_assignments carries no date column, so it cannot be filtered server-side by day; scope it instead to shifts
+  // and people already known for this day. New shifts for the day arrive via the scheduled_shifts subscription below,
+  // which widens the scope (via the next emit) before their assignments need to match here.
+  const payloadMatchesShiftScope = (payload = {}) => {
+    if (!scopeReady) return true;
+    return payloadRows(payload).some((row) => (
+      scopedShiftIds.has(String(row?.scheduled_shift_id || '').trim())
+      || scopedEmployeeIds.has(String(row?.employee_id || '').trim())
+      || scopedDocuments.has(String(row?.documento || '').trim())
+    ));
+  };
+  const emit = async () => {
+    if (!active) return;
+    if (loading) {
+      queued = true;
+      return;
+    }
+    loading = true;
+    try {
+      do {
+        queued = false;
+        try {
+          const summary = await listDailyQrRecords(day);
+          if (!active) return;
+          updateScope(summary || {});
+          onData(summary || { rows: [], pendingRows: [] });
+        } catch (error) {
+          if (!active) return;
+          console.error('No se pudo cargar registro diario QR:', error);
+          onError?.(error, 'LOAD_ERROR');
+          onData({ rows: [], pendingRows: [] });
+        }
+      } while (active && queued);
+    } finally {
+      loading = false;
+    }
+  };
+  const onTokenChange = (payload) => {
+    if (!shouldRefreshForDay(payload, day, 'fecha')) return;
+    emit();
+  };
+  const onExitChange = (payload) => {
+    if (!shouldRefreshForDay(payload, day, 'fecha')) return;
+    emit();
+  };
+  const onStatusChange = (payload) => {
+    if (!shouldRefreshForDay(payload, day, 'fecha')) return;
+    emit();
+  };
+  const onAttendanceChange = (payload) => {
+    if (!shouldRefreshForDay(payload, day, 'fecha')) return;
+    emit();
+  };
+  const onEmployeeChange = (payload) => {
+    const hasIdentity = payloadHasAny(payload, ['id', 'employee_id', 'empleado_id', 'documento']);
+    if (hasIdentity && !payloadMatchesEmployeeScope(payload)) return;
+    emit();
+  };
+  const onSedeChange = (payload) => {
+    const hasIdentity = payloadHasAny(payload, ['codigo', 'sede_codigo']);
+    if (hasIdentity && !payloadMatchesSedeScope(payload)) return;
+    emit();
+  };
+  const onIncapacityChange = (payload) => {
+    if (!shouldRefreshForDateRange(payload, day, 'fecha_inicio', 'fecha_fin')) return;
+    const hasIdentity = payloadHasAny(payload, ['employee_id', 'empleado_id', 'documento']);
+    if (hasIdentity && !payloadMatchesEmployeeScope(payload, ['employee_id', 'empleado_id'], ['documento'])) return;
+    emit();
+  };
+  const onAssignmentChange = (payload) => {
+    const hasIdentity = payloadHasAny(payload, ['scheduled_shift_id', 'employee_id', 'documento']);
+    if (hasIdentity && !payloadMatchesShiftScope(payload)) return;
+    emit();
+  };
+  emit();
+  const unTokens = registerTableReloader('attendance_qr_tokens', emit);
+  const unExits = registerTableReloader('employee_daily_exits', emit);
+  const unDailyStatus = registerTableReloader('employee_daily_status', emit);
+  const unAttendance = registerTableReloader('attendance', emit);
+  const unShiftStatus = registerTableReloader('employee_shift_status', emit);
+  const unAssignments = registerTableReloader('shift_assignments', emit);
+  const unEmployees = registerTableReloader('employees', emit);
+  const unSedes = registerTableReloader('sedes', emit);
+  const unIncapacities = registerTableReloader('incapacitados', emit);
+  const tokenRealtime = subscribeToRealtime(
+    supabase.channel(nextRealtimeChannelName(`attendance-qr-tokens-${day}`)).on('postgres_changes', { event: '*', schema: 'public', table: 'attendance_qr_tokens', filter: `fecha=eq.${day}` }, onTokenChange),
+    { label: `attendance_qr_tokens:${day}`, onError, onStatus }
+  );
+  const exitRealtime = subscribeToRealtime(
+    supabase.channel(nextRealtimeChannelName(`employee-daily-exits-${day}`)).on('postgres_changes', { event: '*', schema: 'public', table: 'employee_daily_exits', filter: `fecha=eq.${day}` }, onExitChange),
+    { label: `employee_daily_exits:${day}`, onError, onStatus }
+  );
+  const employeeRealtime = subscribeToRealtime(
+    supabase.channel(nextRealtimeChannelName(`employees-qr-daily-${day}`)).on('postgres_changes', { event: '*', schema: 'public', table: 'employees' }, onEmployeeChange),
+    { label: `employees:qr_daily:${day}`, onError, onStatus }
+  );
+  const dailyStatusRealtime = subscribeToRealtime(
+    supabase.channel(nextRealtimeChannelName(`employee-daily-status-qr-${day}`)).on('postgres_changes', { event: '*', schema: 'public', table: 'employee_daily_status', filter: `fecha=eq.${day}` }, onStatusChange),
+    { label: `employee_daily_status:qr_daily:${day}`, onError, onStatus }
+  );
+  const shiftRealtime = subscribeToRealtime(
+    supabase.channel(nextRealtimeChannelName(`shift-attendance-${day}`))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'employee_shift_status', filter: `fecha_operativa=eq.${day}` }, emit)
+      // shift_assignments has no date column, so Postgres cannot filter it server-side by day: scope it in JS instead
+      // (onAssignmentChange) to avoid refetching this day's registry for assignment changes anywhere else in the system.
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'shift_assignments' }, onAssignmentChange)
+      // A brand new shift for this day widens the scope above (via the next emit) so its own assignment changes match too.
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'scheduled_shifts', filter: `fecha_operativa=eq.${day}` }, emit),
+    { label: `shift_attendance:${day}`, onError, onStatus }
+  );
+  const attendanceRealtime = subscribeToRealtime(
+    supabase.channel(nextRealtimeChannelName(`attendance-qr-daily-${day}`)).on('postgres_changes', { event: '*', schema: 'public', table: 'attendance', filter: `fecha=eq.${day}` }, onAttendanceChange),
+    { label: `attendance:qr_daily:${day}`, onError, onStatus }
+  );
+  const sedesRealtime = subscribeToRealtime(
+    supabase.channel(nextRealtimeChannelName(`sedes-qr-daily-${day}`)).on('postgres_changes', { event: '*', schema: 'public', table: 'sedes' }, onSedeChange),
+    { label: `sedes:qr_daily:${day}`, onError, onStatus }
+  );
+  const incapacitiesRealtime = subscribeToRealtime(
+    supabase.channel(nextRealtimeChannelName(`incapacitados-qr-daily-${day}`)).on('postgres_changes', { event: '*', schema: 'public', table: 'incapacitados' }, onIncapacityChange),
+    { label: `incapacitados:qr_daily:${day}`, onError, onStatus }
+  );
+  return () => {
+    active = false;
+    unTokens();
+    unExits();
+    unDailyStatus();
+    unAttendance();
+    unShiftStatus();
+    unAssignments();
+    shiftRealtime.cancel();
+    supabase.removeChannel(shiftRealtime.subscription);
+    unEmployees();
+    unSedes();
+    unIncapacities();
+    tokenRealtime.cancel();
+    exitRealtime.cancel();
+    employeeRealtime.cancel();
+    dailyStatusRealtime.cancel();
+    attendanceRealtime.cancel();
+    sedesRealtime.cancel();
+    incapacitiesRealtime.cancel();
+    supabase.removeChannel(tokenRealtime.subscription);
+    supabase.removeChannel(exitRealtime.subscription);
+    supabase.removeChannel(employeeRealtime.subscription);
+    supabase.removeChannel(dailyStatusRealtime.subscription);
+    supabase.removeChannel(attendanceRealtime.subscription);
+    supabase.removeChannel(sedesRealtime.subscription);
+    supabase.removeChannel(incapacitiesRealtime.subscription);
+  };
+}
+
+export async function findSedeByCode(codigo) {
+  if (!codigo) return null;
+  const { data, error } = await supabase.from('sedes').select('*').eq('codigo', codigo).maybeSingle();
+  if (error) throw error;
+  return data ? mapSedeRow(data) : null;
+}
+
+export function streamCargos(onData, onError = null, onStatus = null) {
+  return streamTable('cargos', mapCargoRow, onData, { onError, onStatus });
+}
+
+export function streamContractCargos(onData, onError = null, onStatus = null) {
+  return streamTable('contract_cargos', mapContractCargoRow, onData, { order: 'cargo_nombre_snapshot', onError, onStatus });
+}
+
+export function countActiveCargos() {
+  return countActiveRows('cargos');
+}
+
+export async function getNextCargoCode(prefix = 'CAR', width = 4) {
+  return getNextPrefixedCode('cargos', prefix, width);
+}
+
+export async function createCargo({ codigo, nombre, salario = null, alineacionCrud, marcacionMovil = false }) {
+  const audit = await getCurrentAuditFields();
+  const { data, error } = await supabase
+    .from('cargos')
+    .insert({
+      codigo: codigo || null,
+      nombre: nombre || null,
+      salario: salario == null || salario === '' ? null : Number(salario),
+      alineacion_crud: alineacionCrud || 'empleado',
+      marcacion_movil: marcacionMovil === true,
+      estado: 'activo',
+      ...audit
+    })
+    .select('id')
+    .single();
+  if (error) throw error;
+  await notifyTableReload('cargos');
+  return data.id;
+}
+
+export async function upsertContractCargo({ contratoCodigo, cargoCodigo, salario = null, estado = 'activo' }) {
+  const contractCode = String(contratoCodigo || '').trim();
+  const cargoCode = String(cargoCodigo || '').trim();
+  if (!contractCode) throw new Error('Selecciona un contrato para configurar el salario del cargo.');
+  if (!cargoCode) throw new Error('Selecciona un cargo para configurar el salario.');
+  const audit = await getCurrentAuditFields();
+  const contract = await resolveContractContextByCode(contractCode);
+  const cargo = await findCargoByCode(cargoCode);
+  const { data, error } = await supabase
+    .from('contract_cargos')
+    .upsert({
+      contrato_codigo: contract.contratoCodigo || contractCode,
+      contrato_nombre: contract.contratoNombre || null,
+      cliente_nombre_snapshot: contract.clienteNombreSnapshot || null,
+      cliente_nit_snapshot: contract.clienteNitSnapshot || null,
+      cargo_codigo: cargoCode,
+      cargo_nombre_snapshot: cargo?.nombre || null,
+      salario: salario == null || salario === '' ? null : Number(salario),
+      estado: estado || 'activo',
+      created_by_uid: audit.created_by_uid,
+      created_by_email: audit.created_by_email
+    }, { onConflict: 'contrato_codigo,cargo_codigo' })
+    .select('*')
+    .single();
+  if (error) throw error;
+  await notifyTableReload('contract_cargos');
+  return mapContractCargoRow(data);
+}
+
+export async function updateCargo(id, { codigo, nombre, salario, alineacionCrud, funciones, marcacionMovil }) {
+  const patch = {};
+  if (typeof marcacionMovil === 'boolean') patch.marcacion_movil = marcacionMovil;
+  if (typeof codigo === 'string') patch.codigo = codigo;
+  if (typeof nombre === 'string') patch.nombre = nombre;
+  if (salario !== undefined) patch.salario = salario == null || salario === '' ? null : Number(salario);
+  if (typeof alineacionCrud === 'string') patch.alineacion_crud = alineacionCrud;
+  if (typeof funciones === 'string') {
+    if (funciones.trim().length > 12000) throw new Error('Las funciones no pueden superar los 12.000 caracteres.');
+    patch.funciones = funciones.trim();
+  }
+  const { error } = await supabase.from('cargos').update(patch).eq('id', id);
+  if (error) throw error;
+  await notifyTableReload('cargos');
+}
+
+export async function setCargoStatus(id, estado) {
+  const { error } = await supabase.from('cargos').update({ estado }).eq('id', id);
+  if (error) throw error;
+  await notifyTableReload('cargos');
+}
+
+export async function findCargoByCode(codigo) {
+  if (!codigo) return null;
+  const { data, error } = await supabase.from('cargos').select('*').eq('codigo', codigo).maybeSingle();
+  if (error) throw error;
+  return data ? mapCargoRow(data) : null;
+}
+
+export function streamNovedades(onData, onError = null, onStatus = null) {
+  return streamTable('novedades', mapNovedadRow, onData, { onError, onStatus });
+}
+
+export function countActiveNovedades() {
+  return countActiveRows('novedades');
+}
+
+export async function getNextNovedadCode(prefix = 'NOV', width = 4) {
+  return getNextPrefixedCode('novedades', prefix, width);
+}
+
+export async function createNovedad({ codigo, codigoNovedad, nombre, reemplazo, nomina }) {
+  const audit = await getCurrentAuditFields();
+  const { data, error } = await supabase
+    .from('novedades')
+    .insert({
+      codigo: codigo || null,
+      codigo_novedad: codigoNovedad || null,
+      nombre: nombre || null,
+      reemplazo: reemplazo || null,
+      nomina: nomina || null,
+      estado: 'activo',
+      ...audit
+    })
+    .select('id')
+    .single();
+  if (error) throw error;
+  await notifyTableReload('novedades');
+  return data.id;
+}
+
+export async function updateNovedad(id, { codigo, codigoNovedad, nombre, reemplazo, nomina }) {
+  const patch = {};
+  if (typeof codigo === 'string') patch.codigo = codigo;
+  if (typeof codigoNovedad === 'string') patch.codigo_novedad = codigoNovedad;
+  if (typeof nombre === 'string') patch.nombre = nombre;
+  if (typeof reemplazo === 'string') patch.reemplazo = reemplazo;
+  if (typeof nomina === 'string') patch.nomina = nomina;
+  const { error } = await supabase.from('novedades').update(patch).eq('id', id);
+  if (error) throw error;
+  await notifyTableReload('novedades');
+}
+
+export async function setNovedadStatus(id, estado) {
+  const { error } = await supabase.from('novedades').update({ estado }).eq('id', id);
+  if (error) throw error;
+  await notifyTableReload('novedades');
+}
+
+export async function findNovedadByCode(codigo) {
+  if (!codigo) return null;
+  const { data, error } = await supabase.from('novedades').select('*').eq('codigo', codigo).maybeSingle();
+  if (error) throw error;
+  return data ? mapNovedadRow(data) : null;
+}
+
+export async function findNovedadByCodigoNovedad(codigoNovedad) {
+  if (!codigoNovedad) return null;
+  const { data, error } = await supabase.from('novedades').select('*').eq('codigo_novedad', codigoNovedad).maybeSingle();
+  if (error) throw error;
+  return data ? mapNovedadRow(data) : null;
+}
+
+export function streamEmployees(onData, onError = null, onStatus = null) {
+  return streamTable('employees', mapEmployeeRow, onData, { onError, onStatus });
+}
+
+export function countActiveEmployees() {
+  return countActiveRows('employees');
+}
+
+function employeeAdminSortColumn(sortKey = '') {
+  const map = {
+    codigo: 'codigo',
+    documento: 'documento',
+    nombre: 'nombre',
+    telefono: 'telefono',
+    cargoNombre: 'cargo_nombre',
+    sedeNombre: 'sede_nombre',
+    contratoNombre: 'contrato_nombre',
+    estado: 'estado',
+    fechaIngreso: 'fecha_ingreso',
+    fechaRetiro: 'fecha_retiro'
+  };
+  return map[sortKey] || 'nombre';
+}
+
+function buildEmployeesAdminQuery({
+  search = '',
+  contratoCodigo = '',
+  sedeCodigo = '',
+  estado = '',
+  sortKey = 'nombre',
+  sortDir = 1,
+  count = null
+} = {}) {
+  const options = count ? { count } : undefined;
+  let query = supabase.from('employees').select('*', options);
+  const cleanStatus = String(estado || '').trim();
+  const cleanContract = String(contratoCodigo || '').trim();
+  const cleanSede = String(sedeCodigo || '').trim();
+  const term = cleanPostgrestSearchTerm(search);
+  if (cleanStatus) {
+    query = query.eq('estado', cleanStatus);
+  } else {
+    query = query.or('estado.is.null,estado.neq.eliminado');
+  }
+  if (cleanContract) query = query.eq('contrato_codigo', cleanContract);
+  if (cleanSede) query = query.eq('sede_codigo', cleanSede);
+  if (term) {
+    const pattern = `%${term}%`;
+    query = query.or([
+      `codigo.ilike.${pattern}`,
+      `documento.ilike.${pattern}`,
+      `nombre.ilike.${pattern}`,
+      `telefono.ilike.${pattern}`,
+      `cargo_codigo.ilike.${pattern}`,
+      `cargo_nombre.ilike.${pattern}`,
+      `contrato_codigo.ilike.${pattern}`,
+      `contrato_nombre.ilike.${pattern}`,
+      `cliente_nombre_snapshot.ilike.${pattern}`,
+      `sede_codigo.ilike.${pattern}`,
+      `sede_nombre.ilike.${pattern}`
+    ].join(','));
+  }
+  query = query.order(employeeAdminSortColumn(sortKey), { ascending: Number(sortDir || 1) === 1, nullsFirst: false });
+  if (sortKey !== 'nombre') query = query.order('nombre', { ascending: true, nullsFirst: false });
+  return query;
+}
+
+export async function listEmployeesAdminPage({
+  search = '',
+  contratoCodigo = '',
+  sedeCodigo = '',
+  estado = '',
+  sortKey = 'nombre',
+  sortDir = 1,
+  page = 1,
+  pageSize = 50,
+  showAll = false
+} = {}) {
+  const safePageSize = showAll ? 5000 : Math.max(1, Math.min(Number(pageSize || 50), 500));
+  const safePage = showAll ? 1 : Math.max(1, Number(page || 1));
+  const from = showAll ? 0 : (safePage - 1) * safePageSize;
+  const to = from + safePageSize - 1;
+  const { data, error, count } = await buildEmployeesAdminQuery({
+    search,
+    contratoCodigo,
+    sedeCodigo,
+    estado,
+    sortKey,
+    sortDir,
+    count: 'exact'
+  }).range(from, to);
+  if (error) throw error;
+  return {
+    rows: (data || []).map(mapEmployeeRow),
+    total: Number(count || 0),
+    page: safePage,
+    pageSize: safePageSize
+  };
+}
+
+export async function listEmployeeCargoHistoryForEmployees({ ids = [], documentos = [] } = {}) {
+  const cleanIds = [...new Set((ids || []).map((value) => String(value || '').trim()).filter(Boolean))];
+  const cleanDocs = [...new Set((documentos || []).map((value) => String(value || '').trim()).filter(Boolean))];
+  if (!cleanIds.length && !cleanDocs.length) return [];
+
+  const rows = [];
+  for (let i = 0; i < cleanIds.length; i += 100) {
+    const { data, error } = await supabase
+      .from('employee_cargo_history')
+      .select('*')
+      .in('employee_id', cleanIds.slice(i, i + 100))
+      .order('fecha_ingreso', { ascending: false });
+    if (error) throw error;
+    rows.push(...(data || []));
+  }
+  for (let i = 0; i < cleanDocs.length; i += 100) {
+    const { data, error } = await supabase
+      .from('employee_cargo_history')
+      .select('*')
+      .in('documento', cleanDocs.slice(i, i + 100))
+      .order('fecha_ingreso', { ascending: false });
+    if (error) throw error;
+    rows.push(...(data || []));
+  }
+
+  const byId = new Map();
+  rows.forEach((row) => {
+    const id = String(row?.id || '').trim();
+    if (id && !byId.has(id)) byId.set(id, row);
+  });
+  return [...byId.values()].map(mapCargoHistoryRow);
+}
+
+export function watchEmployeesAdminChanges(onChange, onError = null, onStatus = null) {
+  const emit = () => {
+    try {
+      onChange?.();
+    } catch (error) {
+      console.error('No se pudo refrescar administracion de empleados:', error);
+    }
+  };
+  const unEmployees = registerTableReloader('employees', emit);
+  const unHistory = registerTableReloader('employee_cargo_history', emit);
+  const employeesChannel = subscribeToRealtime(
+    supabase.channel(nextRealtimeChannelName('employees-admin-watch'))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'employees' }, emit),
+    { label: 'employees_admin', onError, onStatus }
+  );
+  const historyChannel = subscribeToRealtime(
+    supabase.channel(nextRealtimeChannelName('employee-history-admin-watch'))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'employee_cargo_history' }, emit),
+    { label: 'employee_history_admin', onError, onStatus }
+  );
+  return () => {
+    unEmployees();
+    unHistory();
+    employeesChannel.cancel();
+    historyChannel.cancel();
+  };
+}
+
+export async function listCurrentEmployees(fecha = todayBogotaISO()) {
+  const rows = await listEmployeesEffectiveOnDate(fecha, {
+    select: '*',
+    order: 'nombre',
+    ascending: true
+  });
+  return rows.map(mapEmployeeRow);
+}
+
+export async function listEmployeeDashboardPeople(fecha = todayBogotaISO()) {
+  const rows = await listEmployeesEffectiveOnDate(fecha, {
+    select: 'id,documento,nombre,estado,cargo_codigo,cargo_nombre,contrato_codigo,contrato_nombre,cliente_nombre_snapshot,cliente_nit_snapshot,fecha_ingreso,fecha_retiro',
+    order: 'cargo_nombre',
+    ascending: true
+  });
+  return rows.map(mapEmployeeRow);
+}
+
+export async function listEmployeesByIdentity({ ids = [], documentos = [] } = {}) {
+  const cleanIds = [...new Set((ids || []).map((value) => String(value || '').trim()).filter(Boolean))];
+  const cleanDocs = [...new Set((documentos || []).map((value) => String(value || '').trim()).filter(Boolean))];
+  if (!cleanIds.length && !cleanDocs.length) return [];
+
+  const select = 'id,codigo,documento,nombre,telefono,estado,cargo_codigo,cargo_nombre,sede_codigo,sede_nombre,zona_codigo,zona_nombre,contrato_codigo,contrato_nombre,cliente_nombre_snapshot,cliente_nit_snapshot,fecha_ingreso,fecha_retiro';
+  const rows = [];
+  for (let i = 0; i < cleanIds.length; i += 100) {
+    const { data, error } = await supabase.from('employees').select(select).in('id', cleanIds.slice(i, i + 100));
+    if (error) throw error;
+    rows.push(...(data || []));
+  }
+  for (let i = 0; i < cleanDocs.length; i += 100) {
+    const { data, error } = await supabase.from('employees').select(select).in('documento', cleanDocs.slice(i, i + 100));
+    if (error) throw error;
+    rows.push(...(data || []));
+  }
+
+  const byKey = new Map();
+  rows.forEach((row) => {
+    const id = String(row?.id || '').trim();
+    const doc = String(row?.documento || '').trim();
+    const key = id ? `id:${id}` : `doc:${doc}`;
+    if (key && !byKey.has(key)) byKey.set(key, row);
+  });
+  return [...byKey.values()].map(mapEmployeeRow);
+}
+
+export function streamCurrentEmployees(onData, onError = null, onStatus = null, fecha = todayBogotaISO()) {
+  let active = true;
+  const emit = async () => {
+    try {
+      const rows = await listCurrentEmployees(fecha);
+      if (!active) return;
+      onData(rows || []);
+    } catch (error) {
+      if (!active) return;
+      console.error('No se pudieron cargar empleados vigentes:', error);
+      onError?.(error, 'LOAD_ERROR');
+      onData([]);
+    }
+  };
+
+  emit();
+  const unregister = registerTableReloader('employees', emit);
+  const realtime = subscribeToRealtime(
+    supabase
+      .channel(nextRealtimeChannelName('employees-current-watch'))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'employees' }, emit),
+    { label: 'employees_current', onError, onStatus }
+  );
+
+  return () => {
+    active = false;
+    unregister();
+    realtime.cancel();
+  };
+}
+
+export async function listActiveBaseEmployees({ contratoCodigo = undefined, sedeCodigo = null, fecha = todayBogotaISO() } = {}) {
+  const [employeeRows, { data: cargos, error }] = await Promise.all([
+    listEmployeesEffectiveOnDate(fecha, { contratoCodigo, sedeCodigo }),
+    supabase.from('cargos').select('codigo, nombre, alineacion_crud')
+  ]);
+  if (error) throw error;
+  const cargoMap = new Map((cargos || []).map(row => [String(row.codigo || '').trim(), row]));
+  return employeeRows.filter(row => !isEmployeeSupernumerario(row, cargoMap)).map(mapEmployeeRow);
+}
+
+export function streamActiveBaseEmployees(onData, { contratoCodigo = undefined } = {}) {
+  if (contratoCodigo !== undefined && !contratoCodigo) { onData([]); return () => {}; }
+  let active = true;
+  const emit = async () => {
+    const [employeesResult, { data: cargos, error: cargoError }] = await Promise.all([
+      listEmployeesEffectiveOnDate(todayBogotaISO(), { select: '*', order: 'created_at', ascending: false, contratoCodigo }).then((value) => ({ status: 'fulfilled', value })).catch((error) => ({ status: 'rejected', reason: error })),
+      supabase.from('cargos').select('codigo, nombre, alineacion_crud')
+    ]);
+    if (!active) return;
+    const empError = employeesResult.status === 'rejected' ? employeesResult.reason : null;
+    const employeeRows = employeesResult.status === 'fulfilled' ? employeesResult.value : [];
+    if (empError || cargoError) {
+      console.error('No se pudieron cargar empleados activos base:', empError || cargoError);
+      onData([]);
+      return;
+    }
+    const cargoMap = new Map((cargos || []).map((row) => [String(row.codigo || '').trim(), row]));
+    const today = todayBogotaISO();
+    const rows = (employeeRows || [])
+      .filter((emp) => isEmployeeActiveForDate(emp, today))
+      .filter((emp) => !isEmployeeSupernumerario(emp, cargoMap))
+      .map((row) => mapEmployeeRow(row));
+    onData(rows);
+  };
+  emit();
+  const unA = registerTableReloader('employees', emit);
+  const unB = registerTableReloader('cargos', emit);
+  const channelA = supabase.channel(nextRealtimeChannelName('employees-active-base-watch')).on('postgres_changes', { event: '*', schema: 'public', table: 'employees' }, emit).subscribe();
+  const channelB = supabase.channel(nextRealtimeChannelName('employees-active-base-cargos-watch')).on('postgres_changes', { event: '*', schema: 'public', table: 'cargos' }, emit).subscribe();
+  return () => {
+    active = false;
+    unA();
+    unB();
+    supabase.removeChannel(channelA);
+    supabase.removeChannel(channelB);
+  };
+}
+
+
+export async function getNextEmployeeCode(prefix = 'EMP', width = 4) {
+  return getNextPrefixedCode('employees', prefix, width);
+}
+
+export async function createEmployee({ codigo, documento, nombre, telefono, fechaNacimiento, eps, afp, arlRiesgo, dotacionCamisa, dotacionPantalon, dotacionZapatos, cargoCodigo, cargoNombre, sedeCodigo, sedeNombre, fechaIngreso }) {
+  const audit = await getCurrentAuditFields();
+  const zone = await resolveZoneBySedeCode(sedeCodigo);
+  const data = await insertEmployeeRecord({
+    codigo,
+    documento,
+    nombre,
+    telefono,
+    fechaNacimiento,
+    eps,
+    afp,
+    arlRiesgo,
+    dotacionCamisa,
+    dotacionPantalon,
+    dotacionZapatos,
+    cargoCodigo,
+    cargoNombre,
+    sedeCodigo,
+    sedeNombre,
+    fechaIngreso,
+    audit,
+    zone,
+    notifyEmployeesReload: true,
+    historySource: 'create_employee'
+  });
+  return data.id;
+}
+
+export async function rehireEmployee(id, { nombre, telefono, cargoCodigo, cargoNombre, sedeCodigo, sedeNombre, fechaIngreso } = {}) {
+  const employeeId = String(id || '').trim();
+  if (!employeeId) throw new Error('No se encontro el empleado a reingresar.');
+  const ingresoIso = toISODate(fechaIngreso);
+  if (!ingresoIso) throw new Error('Selecciona una fecha de ingreso valida.');
+
+  const current = await supabase.from('employees').select('*').eq('id', employeeId).single();
+  if (current.error) throw current.error;
+  const currentRow = current.data;
+  if (String(currentRow.estado || '').trim().toLowerCase() !== 'inactivo') {
+    throw new Error('Solo se pueden reingresar empleados inactivos.');
+  }
+
+  const { data: historyRows, error: historyError } = await supabase
+    .from('employee_cargo_history')
+    .select('fecha_retiro')
+    .eq('employee_id', employeeId);
+  if (historyError) throw historyError;
+
+  const lastRetiro = [
+    toISODate(currentRow.fecha_retiro),
+    ...((historyRows || []).map((row) => toISODate(row?.fecha_retiro)))
+  ]
+    .filter(Boolean)
+    .sort()
+    .pop() || null;
+  if (lastRetiro && ingresoIso < lastRetiro) {
+    throw new Error(`La nueva fecha de ingreso no puede ser anterior al ultimo retiro (${lastRetiro}).`);
+  }
+
+  const audit = await getCurrentAuditFields();
+  const zone = await resolveZoneBySedeCode(sedeCodigo);
+  const patch = {
+    estado: 'activo',
+    nombre: typeof nombre === 'string' ? nombre : currentRow.nombre || null,
+    telefono: typeof telefono === 'string' ? normalizeStoredPhone(telefono) : currentRow.telefono || null,
+    cargo_codigo: cargoCodigo || currentRow.cargo_codigo || null,
+    cargo_nombre: cargoNombre || null,
+    sede_codigo: sedeCodigo || currentRow.sede_codigo || null,
+    sede_nombre: sedeNombre || null,
+    zona_codigo: zone.zonaCodigo || null,
+    zona_nombre: zone.zonaNombre || null,
+    contrato_codigo: zone.contratoCodigo || null,
+    contrato_nombre: zone.contratoNombre || null,
+    cliente_nombre_snapshot: zone.clienteNombreSnapshot || null,
+    cliente_nit_snapshot: zone.clienteNitSnapshot || null,
+    fecha_ingreso: fechaIngreso,
+    fecha_retiro: null,
+    last_modified_by_uid: audit.created_by_uid,
+    last_modified_by_email: audit.created_by_email,
+    last_modified_at: new Date().toISOString()
+  };
+  validateEmployeeDateRange(patch.fecha_ingreso, patch.fecha_retiro);
+
+  const { data: updated, error } = await supabase
+    .from('employees')
+    .update(patch)
+    .eq('id', employeeId)
+    .select('*')
+    .single();
+  if (error) throw error;
+
+  await appendEmployeeCargoHistory({
+    employeeId: updated.id,
+    employeeCodigo: updated.codigo,
+    documento: updated.documento,
+    cargoCodigo: updated.cargo_codigo,
+    cargoNombre: updated.cargo_nombre,
+    sedeCodigo: updated.sede_codigo,
+    sedeNombre: updated.sede_nombre,
+    contratoCodigo: updated.contrato_codigo,
+    contratoNombre: updated.contrato_nombre,
+    clienteNombreSnapshot: updated.cliente_nombre_snapshot,
+    clienteNitSnapshot: updated.cliente_nit_snapshot,
+    fechaIngreso: updated.fecha_ingreso,
+    fechaRetiro: null,
+    source: 'rehire_employee'
+  });
+
+  if (await getCargoCrudAlignmentByCode(updated.cargo_codigo, updated.cargo_nombre) === 'supervisor') {
+    await upsertSupervisorProfileFromEmployee(mapEmployeeRow(updated));
+  }
+  await reconcileOperationalSnapshotsForEmployeeChange(currentRow, updated, [lastRetiro, updated.fecha_ingreso]);
+  await Promise.all([
+    notifyTableReload('employees'),
+    notifyTableReload('employee_cargo_history')
+  ]);
+  return mapEmployeeRow(updated);
+}
+
+function normalizeStoredPhone(value) {
+  const digits = String(value || '').replace(/\D+/g, '').trim();
+  if (!digits) return null;
+  if (digits.startsWith('57') && digits.length >= 12) return digits.slice(0, 12);
+  if (digits.length === 10) return `57${digits}`;
+  return digits;
+}
+
+function normalizeBulkDate(value) {
+  if (!value) return null;
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString();
+  const raw = String(value).trim();
+  if (!raw) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return `${raw}T00:00:00`;
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString();
+}
+
+function applyEmployeeExtendedFields(payload, source = {}) {
+  if (source.fechaNacimiento !== undefined) payload.fecha_nacimiento = source.fechaNacimiento || null;
+  if (source.eps !== undefined) payload.eps = String(source.eps || '').trim() || null;
+  if (source.afp !== undefined) payload.afp = String(source.afp || '').trim() || null;
+  if (source.arlRiesgo !== undefined) payload.arl_riesgo = String(source.arlRiesgo || '').trim() || null;
+  if (source.dotacionCamisa !== undefined) payload.dotacion_camisa = String(source.dotacionCamisa || '').trim() || null;
+  if (source.dotacionPantalon !== undefined) payload.dotacion_pantalon = String(source.dotacionPantalon || '').trim() || null;
+  if (source.dotacionZapatos !== undefined) payload.dotacion_zapatos = String(source.dotacionZapatos || '').trim() || null;
+  return payload;
+}
+
+export async function createEmployeesBulk(rows = [], options = {}) {
+  const items = Array.isArray(rows) ? rows.filter(Boolean) : [];
+  if (!items.length) return { created: 0 };
+  const onProgress = typeof options?.onProgress === 'function' ? options.onProgress : null;
+  const chunkSize = Math.max(1, Number(options?.chunkSize) || 250);
+  const reportProgress = (created, total, phase = 'importing') => {
+    if (!onProgress) return;
+    onProgress({
+      created,
+      total,
+      percent: total > 0 ? Math.min(100, Math.round((created / total) * 100)) : 0,
+      phase
+    });
+  };
+  reportProgress(0, items.length, 'preparing');
+  const audit = await getCurrentAuditFields();
+  const missingCodeCount = items.filter((row) => !String(row?.codigo || '').trim()).length;
+  const reservedCodes = missingCodeCount ? await reservePrefixedCodes('employees', 'EMP', missingCodeCount, 4) : [];
+  if (reservedCodes.length < missingCodeCount) throw new Error('No se pudieron reservar todos los codigos de empleados.');
+  let reservedCodeIndex = 0;
+  const sedeCodes = [...new Set(items.map((row) => String(row?.sedeCodigo || '').trim()).filter(Boolean))];
+  const zoneBySedeCode = new Map();
+  if (sedeCodes.length) {
+    const { data: sedesRows, error: sedesError } = await supabase
+      .from('sedes')
+      .select('codigo, zona_codigo, zona_nombre, contrato_codigo, contrato_nombre, cliente_nombre_snapshot, cliente_nit_snapshot')
+      .in('codigo', sedeCodes);
+    if (sedesError) throw sedesError;
+    (sedesRows || []).forEach((row) => {
+      zoneBySedeCode.set(String(row.codigo || '').trim(), {
+        zonaCodigo: row.zona_codigo || null,
+        zonaNombre: row.zona_nombre || null,
+        contratoCodigo: row.contrato_codigo || null,
+        contratoNombre: row.contrato_nombre || null,
+        clienteNombreSnapshot: row.cliente_nombre_snapshot || null,
+        clienteNitSnapshot: row.cliente_nit_snapshot || null
+      });
+    });
+  }
+  const batches = chunkArray(items, chunkSize);
+  let created = 0;
+  for (const batch of batches) {
+    const timestamp = new Date().toISOString();
+    const payloads = batch.map((row) => {
+      const codigo = String(row.codigo || '').trim() || reservedCodes[reservedCodeIndex++]?.code || null;
+      const zone = zoneBySedeCode.get(String(row.sedeCodigo || '').trim()) || { zonaCodigo: null, zonaNombre: null };
+      return applyEmployeeExtendedFields({
+        codigo,
+        documento: String(row.documento || '').trim() || null,
+        nombre: row.nombre || null,
+        telefono: normalizeStoredPhone(row.telefono),
+        cargo_codigo: row.cargoCodigo || null,
+        cargo_nombre: row.cargoNombre || null,
+        sede_codigo: row.sedeCodigo || null,
+        sede_nombre: row.sedeNombre || null,
+        zona_codigo: zone.zonaCodigo || null,
+        zona_nombre: zone.zonaNombre || null,
+        contrato_codigo: zone.contratoCodigo || null,
+        contrato_nombre: zone.contratoNombre || null,
+        cliente_nombre_snapshot: zone.clienteNombreSnapshot || null,
+        cliente_nit_snapshot: zone.clienteNitSnapshot || null,
+        fecha_ingreso: normalizeBulkDate(row.fechaIngreso),
+        fecha_retiro: null,
+        estado: 'activo',
+        created_by_uid: audit.created_by_uid,
+        created_by_email: audit.created_by_email,
+        last_modified_by_uid: audit.created_by_uid,
+        last_modified_by_email: audit.created_by_email,
+        last_modified_at: timestamp
+      }, row);
+    });
+    const { data: insertedRows, error: insertError } = await supabase
+      .from('employees')
+      .insert(payloads)
+      .select('id, codigo, documento, cargo_codigo, cargo_nombre, sede_codigo, sede_nombre, contrato_codigo, contrato_nombre, cliente_nombre_snapshot, cliente_nit_snapshot, fecha_ingreso');
+    if (insertError) throw insertError;
+    await appendEmployeeCargoHistoryBulk((insertedRows || []).map((row) => ({
+      employee_id: row.id,
+      employee_codigo: row.codigo || null,
+      documento: row.documento || null,
+      cargo_codigo: row.cargo_codigo || null,
+      cargo_nombre: row.cargo_nombre || null,
+      sede_codigo: row.sede_codigo || null,
+      sede_nombre: row.sede_nombre || null,
+      contrato_codigo: row.contrato_codigo || null,
+      contrato_nombre: row.contrato_nombre || null,
+      cliente_nombre_snapshot: row.cliente_nombre_snapshot || null,
+      cliente_nit_snapshot: row.cliente_nit_snapshot || null,
+      fecha_ingreso: row.fecha_ingreso || null,
+      fecha_retiro: null,
+      source: 'bulk_create_employee'
+    })), false);
+    created += (insertedRows || []).length;
+    reportProgress(created, items.length, 'importing');
+  }
+  reportProgress(created, items.length, 'refreshing');
+  await Promise.all([
+    notifyTableReload('employees'),
+    notifyTableReload('employee_cargo_history')
+  ]);
+  reportProgress(created, items.length, 'completed');
+  return { created };
+}
+
+function employeeBulkUpdatePatch(row = {}, audit = {}) {
+  const patch = {
+    last_modified_by_uid: audit.created_by_uid,
+    last_modified_by_email: audit.created_by_email,
+    last_modified_at: new Date().toISOString()
+  };
+  const cleanOptional = (value) => {
+    const raw = String(value ?? '').trim();
+    if (!raw) return undefined;
+    return raw === '__CLEAR__' ? null : raw;
+  };
+  if (row.nombre !== undefined) {
+    const value = cleanOptional(row.nombre);
+    if (value !== undefined) patch.nombre = value;
+  }
+  if (row.telefono !== undefined) {
+    const value = cleanOptional(row.telefono);
+    if (value !== undefined) patch.telefono = value === null ? null : normalizeStoredPhone(value);
+  }
+  if (row.fechaNacimiento !== undefined) {
+    const value = cleanOptional(row.fechaNacimiento);
+    patch.fecha_nacimiento = value === undefined ? undefined : value;
+  }
+  applyEmployeeExtendedFields(patch, {
+    eps: row.eps === undefined ? undefined : cleanOptional(row.eps),
+    afp: row.afp === undefined ? undefined : cleanOptional(row.afp),
+    arlRiesgo: row.arlRiesgo === undefined ? undefined : cleanOptional(row.arlRiesgo),
+    dotacionCamisa: row.dotacionCamisa === undefined ? undefined : cleanOptional(row.dotacionCamisa),
+    dotacionPantalon: row.dotacionPantalon === undefined ? undefined : cleanOptional(row.dotacionPantalon),
+    dotacionZapatos: row.dotacionZapatos === undefined ? undefined : cleanOptional(row.dotacionZapatos)
+  });
+  return Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined));
+}
+
+export async function updateEmployeesBulk(rows = [], options = {}) {
+  const items = Array.isArray(rows) ? rows.filter(Boolean) : [];
+  if (!items.length) return { updated: 0, skipped: 0 };
+  const onProgress = typeof options?.onProgress === 'function' ? options.onProgress : null;
+  const reportProgress = (updated, total, phase = 'updating') => {
+    if (!onProgress) return;
+    onProgress({
+      created: updated,
+      total,
+      percent: total > 0 ? Math.min(100, Math.round((updated / total) * 100)) : 0,
+      phase
+    });
+  };
+  reportProgress(0, items.length, 'preparing');
+  const audit = await getCurrentAuditFields();
+  let updated = 0;
+  let skipped = 0;
+  for (const row of items) {
+    const documento = String(row?.documento || '').trim();
+    const id = String(row?.id || '').trim();
+    if (!documento && !id) {
+      skipped += 1;
+      continue;
+    }
+    const patch = employeeBulkUpdatePatch(row, audit);
+    const meaningfulKeys = Object.keys(patch).filter((key) => !['last_modified_by_uid', 'last_modified_by_email', 'last_modified_at'].includes(key));
+    if (!meaningfulKeys.length) {
+      skipped += 1;
+      continue;
+    }
+    const query = supabase.from('employees').update(patch);
+    const { error } = id
+      ? await query.eq('id', id)
+      : await query.eq('documento', documento);
+    if (error) throw error;
+    updated += 1;
+    reportProgress(updated, items.length, 'updating');
+  }
+  reportProgress(updated, items.length, 'refreshing');
+  await notifyTableReload('employees');
+  reportProgress(updated, items.length, 'completed');
+  return { updated, skipped };
+}
+
+export async function updateEmployee(id, data = {}) {
+  const audit = await getCurrentAuditFields();
+  const current = await supabase.from('employees').select('*').eq('id', id).single();
+  if (current.error) throw current.error;
+  const currentRow = current.data;
+  const currentIngreso = toISODate(currentRow.fecha_ingreso);
+  const currentRetiro = toISODate(currentRow.fecha_retiro);
+  const currentSede = String(currentRow.sede_codigo || '').trim();
+  const currentContrato = String(currentRow.contrato_codigo || '').trim();
+  const currentEstado = String(currentRow.estado || 'activo').trim().toLowerCase();
+  const currentDocumento = String(currentRow.documento || '').trim();
+  const currentCargoCodigo = String(currentRow.cargo_codigo || '').trim();
+  const patch = {
+    last_modified_by_uid: audit.created_by_uid,
+    last_modified_by_email: audit.created_by_email,
+    last_modified_at: new Date().toISOString()
+  };
+  if (typeof data.codigo === 'string') patch.codigo = data.codigo;
+  if (typeof data.documento === 'string') patch.documento = data.documento;
+  if (typeof data.nombre === 'string') patch.nombre = data.nombre;
+  if (typeof data.telefono === 'string') patch.telefono = normalizeStoredPhone(data.telefono);
+  if (data.fechaNacimiento !== undefined) patch.fecha_nacimiento = data.fechaNacimiento || null;
+  if (data.eps !== undefined) patch.eps = String(data.eps || '').trim() || null;
+  if (data.afp !== undefined) patch.afp = String(data.afp || '').trim() || null;
+  if (data.arlRiesgo !== undefined) patch.arl_riesgo = String(data.arlRiesgo || '').trim() || null;
+  if (data.dotacionCamisa !== undefined) patch.dotacion_camisa = String(data.dotacionCamisa || '').trim() || null;
+  if (data.dotacionPantalon !== undefined) patch.dotacion_pantalon = String(data.dotacionPantalon || '').trim() || null;
+  if (data.dotacionZapatos !== undefined) patch.dotacion_zapatos = String(data.dotacionZapatos || '').trim() || null;
+  if (typeof data.cargoCodigo === 'string') patch.cargo_codigo = data.cargoCodigo;
+  if (typeof data.cargoNombre === 'string') patch.cargo_nombre = data.cargoNombre;
+  if (typeof data.sedeCodigo === 'string') {
+    const zone = await resolveZoneBySedeCode(data.sedeCodigo);
+    patch.sede_codigo = data.sedeCodigo;
+    patch.sede_nombre = typeof data.sedeNombre === 'string' ? data.sedeNombre : null;
+    patch.zona_codigo = zone.zonaCodigo || null;
+    patch.zona_nombre = zone.zonaNombre || null;
+    patch.contrato_codigo = zone.contratoCodigo || null;
+    patch.contrato_nombre = zone.contratoNombre || null;
+    patch.cliente_nombre_snapshot = zone.clienteNombreSnapshot || null;
+    patch.cliente_nit_snapshot = zone.clienteNitSnapshot || null;
+  }
+  if (data.fechaIngreso !== undefined) patch.fecha_ingreso = data.fechaIngreso || null;
+  if (data.fechaRetiro !== undefined) patch.fecha_retiro = data.fechaRetiro || null;
+  const nextSede = typeof patch.sede_codigo === 'string' ? String(patch.sede_codigo || '').trim() : currentSede;
+  const nextCargoCodigo = typeof patch.cargo_codigo === 'string' ? String(patch.cargo_codigo || '').trim() : currentCargoCodigo;
+  const nextIngresoPreview = patch.fecha_ingreso !== undefined ? toISODate(patch.fecha_ingreso) : currentIngreso;
+  const nextRetiroPreview = patch.fecha_retiro !== undefined ? toISODate(patch.fecha_retiro) : currentRetiro;
+  validateEmployeeDateRange(nextIngresoPreview, nextRetiroPreview);
+  const sedeChangedPreview = nextSede !== currentSede;
+  const cargoChangedPreview = nextCargoCodigo !== currentCargoCodigo;
+  const assignmentIngresoPreview = toISODate(
+    data.assignmentFechaIngreso ||
+    data.fechaHistorialIngreso ||
+    data.historialFechaIngreso
+  );
+  const assignmentRetiroPreview = toISODate(
+    data.assignmentFechaRetiro ||
+    data.historialFechaRetiro ||
+    data.fechaHistorialRetiro
+  );
+  if ((sedeChangedPreview || cargoChangedPreview) && assignmentIngresoPreview && assignmentRetiroPreview) {
+    const expectedAssignmentStart = addDaysToIsoDate(assignmentRetiroPreview, 1);
+    if (assignmentIngresoPreview !== expectedAssignmentStart) {
+      throw new Error('La nueva asignacion debe iniciar el dia siguiente al fin del tramo anterior.');
+    }
+  }
+  if (sedeChangedPreview && assignmentIngresoPreview && assignmentIngresoPreview < todayBogotaISO()) {
+    throw new Error(`La fecha de inicio en nueva sede no puede ser anterior a hoy (${todayBogotaISO()}).`);
+  }
+  if (sedeChangedPreview && assignmentIngresoPreview === todayBogotaISO()) {
+    await assertNoEmployeeAttendanceTodayBeforeSedeTransfer(currentRow, assignmentIngresoPreview, currentSede);
+  }
+  if (sedeChangedPreview && !cargoChangedPreview && patch.fecha_ingreso !== undefined && nextIngresoPreview !== currentIngreso) {
+    patch.fecha_ingreso = currentRow.fecha_ingreso || null;
+  }
+  if (cargoChangedPreview && assignmentIngresoPreview) {
+    patch.fecha_ingreso = data.assignmentFechaIngreso || data.fechaHistorialIngreso || data.historialFechaIngreso;
+  }
+  const { data: updated, error } = await supabase.from('employees').update(patch).eq('id', id).select('*').single();
+  if (error) throw error;
+  const updatedIngreso = toISODate(updated.fecha_ingreso);
+  const updatedRetiro = toISODate(updated.fecha_retiro);
+  const updatedSede = String(updated.sede_codigo || '').trim();
+  const updatedContrato = String(updated.contrato_codigo || '').trim();
+  const updatedEstado = String(updated.estado || 'activo').trim().toLowerCase();
+  const updatedDocumento = String(updated.documento || '').trim();
+  const cargoChanged =
+    String(updated.cargo_codigo || '').trim() !== currentCargoCodigo;
+  const sedeChanged = updatedSede !== currentSede;
+  const contratoChanged = updatedContrato !== currentContrato;
+  const ingresoChanged = updatedIngreso !== currentIngreso;
+  const retiroChanged = updatedRetiro !== currentRetiro;
+  const estadoChanged = updatedEstado !== currentEstado;
+  const documentChanged = updatedDocumento !== currentDocumento;
+  const requiresNewHistoryEntry =
+    String(updated.estado || 'activo').trim().toLowerCase() === 'activo' &&
+    (cargoChanged || sedeChanged || contratoChanged);
+  if (requiresNewHistoryEntry) {
+    const historyIngreso =
+      data.assignmentFechaIngreso ||
+      data.fechaHistorialIngreso ||
+      data.historialFechaIngreso ||
+      null;
+    const historyRetiro =
+      data.assignmentFechaRetiro ||
+      data.historialFechaRetiro ||
+      data.fechaHistorialRetiro ||
+      null;
+    if (!toISODate(historyIngreso) || !toISODate(historyRetiro)) {
+      throw new Error('Debes seleccionar la fecha fin de la asignacion anterior y la fecha inicio de la nueva asignacion.');
+    }
+    const historyIngresoIso = toISODate(historyIngreso);
+    const mergedIntoProgrammedHistory = historyIngresoIso > todayBogotaISO()
+      ? await patchProgrammedEmployeeHistory(updated.id, historyIngreso, {
+        employee_codigo: updated.codigo || null,
+        documento: updated.documento || null,
+        cargo_codigo: updated.cargo_codigo || null,
+        cargo_nombre: updated.cargo_nombre || null,
+        sede_codigo: updated.sede_codigo || null,
+        sede_nombre: updated.sede_nombre || null,
+        contrato_codigo: updated.contrato_codigo || null,
+        contrato_nombre: updated.contrato_nombre || null,
+        cliente_nombre_snapshot: updated.cliente_nombre_snapshot || null,
+        cliente_nit_snapshot: updated.cliente_nit_snapshot || null,
+        source: 'scheduled_assignment_update'
+      }, false)
+      : false;
+    if (!mergedIntoProgrammedHistory) {
+      await closeActiveEmployeeHistory(updated.id, historyRetiro, false);
+      await appendEmployeeCargoHistory({
+        employeeId: updated.id,
+        employeeCodigo: updated.codigo,
+        documento: updated.documento,
+        cargoCodigo: updated.cargo_codigo,
+        cargoNombre: updated.cargo_nombre,
+        sedeCodigo: updated.sede_codigo,
+        sedeNombre: updated.sede_nombre,
+        contratoCodigo: updated.contrato_codigo,
+        contratoNombre: updated.contrato_nombre,
+        clienteNombreSnapshot: updated.cliente_nombre_snapshot,
+        clienteNitSnapshot: updated.cliente_nit_snapshot,
+        fechaIngreso: historyIngreso,
+        fechaRetiro: null,
+        source: sedeChanged ? 'sede_change' : (cargoChanged ? 'cargo_change' : 'employee_update')
+      });
+    } else {
+      await notifyTableReload('employee_cargo_history');
+    }
+  } else {
+    await patchActiveEmployeeHistory(updated.id, {
+      employee_codigo: updated.codigo || null,
+      documento: updated.documento || null,
+      cargo_codigo: updated.cargo_codigo || null,
+      cargo_nombre: updated.cargo_nombre || null,
+      sede_codigo: updated.sede_codigo || null,
+      sede_nombre: updated.sede_nombre || null,
+      contrato_codigo: updated.contrato_codigo || null,
+      contrato_nombre: updated.contrato_nombre || null,
+      cliente_nombre_snapshot: updated.cliente_nombre_snapshot || null,
+      cliente_nit_snapshot: updated.cliente_nit_snapshot || null,
+      fecha_ingreso: ingresoChanged ? (updated.fecha_ingreso || null) : undefined
+    }, false);
+    await notifyTableReload('employee_cargo_history');
+  }
+  if (await getCargoCrudAlignmentByCode(updated.cargo_codigo, updated.cargo_nombre) === 'supervisor') {
+    await upsertSupervisorProfileFromEmployee(mapEmployeeRow(updated));
+  }
+  if (cargoChanged || sedeChanged || contratoChanged || ingresoChanged || retiroChanged || estadoChanged || documentChanged) {
+    await reconcileOperationalSnapshotsForEmployeeChange(currentRow, updated, [
+      data.assignmentFechaIngreso,
+      data.historialFechaRetiro,
+      data.fechaHistorialRetiro,
+      data.assignmentFechaRetiro
+    ]);
+  }
+  await notifyTableReload('employees');
+}
+
+export async function listEmployeeRetirements(employeeId) {
+  const { data, error } = await supabase.from('employee_retirements').select('*')
+    .eq('employee_id', employeeId).order('created_at', { ascending:false });
+  if (error) throw error;
+  return data || [];
+}
+
+export async function setEmployeeStatus(id, estado, options = null) {
+  const current = await supabase.from('employees').select('*').eq('id', id).single();
+  if (current.error) throw current.error;
+  const currentRow = current.data;
+  const opts = options && typeof options === 'object' && !(options instanceof Date)
+    ? options
+    : { fechaRetiro: options || null };
+  const fechaRetiro = opts.fechaRetiro || null;
+  const fechaIngreso = opts.fechaIngreso || null;
+  const cancelProgrammedAssignments = opts.cancelProgrammedAssignments === true;
+  if (estado === 'inactivo') validateRetirementDetails(opts.retiroMotivo, opts.retiroObservacion);
+  const audit = await getCurrentAuditFields();
+  const patch = {
+    estado,
+    fecha_retiro: estado === 'inactivo' ? (fechaRetiro || new Date().toISOString()) : null,
+    retiro_motivo: estado === 'inactivo' ? opts.retiroMotivo : null,
+    retiro_observacion: estado === 'inactivo' ? String(opts.retiroObservacion || '').trim() : null,
+    last_modified_by_uid: audit.created_by_uid,
+    last_modified_by_email: audit.created_by_email,
+    last_modified_at: new Date().toISOString()
+  };
+  if (estado === 'activo' && String(currentRow.estado || '').trim().toLowerCase() !== 'activo') {
+    patch.fecha_ingreso = fechaIngreso || new Date().toISOString();
+    patch.fecha_retiro = null;
+  }
+  validateEmployeeDateRange(patch.fecha_ingreso !== undefined ? patch.fecha_ingreso : currentRow.fecha_ingreso, patch.fecha_retiro);
+  if (String(estado || '').trim().toLowerCase() === 'inactivo') {
+    await assertNoEmployeeOperationalRecordsAfterRetirement(currentRow, patch.fecha_retiro);
+    await cancelFutureEmployeeHistoryForRetirement(id, patch.fecha_retiro, { allowCancel: cancelProgrammedAssignments });
+  }
+  const { data, error } = await supabase.from('employees').update(patch).eq('id', id).select('*').single();
+  if (error) throw error;
+  const previousEstado = String(currentRow.estado || '').trim().toLowerCase();
+  const nextEstado = String(estado || '').trim().toLowerCase();
+  if (previousEstado !== 'inactivo' && nextEstado === 'inactivo') {
+    await closeActiveEmployeeHistory(data.id, patch.fecha_retiro, true);
+  }
+  if (previousEstado === 'inactivo' && nextEstado === 'activo') {
+    await appendEmployeeCargoHistory({
+      employeeId: data.id,
+      employeeCodigo: data.codigo,
+      documento: data.documento,
+      cargoCodigo: data.cargo_codigo,
+      cargoNombre: data.cargo_nombre,
+      sedeCodigo: data.sede_codigo,
+      sedeNombre: data.sede_nombre,
+      contratoCodigo: data.contrato_codigo,
+      contratoNombre: data.contrato_nombre,
+      clienteNombreSnapshot: data.cliente_nombre_snapshot,
+      clienteNitSnapshot: data.cliente_nit_snapshot,
+      fechaIngreso: data.fecha_ingreso || new Date().toISOString(),
+      fechaRetiro: null,
+      source: 'reactivate_employee'
+    });
+  }
+  if (await getCargoCrudAlignmentByCode(data.cargo_codigo, data.cargo_nombre) === 'supervisor') {
+    await upsertSupervisorProfileFromEmployee(mapEmployeeRow(data), {
+      estado,
+      fechaIngreso: patch.fecha_ingreso,
+      fechaRetiro: patch.fecha_retiro
+    });
+  }
+  if (previousEstado !== nextEstado || toISODate(currentRow.fecha_retiro) !== toISODate(data.fecha_retiro) || toISODate(currentRow.fecha_ingreso) !== toISODate(data.fecha_ingreso)) {
+    await reconcileOperationalSnapshotsForEmployeeChange(currentRow, data);
+  }
+  await notifyTableReload('employees');
+}
+
+export async function findEmployeeByCode(codigo) {
+  if (!codigo) return null;
+  const { data, error } = await supabase.from('employees').select('*').eq('codigo', codigo).maybeSingle();
+  if (error) throw error;
+  return data ? mapEmployeeRow(data) : null;
+}
+
+export async function findEmployeeByDocument(documento) {
+  if (!documento) return null;
+  const { data, error } = await supabase.from('employees').select('*').eq('documento', documento).maybeSingle();
+  if (error) throw error;
+  return data ? mapEmployeeRow(data) : null;
+}
+
+export function streamEmployeeCargoHistory(employeeId, onData) {
+  const empId = String(employeeId || '').trim();
+  if (!empId) {
+    onData([]);
+    return () => {};
+  }
+  let active = true;
+  const emit = async () => {
+    const { data, error } = await supabase
+      .from('employee_cargo_history')
+      .select('*')
+      .eq('employee_id', empId)
+      .order('fecha_ingreso', { ascending: false });
+    if (!active) return;
+    if (error) {
+      console.error('No se pudo cargar historial de cargos:', error);
+      onData([]);
+      return;
+    }
+    onData((data || []).map(mapCargoHistoryRow));
+  };
+  emit();
+  const unregister = registerTableReloader('employee_cargo_history', emit);
+  const channel = supabase
+    .channel(`employee-cargo-history-${empId}`)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'employee_cargo_history', filter: `employee_id=eq.${empId}` }, emit)
+    .subscribe();
+  return () => {
+    active = false;
+    unregister();
+    supabase.removeChannel(channel);
+  };
+}
+
+export function streamEmployeeCargoHistoryAll(onData, max = 5000) {
+  let active = true;
+  const emit = async () => {
+    const { data, error } = await supabase
+      .from('employee_cargo_history')
+      .select('*')
+      .order('fecha_ingreso', { ascending: false })
+      .limit(max);
+    if (!active) return;
+    if (error) {
+      console.error('No se pudo cargar historial de cargos:', error);
+      onData([]);
+      return;
+    }
+    onData((data || []).map(mapCargoHistoryRow));
+  };
+  emit();
+  const unregister = registerTableReloader('employee_cargo_history', emit);
+  const channel = supabase
+    .channel('employee-cargo-history-all')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'employee_cargo_history' }, emit)
+    .subscribe();
+  return () => {
+    active = false;
+    unregister();
+    supabase.removeChannel(channel);
+  };
+}
+
+export async function listEmployeeCargoHistoryRange(dateFrom, dateTo, { max = 5000, contextLimit = 1000 } = {}) {
+  const from = toISODate(dateFrom) || todayBogotaISO();
+  const to = toISODate(dateTo) || from;
+  const limit = Math.max(1, Math.min(Number(max || 5000), 10000));
+  const today = todayBogotaISO();
+  const [startRows, retireRows, programmedRows] = await Promise.all([
+    selectPagedRows(() => supabase
+      .from('employee_cargo_history')
+      .select('*')
+      .gte('fecha_ingreso', from)
+      .lte('fecha_ingreso', to)
+      .order('fecha_ingreso', { ascending: false })),
+    selectPagedRows(() => supabase
+      .from('employee_cargo_history')
+      .select('*')
+      .gte('fecha_retiro', from)
+      .lte('fecha_retiro', to)
+      .order('fecha_retiro', { ascending: false })),
+    selectPagedRows(() => supabase
+      .from('employee_cargo_history')
+      .select('*')
+      .gt('fecha_ingreso', today)
+      .is('fecha_retiro', null)
+      .order('fecha_ingreso', { ascending: true }))
+  ]);
+
+  const candidateRowsById = new Map();
+  [...startRows, ...retireRows, ...programmedRows].forEach((row) => {
+    const id = String(row?.id || '').trim();
+    if (id && !candidateRowsById.has(id)) candidateRowsById.set(id, row);
+  });
+  const currentRows = [...candidateRowsById.values()].slice(0, limit);
+
+  const employeeIds = [...new Set(
+    (currentRows || [])
+      .map((row) => String(row?.employee_id || '').trim())
+      .filter(Boolean)
+  )];
+  if (!employeeIds.length) return [];
+
+  const contextRows = [];
+  for (let i = 0; i < employeeIds.length; i += 100) {
+    const chunk = employeeIds.slice(i, i + 100);
+    const { data, error } = await supabase
+      .from('employee_cargo_history')
+      .select('*')
+      .in('employee_id', chunk)
+      .order('fecha_ingreso', { ascending: false })
+      .limit(Math.max(1, Math.min(Number(contextLimit || 1000), 5000)));
+    if (error) throw error;
+    contextRows.push(...(data || []));
+  }
+
+  const byId = new Map();
+  [...currentRows, ...contextRows].forEach((row) => {
+    const id = String(row?.id || '').trim();
+    if (id && !byId.has(id)) byId.set(id, row);
+  });
+  return [...byId.values()].map(mapCargoHistoryRow);
+}
+
+export function streamSupernumerarios(onData, fecha = null) {
+  let active = true;
+  const day = toISODate(fecha);
+  const emit = async () => {
+    if (day) {
+      try {
+        const rows = await listSupervisorAvailableSupernumerarios(day);
+        if (active) onData(rows || []);
+      } catch (error) {
+        console.error('No se pudieron cargar supernumerarios por fecha:', error);
+        if (active) onData([]);
+      }
+      return;
+    }
+    const employeesResult = await listEmployeesByCargoAlignment('supernumerario', {
+      select: '*',
+      order: 'created_at',
+      ascending: false
+    })
+      .then((value) => ({ status: 'fulfilled', value }))
+      .catch((error) => ({ status: 'rejected', reason: error }));
+    if (!active) return;
+    const empError = employeesResult.status === 'rejected' ? employeesResult.reason : null;
+    const employeeRows = employeesResult.status === 'fulfilled' ? employeesResult.value : [];
+    if (empError) {
+      console.error('No se pudieron cargar supernumerarios:', empError);
+      onData([]);
+      return;
+    }
+    const rows = (employeeRows || []).map((row) => mapEmployeeRow(row));
+    onData(rows);
+  };
+  emit();
+  const unA = registerTableReloader('employees', emit);
+  const unB = registerTableReloader('cargos', emit);
+  const unC = day ? registerTableReloader('employee_cargo_history', emit) : (() => {});
+  const unD = registerTableReloader('supernumerario_contract_access', emit);
+  const channelA = supabase.channel(nextRealtimeChannelName('supernumerarios-employees-watch')).on('postgres_changes', { event: '*', schema: 'public', table: 'employees' }, emit).subscribe();
+  const channelB = supabase.channel(nextRealtimeChannelName('supernumerarios-cargos-watch')).on('postgres_changes', { event: '*', schema: 'public', table: 'cargos' }, emit).subscribe();
+  const channelC = day
+    ? supabase.channel(nextRealtimeChannelName('supernumerarios-history-watch')).on('postgres_changes', { event: '*', schema: 'public', table: 'employee_cargo_history' }, emit).subscribe()
+    : null;
+  const channelD = supabase.channel(nextRealtimeChannelName('supernumerarios-contract-access-watch')).on('postgres_changes', { event: '*', schema: 'public', table: 'supernumerario_contract_access' }, emit).subscribe();
+  return () => {
+    active = false;
+    unA();
+    unB();
+    unC();
+    unD();
+    supabase.removeChannel(channelA);
+    supabase.removeChannel(channelB);
+    if (channelC) supabase.removeChannel(channelC);
+    supabase.removeChannel(channelD);
+  };
+}
+
+function isMissingRpcFunctionError(error) {
+  const text = String(error?.message || error?.details || error?.hint || '').toLowerCase();
+  return text.includes('could not find the function')
+    || text.includes('schema cache');
+}
+
+async function enrichSupernumerariosWithEmployeeFields(rows = []) {
+  const needsEmployeeData = (rows || []).some((row) => !row.codigo || !row.cargoCodigo || !row.fechaIngreso);
+
+  const ids = [...new Set((rows || []).map((row) => String(row?.id || '').trim()).filter(Boolean))];
+  const docs = [...new Set((rows || []).map((row) => String(row?.documento || '').trim()).filter(Boolean))];
+  if (!ids.length && !docs.length) return rows;
+
+  try {
+    const queries = [];
+    const select = 'id,codigo,documento,cargo_codigo,cargo_nombre,sede_codigo,sede_nombre,contrato_codigo,contrato_nombre,cliente_nombre_snapshot,cliente_nit_snapshot,fecha_ingreso,fecha_retiro';
+    if (needsEmployeeData && ids.length) queries.push(supabase.from('employees').select(select).in('id', ids));
+    if (needsEmployeeData && docs.length) queries.push(supabase.from('employees').select(select).in('documento', docs));
+    if (ids.length) queries.push(supabase.from('supernumerario_contract_access').select('*').in('employee_id', ids).eq('estado', 'activo'));
+    if (docs.length) queries.push(supabase.from('supernumerario_contract_access').select('*').in('documento', docs).eq('estado', 'activo'));
+    const results = await Promise.all(queries);
+    const firstError = results.find((result) => result.error)?.error;
+    if (firstError) throw firstError;
+
+    const employeeRows = needsEmployeeData
+      ? results.flatMap((result) => (result.data || []).filter((row) => row && (row.codigo || row.cargo_codigo || row.sede_codigo)))
+      : [];
+    const accessRows = results.flatMap((result) => (result.data || []).filter((row) => row && Object.prototype.hasOwnProperty.call(row, 'employee_id') && row.contrato_codigo));
+    const byId = new Map(employeeRows.map((row) => [String(row.id || '').trim(), row]));
+    const byDoc = new Map(employeeRows.map((row) => [String(row.documento || '').trim(), row]));
+    const accessByPerson = new Map();
+    accessRows.forEach((row) => {
+      const keys = [
+        String(row.employee_id || '').trim() ? `id:${String(row.employee_id || '').trim()}` : '',
+        String(row.documento || '').trim() ? `doc:${String(row.documento || '').trim()}` : ''
+      ].filter(Boolean);
+      keys.forEach((key) => {
+        if (!accessByPerson.has(key)) accessByPerson.set(key, new Set());
+        accessByPerson.get(key).add(String(row.contrato_codigo || '').trim());
+      });
+    });
+    return rows.map((row) => {
+      const emp = byId.get(String(row.id || '').trim()) || byDoc.get(String(row.documento || '').trim()) || {};
+      const accessCodes = new Set(Array.isArray(row.contratosHabilitados) ? row.contratosHabilitados : []);
+      const idCodes = accessByPerson.get(`id:${String(row.id || '').trim()}`);
+      const docCodes = accessByPerson.get(`doc:${String(row.documento || '').trim()}`);
+      idCodes?.forEach((code) => accessCodes.add(code));
+      docCodes?.forEach((code) => accessCodes.add(code));
+      return {
+        ...row,
+        codigo: row.codigo || emp.codigo || null,
+        cargoCodigo: row.cargoCodigo || emp.cargo_codigo || null,
+        cargoNombre: row.cargoNombre || emp.cargo_nombre || null,
+        sedeCodigo: row.sedeCodigo || emp.sede_codigo || null,
+        sedeNombre: row.sedeNombre || emp.sede_nombre || null,
+        contratoCodigo: row.contratoCodigo || emp.contrato_codigo || null,
+        contratoNombre: row.contratoNombre || emp.contrato_nombre || null,
+        clienteNombreSnapshot: row.clienteNombreSnapshot || emp.cliente_nombre_snapshot || null,
+        clienteNitSnapshot: row.clienteNitSnapshot || emp.cliente_nit_snapshot || null,
+        contratosHabilitados: [...accessCodes].map((value) => String(value || '').trim()).filter(Boolean),
+        fechaIngreso: row.fechaIngreso || emp.fecha_ingreso || null,
+        fechaRetiro: row.fechaRetiro || emp.fecha_retiro || null
+      };
+    });
+  } catch (error) {
+    console.warn('No se pudieron completar campos de supernumerarios desde empleados:', error);
+    return rows;
+  }
+}
+
+export async function listSupervisorAvailableSupernumerarios(fecha = null) {
+  const day = toISODate(fecha);
+  let response = day
+    ? await supabase.rpc('list_supernumerarios_for_current_supervisor', { p_fecha: day })
+    : await supabase.rpc('list_supernumerarios_for_current_supervisor');
+  if (response.error && day && isMissingRpcFunctionError(response.error)) {
+    response = await supabase.rpc('list_supernumerarios_for_current_supervisor');
+  }
+  const { data, error } = response;
+  if (error) throw error;
+  const rows = (data || []).map((row) => ({
+    id: row.id,
+    codigo: row.codigo || row.employee_codigo || null,
+    documento: row.documento || null,
+    nombre: row.nombre || null,
+    telefono: row.telefono || null,
+    estado: row.estado || 'activo',
+    cargoCodigo: row.cargo_codigo || null,
+    cargoNombre: row.cargo_nombre || null,
+    sedeCodigo: row.sede_codigo || null,
+    sedeNombre: row.sede_nombre || null,
+    contratoCodigo: row.contrato_codigo || null,
+    contratoNombre: row.contrato_nombre || null,
+    clienteNombreSnapshot: row.cliente_nombre_snapshot || null,
+    clienteNitSnapshot: row.cliente_nit_snapshot || null,
+    contratosHabilitados: Array.isArray(row.contratos_habilitados)
+      ? row.contratos_habilitados.map((value) => String(value || '').trim()).filter(Boolean)
+      : [],
+    fechaIngreso: row.fecha_ingreso || null,
+    fechaRetiro: row.fecha_retiro || null
+  }));
+  return enrichSupernumerariosWithEmployeeFields(rows);
+}
+
+export async function listSupernumerarioContractAccess({ employeeId = null, documento = null } = {}) {
+  const empId = String(employeeId || '').trim();
+  const doc = String(documento || '').trim();
+  if (!empId && !doc) return [];
+  let query = supabase
+    .from('supernumerario_contract_access')
+    .select('*')
+    .order('contrato_nombre_snapshot', { ascending: true, nullsFirst: false });
+  if (empId && doc) query = query.or(`employee_id.eq.${empId},documento.eq.${doc}`);
+  else if (empId) query = query.eq('employee_id', empId);
+  else query = query.eq('documento', doc);
+  const rows = await selectPagedRows(() => query);
+  return rows.map(mapSupernumerarioContractAccessRow);
+}
+
+export async function setSupernumerarioContractAccess({ employeeId = null, documento = null, contratoCodigos = [] } = {}) {
+  const empId = String(employeeId || '').trim();
+  const doc = String(documento || '').trim();
+  if (!empId && !doc) throw new Error('No se encontro el supernumerario.');
+  const codes = [...new Set((Array.isArray(contratoCodigos) ? contratoCodigos : [contratoCodigos])
+    .map((value) => String(value || '').trim())
+    .filter(Boolean))];
+  const existing = await listSupernumerarioContractAccess({ employeeId: empId, documento: doc });
+  const existingCodes = new Set(existing.map((row) => String(row.contratoCodigo || '').trim()).filter(Boolean));
+  const nextCodes = new Set(codes);
+  const toDelete = [...existingCodes].filter((code) => !nextCodes.has(code));
+  const toUpsert = [...nextCodes];
+  const audit = await getCurrentAuditFields();
+
+  if (toDelete.length) {
+    let deleteQuery = supabase
+      .from('supernumerario_contract_access')
+      .delete()
+      .in('contrato_codigo', toDelete);
+    if (empId && doc) deleteQuery = deleteQuery.or(`employee_id.eq.${empId},documento.eq.${doc}`);
+    else if (empId) deleteQuery = deleteQuery.eq('employee_id', empId);
+    else deleteQuery = deleteQuery.eq('documento', doc);
+    const { error } = await deleteQuery;
+    if (error) throw error;
+  }
+
+  if (toUpsert.length) {
+    const contracts = await Promise.all(toUpsert.map((code) => resolveContractContextByCode(code)));
+    const rows = toUpsert.map((code, index) => {
+      const contract = contracts[index] || {};
+      return {
+        employee_id: empId || null,
+        documento: doc || null,
+        contrato_codigo: code,
+        contrato_nombre_snapshot: contract.contratoNombre || null,
+        cliente_nombre_snapshot: contract.clienteNombreSnapshot || null,
+        cliente_nit_snapshot: contract.clienteNitSnapshot || null,
+        estado: 'activo',
+        created_by_uid: audit.created_by_uid,
+        created_by_email: audit.created_by_email
+      };
+    });
+    const { error } = await supabase
+      .from('supernumerario_contract_access')
+      .upsert(rows, { onConflict: 'employee_id,contrato_codigo' });
+    if (error) throw error;
+  }
+
+  await notifyTableReload('supernumerario_contract_access');
+  await notifyTableReload('employees');
+  return listSupernumerarioContractAccess({ employeeId: empId, documento: doc });
+}
+
+export async function supernumerarioCanCoverContract({ employeeId = null, documento = null, contratoCodigo = null, fecha = null } = {}) {
+  const cleanContract = String(contratoCodigo || '').trim();
+  if (!cleanContract) return true;
+  const { data, error } = await supabase.rpc('supernumerario_can_cover_contract', {
+    p_employee_id: employeeId || null,
+    p_documento: documento || null,
+    p_contrato_codigo: cleanContract,
+    p_fecha: toISODate(fecha)
+  });
+  if (error) throw error;
+  return data === true;
+}
+
+export async function getNextSupernumerarioCode(prefix = 'SUPN', width = 4) {
+  return getNextPrefixedCode('employees', prefix, width);
+}
+
+export async function createSupernumerario(payload) {
+  return createEmployee(payload);
+}
+
+export async function createSupernumerariosBulk(rows = []) {
+  const items = Array.isArray(rows) ? rows.filter(Boolean) : [];
+  const missingCodeCount = items.filter((row) => !String(row?.codigo || '').trim()).length;
+  const reservedCodes = missingCodeCount ? await reservePrefixedCodes('employees', 'SUPN', missingCodeCount, 4) : [];
+  if (reservedCodes.length < missingCodeCount) throw new Error('No se pudieron reservar todos los codigos de supernumerarios.');
+  let reservedCodeIndex = 0;
+  let created = 0;
+  for (const row of items) {
+    const alignment = await getCargoCrudAlignmentByCode(row.cargoCodigo, row.cargoNombre);
+    if (alignment !== 'supernumerario') {
+      throw new Error(`El cargo ${row.cargoCodigo || row.cargoNombre || '-'} no está alineado como supernumerario.`);
+    }
+    const codigo = String(row.codigo || '').trim() || reservedCodes[reservedCodeIndex++]?.code || null;
+    await createSupernumerario({
+      codigo,
+      documento: String(row.documento || '').trim(),
+      nombre: row.nombre || null,
+      telefono: normalizeStoredPhone(row.telefono),
+      cargoCodigo: row.cargoCodigo || null,
+      cargoNombre: row.cargoNombre || null,
+      sedeCodigo: row.sedeCodigo || null,
+      sedeNombre: row.sedeNombre || null,
+      fechaIngreso: normalizeBulkDate(row.fechaIngreso)
+    });
+    created += 1;
+  }
+  return { created };
+}
+
+export async function updateSupernumerario(id, data = {}) {
+  return updateEmployee(id, data);
+}
+
+export async function setSupernumerarioStatus(id, estado, fechaRetiro = null) {
+  return setEmployeeStatus(id, estado, fechaRetiro);
+}
+
+export async function findSupernumerarioByCode(codigo) {
+  const row = await findEmployeeByCode(codigo);
+  if (!row) return null;
+  const alignment = await getCargoCrudAlignmentByCode(row.cargoCodigo, row.cargoNombre);
+  return alignment === 'supernumerario' ? row : null;
+}
+
+export async function findSupernumerarioByDocument(documento) {
+  const row = await findEmployeeByDocument(documento);
+  if (!row) return null;
+  const alignment = await getCargoCrudAlignmentByCode(row.cargoCodigo, row.cargoNombre);
+  return alignment === 'supernumerario' ? row : null;
+}
+
+export function streamSupervisors(onData) {
+  let active = true;
+  const emit = async () => {
+    const employeesResult = await listEmployeesByCargoAlignment('supervisor', {
+      select: '*',
+      order: 'created_at',
+      ascending: false
+    })
+      .then((value) => ({ status: 'fulfilled', value }))
+      .catch((error) => ({ status: 'rejected', reason: error }));
+    const empError = employeesResult.status === 'rejected' ? employeesResult.reason : null;
+    const employees = employeesResult.status === 'fulfilled' ? employeesResult.value : [];
+    const employeeDocs = [...new Set((employees || []).map((emp) => String(emp?.documento || '').trim()).filter(Boolean))];
+    const profilesResult = employeeDocs.length
+      ? await selectPagedRows(() => supabase
+        .from('supervisor_profile')
+        .select('*')
+        .in('documento', employeeDocs)
+        .order('created_at', { ascending: false }))
+          .then((value) => ({ status: 'fulfilled', value }))
+          .catch((error) => ({ status: 'rejected', reason: error }))
+      : { status: 'fulfilled', value: [] };
+    const profileError = profilesResult.status === 'rejected' ? profilesResult.reason : null;
+    const profiles = profilesResult.status === 'fulfilled' ? profilesResult.value : [];
+
+    if (!active) return;
+    if (empError || profileError) {
+      console.error('No se pudieron cargar supervisores:', empError || profileError);
+      onData([]);
+      return;
+    }
+
+    const profileByDoc = mapByDocument((profiles || []).map(mapSupervisorProfileRow));
+
+    const rows = (employees || [])
+      .map((emp) => {
+        const base = mapEmployeeRow(emp);
+        const documento = String(base.documento || '').trim();
+        const profile = profileByDoc.get(documento) || {};
+        return {
+          id: base.id,
+          profileId: profile.profileId || null,
+          codigo: base.codigo || null,
+          documento: documento || null,
+          nombre: base.nombre || null,
+          cargoCodigo: base.cargoCodigo || profile.cargoCodigo || null,
+          cargoNombre: base.cargoNombre || profile.cargoNombre || null,
+          zonaCodigo: profile.zonaCodigo || base.zonaCodigo || null,
+          zonaNombre: profile.zonaNombre || base.zonaNombre || null,
+          contratoCodigo: base.contratoCodigo || null,
+          contratoNombre: base.contratoNombre || null,
+          clienteNombreSnapshot: base.clienteNombreSnapshot || null,
+          clienteNitSnapshot: base.clienteNitSnapshot || null,
+          fechaIngreso: base.fechaIngreso || profile.fechaIngreso || null,
+          fechaRetiro: base.fechaRetiro || profile.fechaRetiro || null,
+          estado: base.estado || profile.estado || 'activo',
+          createdAt: profile.createdAt || base.createdAt || null,
+          createdByUid: profile.createdByUid || base.createdByUid || null,
+          createdByEmail: profile.createdByEmail || base.createdByEmail || null,
+          lastModifiedAt: profile.lastModifiedAt || base.lastModifiedAt || null,
+          lastModifiedByUid: profile.lastModifiedByUid || base.lastModifiedByUid || null,
+          lastModifiedByEmail: profile.lastModifiedByEmail || base.lastModifiedByEmail || null
+        };
+      });
+
+    onData(rows);
+  };
+
+  emit();
+  const unA = registerTableReloader('employees', emit);
+  const unB = registerTableReloader('supervisor_profile', emit);
+  const unC = registerTableReloader('cargos', emit);
+  const channelA = supabase.channel(nextRealtimeChannelName('supervisors-employees-watch')).on('postgres_changes', { event: '*', schema: 'public', table: 'employees' }, emit).subscribe();
+  const channelB = supabase.channel(nextRealtimeChannelName('supervisors-profile-watch')).on('postgres_changes', { event: '*', schema: 'public', table: 'supervisor_profile' }, emit).subscribe();
+  const channelC = supabase.channel(nextRealtimeChannelName('supervisors-cargos-watch')).on('postgres_changes', { event: '*', schema: 'public', table: 'cargos' }, emit).subscribe();
+
+  return () => {
+    active = false;
+    unA();
+    unB();
+    unC();
+    supabase.removeChannel(channelA);
+    supabase.removeChannel(channelB);
+    supabase.removeChannel(channelC);
+  };
+}
+
+export async function getNextSupervisorCode(prefix = 'SUP', width = 4) {
+  return getNextPrefixedCode('employees', prefix, width);
+}
+
+export async function createSupervisor({ codigo, documento, nombre, zonaCodigo, zonaNombre, fechaIngreso }) {
+  const employee = await findEmployeeByDocument(documento);
+  if (!employee) throw new Error('No existe empleado con ese documento.');
+  const profile = await upsertSupervisorProfileFromEmployee(employee, {
+    codigo: codigo || employee.codigo || null,
+    documento: documento || employee.documento || null,
+    nombre: nombre || employee.nombre || null,
+    zonaCodigo: zonaCodigo || employee.zonaCodigo || null,
+    zonaNombre: zonaNombre || employee.zonaNombre || null,
+    fechaIngreso: fechaIngreso || employee.fechaIngreso || null,
+    estado: employee.estado || 'activo'
+  });
+  return profile.employee_id || employee.id;
+}
+
+export async function updateSupervisor(id, data = {}) {
+  const employee = await supabase.from('employees').select('*').eq('id', id).single();
+  if (employee.error) throw employee.error;
+  await upsertSupervisorProfileFromEmployee(mapEmployeeRow(employee.data), {
+    zonaCodigo: typeof data.zonaCodigo === 'string' ? data.zonaCodigo : undefined,
+    zonaNombre: typeof data.zonaNombre === 'string' ? data.zonaNombre : undefined
+  });
+}
+
+export async function setSupervisorStatus(id, estado, fechaRetiro = null, opts = {}) {
+  if (opts?.syncEmployee === false) {
+    const employee = await supabase.from('employees').select('*').eq('id', id).single();
+    if (employee.error) throw employee.error;
+    await upsertSupervisorProfileFromEmployee(mapEmployeeRow(employee.data), {
+      estado,
+      fechaRetiro: estado === 'inactivo' ? (fechaRetiro || new Date().toISOString()) : null
+    });
+    return;
+  }
+  await setEmployeeStatus(id, estado, fechaRetiro);
+}
+
+export async function findSupervisorByCode(codigo) {
+  if (!codigo) return null;
+  const employee = await findEmployeeByCode(codigo);
+  if (!employee) return null;
+  const alignment = await getCargoCrudAlignmentByCode(employee.cargoCodigo, employee.cargoNombre);
+  if (alignment !== 'supervisor') return null;
+  const { data, error } = await supabase.from('supervisor_profile').select('*').eq('documento', employee.documento).maybeSingle();
+  if (error) throw error;
+  const profile = data ? mapSupervisorProfileRow(data) : {};
+  return {
+    id: employee.id,
+    profileId: profile.profileId || null,
+    codigo: employee.codigo || null,
+    documento: employee.documento || null,
+    nombre: employee.nombre || null,
+    zonaCodigo: profile.zonaCodigo || employee.zonaCodigo || null,
+    zonaNombre: profile.zonaNombre || employee.zonaNombre || null,
+    estado: employee.estado || profile.estado || 'activo',
+    fechaIngreso: employee.fechaIngreso || profile.fechaIngreso || null,
+    fechaRetiro: employee.fechaRetiro || profile.fechaRetiro || null
+  };
+}
+
+export async function findSupervisorByDocument(documento) {
+  if (!documento) return null;
+  const employee = await findEmployeeByDocument(documento);
+  if (!employee) return null;
+  const alignment = await getCargoCrudAlignmentByCode(employee.cargoCodigo, employee.cargoNombre);
+  if (alignment !== 'supervisor') return null;
+  const { data, error } = await supabase.from('supervisor_profile').select('*').eq('documento', documento).maybeSingle();
+  if (error) throw error;
+  const profile = data ? mapSupervisorProfileRow(data) : {};
+  return {
+    id: employee.id,
+    profileId: profile.profileId || null,
+    codigo: employee.codigo || null,
+    documento: employee.documento || null,
+    nombre: employee.nombre || null,
+    zonaCodigo: profile.zonaCodigo || employee.zonaCodigo || null,
+    zonaNombre: profile.zonaNombre || employee.zonaNombre || null,
+    estado: employee.estado || profile.estado || 'activo',
+    fechaIngreso: employee.fechaIngreso || profile.fechaIngreso || null,
+    fechaRetiro: employee.fechaRetiro || profile.fechaRetiro || null
+  };
+}
+
+export function streamImportHistory(onData, max = 200) {
+  let active = true;
+  const emit = async () => {
+    const { data, error } = await supabase
+      .from('import_history')
+      .select('*')
+      .order('ts', { ascending: false })
+      .limit(max);
+    if (!active) return;
+    if (error) {
+      console.error('No se pudo cargar import_history:', error);
+      onData([]);
+      return;
+    }
+    onData((data || []).map(mapImportHistoryRow));
+  };
+  emit();
+  const unregister = registerTableReloader('import_history', emit);
+  const channel = supabase.channel('import-history-watch').on('postgres_changes', { event: '*', schema: 'public', table: 'import_history' }, emit).subscribe();
+  return () => {
+    active = false;
+    unregister();
+    supabase.removeChannel(channel);
+  };
+}
+
+export function streamDailyClosures(onData, max = 200) {
+  let active = true;
+  const emit = async () => {
+    const { data, error } = await supabase
+      .from('daily_closures')
+      .select('*')
+      .order('fecha', { ascending: false })
+      .limit(max);
+    if (!active) return;
+    if (error) {
+      console.error('No se pudo cargar daily_closures:', error);
+      onData([]);
+      return;
+    }
+    onData((data || []).map(mapDailyClosureRow));
+  };
+  emit();
+  const unregister = registerTableReloader('daily_closures', emit);
+  const channel = supabase.channel('daily-closures-watch').on('postgres_changes', { event: '*', schema: 'public', table: 'daily_closures' }, emit).subscribe();
+  return () => {
+    active = false;
+    unregister();
+    supabase.removeChannel(channel);
+  };
+}
+
+export function streamDailyClosuresRange(dateFrom, dateTo, onData) {
+  const from = String(dateFrom || '').slice(0, 10);
+  const to = String(dateTo || '').slice(0, 10);
+  if (!from || !to) {
+    onData([]);
+    return () => {};
+  }
+  let active = true;
+  const emit = async () => {
+    const { data, error } = await supabase
+      .from('daily_closures')
+      .select('*')
+      .gte('fecha', from)
+      .lte('fecha', to)
+      .order('fecha', { ascending: true });
+    if (!active) return;
+    if (error) {
+      console.error('No se pudo cargar daily_closures por rango:', error);
+      onData([]);
+      return;
+    }
+    onData((data || []).map(mapDailyClosureRow));
+  };
+  const onChange = (payload) => {
+    const inRange = (row = {}) => {
+      const value = String(row?.fecha || '').slice(0, 10);
+      return value && value >= from && value <= to;
+    };
+    if (!inRange(payload?.new) && !inRange(payload?.old)) return;
+    emit();
+  };
+  emit();
+  const unregister = registerTableReloader('daily_closures', emit);
+  const channel = supabase.channel(`daily-closures-watch-${from}-${to}`).on('postgres_changes', { event: '*', schema: 'public', table: 'daily_closures' }, onChange).subscribe();
+  return () => {
+    active = false;
+    unregister();
+    supabase.removeChannel(channel);
+  };
+}
+
+export function streamAttendanceByDate(fecha, onData, onError = null, onStatus = null) {
+  const day = String(fecha || '').trim();
+  if (!day) {
+    onData([]);
+    return () => {};
+  }
+  let active = true;
+  const emit = async () => {
+    const { data, error } = await supabase.from('attendance').select('*').eq('fecha', day);
+    if (!active) return;
+    if (error) {
+      console.error('No se pudo cargar attendance por fecha:', error);
+      onError?.(error, 'LOAD_ERROR');
+      onData([]);
+      return;
+    }
+    onData((data || []).map(mapAttendanceRow));
+  };
+  const onChange = (payload) => {
+    if (!shouldRefreshForDay(payload, day, 'fecha')) return;
+    emit();
+  };
+  emit();
+  const unregister = registerTableReloader('attendance', emit);
+  const realtime = subscribeToRealtime(
+    supabase.channel(nextRealtimeChannelName(`attendance-${day}`)).on('postgres_changes', { event: '*', schema: 'public', table: 'attendance' }, onChange),
+    { label: `attendance:${day}`, onError, onStatus }
+  );
+  const channel = realtime.subscription;
+  return () => {
+    active = false;
+    unregister();
+    realtime.cancel();
+    supabase.removeChannel(channel);
+  };
+}
+
+export function streamAttendanceRecent(onData, max = 300) {
+  let active = true;
+  const emit = async () => {
+    const { data, error } = await supabase.from('attendance').select('*').order('created_at', { ascending: false }).limit(max);
+    if (!active) return;
+    if (error) {
+      console.error('No se pudo cargar attendance reciente:', error);
+      onData([]);
+      return;
+    }
+    onData((data || []).map(mapAttendanceRow));
+  };
+  emit();
+  const unregister = registerTableReloader('attendance', emit);
+  const channel = supabase.channel('attendance-recent').on('postgres_changes', { event: '*', schema: 'public', table: 'attendance' }, emit).subscribe();
+  return () => {
+    active = false;
+    unregister();
+    supabase.removeChannel(channel);
+  };
+}
+
+export function streamImportReplacementsByDate(fecha, onData, onError = null, onStatus = null) {
+  const day = String(fecha || '').trim();
+  if (!day) {
+    onData([]);
+    return () => {};
+  }
+  let active = true;
+  const emit = async () => {
+    const { data, error } = await supabase.from('import_replacements').select('*').eq('fecha', day);
+    if (!active) return;
+    if (error) {
+      console.error('No se pudo cargar import_replacements por fecha:', error);
+      onError?.(error, 'LOAD_ERROR');
+      onData([]);
+      return;
+    }
+    onData((data || []).map(mapImportReplacementRow));
+  };
+  const onChange = (payload) => {
+    if (!shouldRefreshForDay(payload, day, 'fecha')) return;
+    emit();
+  };
+  emit();
+  const unregister = registerTableReloader('import_replacements', emit);
+  const realtime = subscribeToRealtime(
+    supabase.channel(nextRealtimeChannelName(`import-replacements-${day}`)).on('postgres_changes', { event: '*', schema: 'public', table: 'import_replacements' }, onChange),
+    { label: `import_replacements:${day}`, onError, onStatus }
+  );
+  const channel = realtime.subscription;
+  return () => {
+    active = false;
+    unregister();
+    realtime.cancel();
+    supabase.removeChannel(channel);
+  };
+}
+
+export function streamDailyMetricsByDate(fecha, onData, onError = null, onStatus = null) {
+  const day = String(fecha || '').trim();
+  if (!day) {
+    onData(null);
+    return () => {};
+  }
+  let active = true;
+  const emit = async () => {
+    const { data, error } = await supabase.from('daily_metrics').select('*').eq('fecha', day).maybeSingle();
+    if (!active) return;
+    if (error) {
+      console.error('No se pudo cargar daily_metrics por fecha:', error);
+      onError?.(error, 'LOAD_ERROR');
+      onData(null);
+      return;
+    }
+    onData(data ? mapDailyMetricsRow(data) : null);
+  };
+  const onChange = (payload) => {
+    if (!shouldRefreshForDay(payload, day, 'fecha')) return;
+    emit();
+  };
+  emit();
+  const unregister = registerTableReloader('daily_metrics', emit);
+  const realtime = subscribeToRealtime(
+    supabase.channel(nextRealtimeChannelName(`daily-metrics-${day}`)).on('postgres_changes', { event: '*', schema: 'public', table: 'daily_metrics' }, onChange),
+    { label: `daily_metrics:${day}`, onError, onStatus }
+  );
+  const channel = realtime.subscription;
+  return () => {
+    active = false;
+    unregister();
+    realtime.cancel();
+    supabase.removeChannel(channel);
+  };
+}
+
+export function streamIncapacitadosByDate(fecha, onData, { contratoCodigo = null } = {}) {
+  const day = String(fecha || '').trim();
+  if (!day) {
+    onData([]);
+    return () => {};
+  }
+  let active = true;
+  const emit = async () => {
+    const cleanContract = String(contratoCodigo || '').trim();
+    let query = supabase
+      .from('incapacitados')
+      .select('*')
+      .eq('estado', 'activo')
+      .lte('fecha_inicio', day)
+      .gte('fecha_fin', day);
+    if (cleanContract) query = query.eq('contrato_codigo', cleanContract);
+    const { data, error } = await query.order('fecha_inicio', { ascending: false });
+    if (!active) return;
+    if (error) {
+      console.error('No se pudo cargar incapacitados por fecha:', error);
+      onData([]);
+      return;
+    }
+    onData((data || []).map(mapIncapacidadRow));
+  };
+  emit();
+  const unregister = registerTableReloader('incapacitados', emit);
+  const channel = supabase
+    .channel(nextRealtimeChannelName(`incapacitados-${day}`))
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'incapacitados' }, emit)
+    .subscribe();
+  return () => {
+    active = false;
+    unregister();
+    supabase.removeChannel(channel);
+  };
+}
+
+export function streamIncapacidades(onData, onError = null, onStatus = null) {
+  return streamTable('incapacitados', mapIncapacidadRow, onData, { onError, onStatus });
+}
+
+export async function uploadIncapacidadSupport(file, context = {}) {
+  if (!file) throw new Error('Selecciona un soporte para cargar.');
+  const path = buildIncapacitySupportPath(file, context);
+  const { error } = await supabase
+    .storage
+    .from(INCAPACITY_SUPPORT_BUCKET)
+    .upload(path, file, {
+      upsert: false,
+      contentType: file.type || 'application/octet-stream'
+    });
+  if (error) throw error;
+  const { data } = supabase.storage.from(INCAPACITY_SUPPORT_BUCKET).getPublicUrl(path);
+  return {
+    path,
+    url: data?.publicUrl || '',
+    name: String(file.name || '').trim() || 'soporte',
+    mimeType: String(file.type || '').trim() || 'application/octet-stream'
+  };
+}
+
+export async function createIncapacidad({
+  employeeId = null,
+  documento = null,
+  nombre = null,
+  fechaInicio,
+  fechaFin,
+  estado = 'activo',
+  source = 'Enfermedad General',
+  canalRegistro = 'portal_web',
+  soporteUrl = null,
+  soporteNombre = null,
+  soporteTipo = null,
+  soporteStoragePath = null,
+  whatsappMessageId = null
+} = {}) {
+  const payload = {
+    employee_id: employeeId || null,
+    documento: documento || null,
+    nombre: nombre || null,
+    fecha_inicio: fechaInicio || null,
+    fecha_fin: fechaFin || null,
+    estado: estado || 'activo',
+    source: source || 'Enfermedad General',
+    canal_registro: canalRegistro || 'portal_web',
+    soporte_url: soporteUrl || null,
+    soporte_nombre: soporteNombre || null,
+    soporte_tipo: supportValueOrNull(soporteTipo),
+    soporte_storage_path: supportValueOrNull(soporteStoragePath),
+    whatsapp_message_id: whatsappMessageId || null
+  };
+  const { data, error } = await supabase
+    .from('incapacitados')
+    .insert(payload)
+    .select('*')
+    .single();
+  if (error) throw error;
+  if (hasIncapacityOperationalChange(null, data)) {
+    await releaseSupernumerarioReplacementsForIncapacity(data);
+  }
+  await refreshOperationalStateForIncapacityChange(data);
+  await notifyTableReload('incapacitados');
+  return mapIncapacidadRow(data);
+}
+
+function supportValueOrNull(value) {
+  return value ? value : null;
+}
+
+const INCAPACITY_OPERATIONAL_REFRESH_MAX_DAYS = 370;
+
+function collectIncapacityRefreshDays(...rows) {
+  const days = new Set();
+  for (const row of rows) {
+    const start = toISODate(row?.fechaInicio || row?.fecha_inicio);
+    const end = toISODate(row?.fechaFin || row?.fecha_fin || start);
+    if (!start || !end || end < start) continue;
+    let cursor = start;
+    let count = 0;
+    while (cursor && cursor <= end && count < INCAPACITY_OPERATIONAL_REFRESH_MAX_DAYS) {
+      days.add(cursor);
+      cursor = addDaysToIsoDate(cursor, 1);
+      count += 1;
+    }
+  }
+  return [...days].sort();
+}
+
+async function refreshOperationalStateForIncapacityChange(...rows) {
+  const days = collectIncapacityRefreshDays(...rows);
+  for (const day of days) {
+    if (await isOperationDayClosed(day)) continue;
+    await refreshOperationalState(day);
+  }
+}
+
+function incapacityOperationalSignature(row = {}) {
+  return [
+    String(row?.employee_id || row?.employeeId || '').trim(),
+    normalizeDailyDocument(row?.documento),
+    toISODate(row?.fecha_inicio || row?.fechaInicio) || '',
+    toISODate(row?.fecha_fin || row?.fechaFin) || '',
+    String(row?.estado || 'activo').trim().toLowerCase(),
+    String(row?.source || '').trim().toLowerCase()
+  ].join('|');
+}
+
+function hasIncapacityOperationalChange(before = null, after = null) {
+  if (!before || !after) return Boolean(after);
+  return incapacityOperationalSignature(before) !== incapacityOperationalSignature(after);
+}
+
+async function findActiveSupernumerarioIncapacityForDate({ fecha = '', supernumerarioId = null, documento = null } = {}) {
+  const day = toISODate(fecha);
+  const empId = String(supernumerarioId || '').trim();
+  const doc = normalizeDailyDocument(documento);
+  if (!day || (!empId && !doc)) return null;
+
+  let query = supabase
+    .from('incapacitados')
+    .select('id, employee_id, documento, nombre, fecha_inicio, fecha_fin, source')
+    .eq('estado', 'activo')
+    .lte('fecha_inicio', day)
+    .gte('fecha_fin', day)
+    .limit(1);
+  if (empId && doc) query = query.or(`employee_id.eq.${empId},documento.eq.${doc}`);
+  else if (empId) query = query.eq('employee_id', empId);
+  else query = query.eq('documento', doc);
+
+  const { data, error } = await query;
+  if (error) throw error;
+  return Array.isArray(data) ? data[0] || null : null;
+}
+
+async function releaseSupernumerarioReplacementsForIncapacity(row = {}) {
+  const estado = String(row?.estado || 'activo').trim().toLowerCase();
+  if (estado !== 'activo') return [];
+  const start = toISODate(row?.fecha_inicio || row?.fechaInicio);
+  const end = toISODate(row?.fecha_fin || row?.fechaFin || start);
+  const empId = String(row?.employee_id || row?.employeeId || '').trim();
+  const doc = normalizeDailyDocument(row?.documento);
+  if (!start || !end || end < start || (!empId && !doc)) return [];
+
+  let query = supabase
+    .from('import_replacements')
+    .select('*')
+    .eq('decision', 'reemplazo')
+    .gte('fecha', start)
+    .lte('fecha', end);
+  if (empId && doc) query = query.or(`supernumerario_id.eq.${empId},supernumerario_documento.eq.${doc}`);
+  else if (empId) query = query.eq('supernumerario_id', empId);
+  else query = query.eq('supernumerario_documento', doc);
+
+  const { data, error } = await query;
+  if (error) throw error;
+  const rows = Array.isArray(data) ? data : [];
+  const openRows = [];
+  for (const replacement of rows) {
+    const day = String(replacement?.fecha || '').trim();
+    if (!day || await isOperationDayClosed(day)) continue;
+    openRows.push(replacement);
+  }
+  if (!openRows.length) return [];
+
+  const audit = await getCurrentAuditFields();
+  const timestamp = new Date().toISOString();
+  const ids = openRows.map((replacement) => String(replacement?.id || '').trim()).filter(Boolean);
+  for (const batch of chunkArray(ids, 100)) {
+    const { error: updateError } = await supabase
+      .from('import_replacements')
+      .update({
+        decision: 'ausentismo',
+        supernumerario_id: null,
+        supernumerario_documento: null,
+        supernumerario_nombre: null,
+        actor_uid: audit.created_by_uid,
+        actor_email: audit.created_by_email,
+        ts: timestamp
+      })
+      .in('id', batch);
+    if (updateError) throw updateError;
+  }
+  await notifyTableReload('import_replacements');
+  return openRows.map(mapImportReplacementRow);
+}
+
+export async function updateIncapacidad(id, {
+  employeeId,
+  documento,
+  nombre,
+  fechaInicio,
+  fechaFin,
+  estado,
+  source,
+  canalRegistro,
+  soporteUrl,
+  soporteNombre,
+  soporteTipo,
+  soporteStoragePath
+} = {}) {
+  const patch = {};
+  if (employeeId !== undefined) patch.employee_id = employeeId || null;
+  if (documento !== undefined) patch.documento = documento || null;
+  if (nombre !== undefined) patch.nombre = nombre || null;
+  if (fechaInicio !== undefined) patch.fecha_inicio = fechaInicio || null;
+  if (fechaFin !== undefined) patch.fecha_fin = fechaFin || null;
+  if (estado !== undefined) patch.estado = estado || 'activo';
+  if (source !== undefined) patch.source = source || null;
+  if (canalRegistro !== undefined) patch.canal_registro = canalRegistro || null;
+  if (soporteUrl !== undefined) patch.soporte_url = soporteUrl || null;
+  if (soporteNombre !== undefined) patch.soporte_nombre = soporteNombre || null;
+  if (soporteTipo !== undefined) patch.soporte_tipo = soporteTipo || null;
+  if (soporteStoragePath !== undefined) patch.soporte_storage_path = soporteStoragePath || null;
+  const { data: previous, error: previousError } = await supabase
+    .from('incapacitados')
+    .select('*')
+    .eq('id', id)
+    .maybeSingle();
+  if (previousError) throw previousError;
+  const { data, error } = await supabase
+    .from('incapacitados')
+    .update(patch)
+    .eq('id', id)
+    .select('*')
+    .single();
+  if (error) throw error;
+  if (hasIncapacityOperationalChange(previous, data)) {
+    await releaseSupernumerarioReplacementsForIncapacity(data);
+    await refreshOperationalStateForIncapacityChange(previous, data);
+  }
+  await notifyTableReload('incapacitados');
+  return mapIncapacidadRow(data);
+}
+
+export async function setIncapacidadStatus(id, estado) {
+  const { data: previous, error: previousError } = await supabase
+    .from('incapacitados')
+    .select('*')
+    .eq('id', id)
+    .maybeSingle();
+  if (previousError) throw previousError;
+  const { data, error } = await supabase
+    .from('incapacitados')
+    .update({ estado: estado || 'activo' })
+    .eq('id', id)
+    .select('*')
+    .single();
+  if (error) throw error;
+  if (hasIncapacityOperationalChange(previous, data)) {
+    await releaseSupernumerarioReplacementsForIncapacity(data);
+    await refreshOperationalStateForIncapacityChange(previous, data);
+  }
+  await notifyTableReload('incapacitados');
+  return mapIncapacidadRow(data);
+}
+
+export async function listIncapacidadesRange(dateFrom, dateTo, { contratoCodigo = null } = {}) {
+  if (!dateFrom || !dateTo) return [];
+  const cleanContract = String(contratoCodigo || '').trim();
+  const rows = await selectPagedRows(() => {
+    let query = supabase
+      .from('incapacitados')
+      .select('*')
+      .lte('fecha_inicio', dateTo)
+      .gte('fecha_fin', dateFrom);
+    if (cleanContract) query = query.eq('contrato_codigo', cleanContract);
+    return query.order('created_at', { ascending: false });
+  });
+  return rows.map(mapIncapacidadRow);
+}
+
+export async function listSedeStatusRange(dateFrom, dateTo, { contratoCodigo = null, sedeCodigo = null } = {}) {
+  if (!dateFrom || !dateTo) return [];
+  const cleanContract = String(contratoCodigo || '').trim();
+  const cleanSede = String(sedeCodigo || '').trim();
+  const rows = await selectPagedRows(() => {
+    let query = supabase
+      .from('sede_status')
+      .select('*')
+      .gte('fecha', dateFrom)
+      .lte('fecha', dateTo);
+    if (cleanContract) query = query.eq('contrato_codigo', cleanContract);
+    if (cleanSede) query = query.eq('sede_codigo', cleanSede);
+    return query.order('fecha', { ascending: true });
+  });
+  return rows.map(mapSedeStatusRow);
+}
+
+export async function listAttendanceRange(dateFrom, dateTo, { contratoCodigo = null, sedeCodigo = null } = {}) {
+  if (!dateFrom || !dateTo) return [];
+  const cleanContract = String(contratoCodigo || '').trim();
+  const cleanSede = String(sedeCodigo || '').trim();
+  const rows = await selectPagedRows(() => {
+    let query = supabase
+      .from('attendance')
+      .select('*')
+      .gte('fecha', dateFrom)
+      .lte('fecha', dateTo);
+    if (cleanContract) query = query.eq('contrato_codigo', cleanContract);
+    if (cleanSede) query = query.eq('sede_codigo', cleanSede);
+    return query.order('fecha', { ascending: true });
+  });
+  return rows.map(mapAttendanceRow);
+}
+
+export async function listImportReplacementsRange(dateFrom, dateTo, { contratoCodigo = null, sedeCodigo = null } = {}) {
+  if (!dateFrom || !dateTo) return [];
+  const cleanContract = String(contratoCodigo || '').trim();
+  const cleanSede = String(sedeCodigo || '').trim();
+  const rows = await selectPagedRows(() => {
+    let query = supabase
+      .from('import_replacements')
+      .select('*')
+      .gte('fecha', dateFrom)
+      .lte('fecha', dateTo);
+    if (cleanContract) query = query.eq('contrato_codigo', cleanContract);
+    if (cleanSede) query = query.eq('sede_codigo', cleanSede);
+    return query.order('fecha', { ascending: true });
+  });
+  return rows.map(mapImportReplacementRow);
+}
+
+export async function listSupernumerarioReplacementOccupancy(fecha) {
+  const day = String(fecha || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return [];
+  const { data, error } = await supabase.rpc('list_supernumerario_replacement_occupancy', { p_fecha: day });
+  if (error) {
+    console.warn('No se pudo consultar ocupacion global de supernumerarios:', error);
+    const rows = await selectPagedRows(() => supabase
+      .from('import_replacements')
+      .select('*')
+      .eq('fecha', day)
+      .eq('decision', 'reemplazo')
+      .order('ts', { ascending: false }));
+    return rows.map(mapImportReplacementRow);
+  }
+  return (data || []).map(mapImportReplacementRow);
+}
+
+export async function listSupernumerarioIncapacitiesForCurrentSupervisor(fecha) {
+  const day = String(fecha || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return [];
+  const { data, error } = await supabase.rpc('list_supernumerario_incapacities_for_current_supervisor', { p_fecha: day });
+  if (error) {
+    console.warn('No se pudo consultar incapacidades de supernumerarios:', error);
+    return [];
+  }
+  return (data || []).map(mapIncapacidadRow);
+}
+
+export async function listEmployeeDailyStatusRange(dateFrom, dateTo, { contratoCodigo = null, sedeCodigo = null } = {}) {
+  if (!dateFrom || !dateTo) return [];
+  const cleanContract = String(contratoCodigo || '').trim();
+  const cleanSede = String(sedeCodigo || '').trim();
+  const rows = [];
+  const ranges = splitIsoDateRange(dateFrom, dateTo);
+  if (!ranges.length) return [];
+
+  for (const [chunkFrom, chunkTo] of ranges) {
+    let from = 0;
+
+    while (true) {
+      let query = supabase
+        .from('employee_daily_status')
+        .select(EMPLOYEE_DAILY_STATUS_SELECT)
+        .gte('fecha', chunkFrom)
+        .lte('fecha', chunkTo)
+        .order('fecha', { ascending: true })
+        .order('sede_codigo', { ascending: true })
+        .order('nombre', { ascending: true })
+        .range(from, from + POSTGREST_PAGE_SIZE - 1);
+      if (cleanContract) query = query.eq('contrato_codigo', cleanContract);
+      if (cleanSede) query = query.eq('sede_codigo', cleanSede);
+      const { data, error } = await query;
+      if (error) throw error;
+
+      const batch = Array.isArray(data) ? data : [];
+      rows.push(...batch);
+      if (batch.length < POSTGREST_PAGE_SIZE) break;
+      from += POSTGREST_PAGE_SIZE;
+    }
+  }
+
+  return rows
+    .sort((a, b) => {
+      const byDate = String(a?.fecha || '').localeCompare(String(b?.fecha || ''));
+      if (byDate !== 0) return byDate;
+      const bySede = String(a?.sede_codigo || '').localeCompare(String(b?.sede_codigo || ''));
+      if (bySede !== 0) return bySede;
+      return String(a?.nombre || '').localeCompare(String(b?.nombre || ''));
+    })
+    .map(mapEmployeeDailyStatusRow);
+}
+
+export async function listDailyMetricsRange(dateFrom, dateTo) {
+  if (!dateFrom || !dateTo) return [];
+  const rows = await selectPagedRows(() => supabase
+    .from('daily_metrics')
+    .select('*')
+    .gte('fecha', dateFrom)
+    .lte('fecha', dateTo)
+    .order('fecha', { ascending: true }));
+  return rows.map(mapDailyMetricsRow);
+}
+
+export async function isOperationDayClosed(fecha) {
+  const day = String(fecha || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return false;
+  const { data, error } = await supabase.from('daily_closures').select('*').eq('fecha', day).maybeSingle();
+  if (error) throw error;
+  if (!data) return false;
+  return data.locked === true || String(data.status || '').trim() === 'closed';
+}
+
+export async function listClosedOperationDaysRange(dateFrom, dateTo) {
+  const rows = await listDailyClosuresRange(dateFrom, dateTo);
+  return rows
+    .filter((row) => row.locked === true || String(row.status || '').trim() === 'closed')
+    .map((row) => String(row.fecha || row.id || '').trim())
+    .filter(Boolean)
+    .sort();
+}
+
+export async function listDailyClosuresRange(dateFrom, dateTo) {
+  if (!dateFrom || !dateTo) return [];
+  const rows = await selectPagedRows(() => supabase
+    .from('daily_closures')
+    .select('*')
+    .gte('fecha', dateFrom)
+    .lte('fecha', dateTo)
+    .order('fecha', { ascending: true }));
+  return rows.map(mapDailyClosureRow);
+}
+
+export async function listDailySedeClosuresRange(dateFrom, dateTo, { contratoCodigo = null, sedeCodigo = null } = {}) {
+  if (!dateFrom || !dateTo) return [];
+  const cleanContract = String(contratoCodigo || '').trim();
+  const cleanSede = String(sedeCodigo || '').trim();
+  const rows = await selectPagedRows(() => {
+    let query = supabase
+      .from('daily_sede_closures')
+      .select('*')
+      .gte('fecha', dateFrom)
+      .lte('fecha', dateTo);
+    if (cleanContract) query = query.eq('contrato_codigo', cleanContract);
+    if (cleanSede) query = query.eq('sede_codigo', cleanSede);
+    return query
+      .order('fecha', { ascending: true })
+      .order('sede_codigo', { ascending: true });
+  });
+  return rows.map(mapDailySedeClosureRow);
+}
+
+export async function listDailyContractMetricsRange(dateFrom, dateTo, { contratoCodigo = null } = {}) {
+  if (!dateFrom || !dateTo) return [];
+  const cleanContract = String(contratoCodigo || '').trim();
+  const rows = await selectPagedRows(() => {
+    let query = supabase
+      .from('daily_contract_metrics')
+      .select('*')
+      .gte('fecha', dateFrom)
+      .lte('fecha', dateTo);
+    if (cleanContract) query = query.eq('contrato_codigo', cleanContract);
+    return query
+      .order('fecha', { ascending: true })
+      .order('contrato_codigo', { ascending: true });
+  });
+  return rows.map(mapDailyContractMetricsRow);
+}
+
+function normalizeZoneCodeList(zoneCodes = []) {
+  return [...new Set((Array.isArray(zoneCodes) ? zoneCodes : [zoneCodes])
+    .map((value) => String(value || '').trim())
+    .filter(Boolean))];
+}
+
+function supervisorRegistryHasNovelty(row = {}) {
+  const code = String(row?.novedadCodigo || '').trim();
+  if (code && !['1', '7'].includes(code)) return true;
+  const name = normalizeMetricText(row?.novedadNombre || '');
+  if (name && !['trabajando', 'compensatorio', 'ok', '-'].includes(name)) return true;
+  const state = normalizeMetricText(String(row?.estadoDia || '').replace(/_/g, ' '));
+  if (!state) return false;
+  return !['sin registro', 'trabajando', 'trabajado reemplazo', 'compensatorio', 'ok'].includes(state);
+}
+
+function mapSupervisorIncapacityRow(row = {}) {
+  const mapped = row?.fechaInicio ? row : mapIncapacidadRow(row);
+  return {
+    id: mapped.id || null,
+    employeeId: mapped.employeeId || null,
+    documento: mapped.documento || null,
+    nombre: mapped.nombre || null,
+    fechaInicio: mapped.fechaInicio || null,
+    fechaFin: mapped.fechaFin || null,
+    estado: mapped.estado || 'activo',
+    soporteCargado: Boolean(mapped.soporteUrl || mapped.soporteNombre || mapped.soporteStoragePath || mapped.soporteCargado)
+  };
+}
+
+export async function listSupervisorDailyRegistry(fecha, zoneCodes = [], options = {}) {
+  const day = String(fecha || '').trim();
+  const zones = normalizeZoneCodeList(zoneCodes);
+  const allZones = options?.allZones === true;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || (!allZones && !zones.length)) {
+    return {
+      fecha: day || null,
+      zones,
+      sedes: [],
+      employees: [],
+      dailyStatus: [],
+      attendance: [],
+      replacements: [],
+      supernumerarioOccupancy: [],
+      incapacities: [],
+      closures: []
+    };
+  }
+  const scopeByZones = (query, column) => allZones ? query : query.in(column, zones);
+
+  const sedeRows = await selectPagedRows(() => scopeByZones(
+    supabase
+      .from('sedes')
+      .select('*'),
+    'zona_codigo'
+  )
+    .order('nombre', { ascending: true }));
+
+  const sedes = (sedeRows || []).map(mapSedeRow);
+  const sedeCodes = [...new Set(sedes.map((sede) => String(sede.codigo || '').trim()).filter(Boolean))];
+
+  const [
+    dailyStatusRows,
+    employeeRowsRaw,
+    closureRows,
+    attendanceRows,
+    replacementRows,
+    supernumerarioOccupancyRows,
+    incapacityRows,
+    supernumerarioIncapacityRows
+  ] = await Promise.all([
+    selectPagedRows(() => scopeByZones(
+      supabase
+        .from('employee_daily_status')
+        .select('*')
+        .eq('fecha', day),
+      'zona_codigo_snapshot'
+    )
+      .order('sede_codigo', { ascending: true })
+      .order('nombre', { ascending: true })),
+    selectPagedRows(() => scopeByZones(
+      employeesEffectiveOnDateQuery({ select: '*', fecha: day, order: null }),
+      'zona_codigo'
+    )
+      .order('nombre', { ascending: true })),
+    selectPagedRows(() => scopeByZones(
+      supabase
+        .from('daily_sede_closures')
+        .select('*')
+        .eq('fecha', day),
+      'zona_codigo'
+    )
+      .order('sede_codigo', { ascending: true })),
+    sedeCodes.length
+      ? selectPagedRows(() => supabase
+        .from('attendance')
+        .select('*')
+        .eq('fecha', day)
+        .in('sede_codigo', sedeCodes)
+        .order('created_at', { ascending: false }))
+      : Promise.resolve([]),
+    sedeCodes.length
+      ? selectPagedRows(() => supabase
+        .from('import_replacements')
+        .select('*')
+        .eq('fecha', day)
+        .in('sede_codigo', sedeCodes)
+        .order('ts', { ascending: false }))
+      : Promise.resolve([]),
+    listSupernumerarioReplacementOccupancy(day),
+    selectPagedRows(() => supabase
+      .from('incapacitados')
+      .select('*')
+      .eq('estado', 'activo')
+      .lte('fecha_inicio', day)
+      .gte('fecha_fin', day)
+      .order('fecha_inicio', { ascending: false })),
+    listSupernumerarioIncapacitiesForCurrentSupervisor(day)
+  ]);
+
+  const employeeRows = (employeeRowsRaw || []).map(mapEmployeeRow);
+  const expectedEmployees = employeeRows.filter((employee) => isEmployeeExpectedForDate(employee, day, sedes));
+  const expectedEmployeeKeys = new Set(
+    expectedEmployees
+      .flatMap((employee) => [
+        employee.id ? `id:${String(employee.id).trim()}` : '',
+        employee.documento ? `doc:${String(employee.documento).trim()}` : ''
+      ])
+      .filter(Boolean)
+  );
+  const operationalDailyStatus = (dailyStatusRows || [])
+    .map(mapEmployeeDailyStatusRow)
+    .filter((row) => {
+      const employeeId = String(row.employeeId || '').trim();
+      const documento = String(row.documento || '').trim();
+      const isExpected = (employeeId && expectedEmployeeKeys.has(`id:${employeeId}`))
+        || (documento && expectedEmployeeKeys.has(`doc:${documento}`));
+      return isExpected || supervisorRegistryHasNovelty(row);
+    });
+
+  const scopedIncapacities = (incapacityRows || [])
+    .map(mapSupervisorIncapacityRow)
+    .filter((row) => {
+      const employeeId = String(row.employeeId || '').trim();
+      const documento = String(row.documento || '').trim();
+      return (employeeId && expectedEmployeeKeys.has(`id:${employeeId}`))
+        || (documento && expectedEmployeeKeys.has(`doc:${documento}`))
+        || operationalDailyStatus.some((status) => {
+          const statusEmployeeId = String(status.employeeId || '').trim();
+          const statusDocument = String(status.documento || '').trim();
+          return (employeeId && statusEmployeeId === employeeId)
+            || (documento && statusDocument === documento);
+        });
+    });
+  const incapacitiesById = new Map();
+  [...scopedIncapacities, ...((supernumerarioIncapacityRows || []).map(mapSupervisorIncapacityRow))].forEach((row) => {
+    const key = String(row?.id || '').trim()
+      || [
+        String(row?.employeeId || '').trim(),
+        String(row?.documento || '').trim(),
+        String(row?.fechaInicio || '').trim(),
+        String(row?.fechaFin || '').trim()
+      ].join('|');
+    if (key) incapacitiesById.set(key, row);
+  });
+
+  return {
+    fecha: day,
+    zones,
+    sedes,
+    employees: expectedEmployees,
+    dailyStatus: operationalDailyStatus,
+    attendance: (attendanceRows || []).map(mapAttendanceRow),
+    replacements: (replacementRows || []).map(mapImportReplacementRow),
+    supernumerarioOccupancy: (supernumerarioOccupancyRows || []).map((row) => row?.id ? row : mapImportReplacementRow(row)),
+    incapacities: Array.from(incapacitiesById.values()),
+    closures: (closureRows || []).map(mapDailySedeClosureRow)
+  };
+}
+
+async function persistDailySedeClosureSnapshot(day) {
+  const snapshot = await computeDailySedeClosureSnapshot(day);
+  if (!snapshot.length) return [];
+  const { error } = await supabase.from('daily_sede_closures').upsert(snapshot, { onConflict: 'id' });
+  if (error) throw error;
+  await refreshOperationalSnapshotsFromEmployeeDailyStatus(day);
+  await notifyTableReload('daily_sede_closures');
+  await notifyTableReload('daily_contract_metrics');
+  return snapshot;
+}
+
+export async function confirmImportOperation(payload) {
+  const data = payload || {};
+  const day = String(data.fechaOperacion || '').trim();
+  if (day) {
+    const { data: existing, error: existingError } = await supabase
+      .from('import_history')
+      .select('id')
+      .eq('fecha_operacion', day)
+      .limit(1);
+    if (existingError) throw existingError;
+    if ((existing || []).length) throw new Error('Ya existe una confirmacion para esa fecha.');
+  }
+
+  const audit = await getCurrentAuditFields();
+  const { data: importRow, error: importError } = await supabase
+    .from('import_history')
+    .insert({
+      fecha_operacion: day || null,
+      source: data.source || null,
+      planned_count: data.plannedCount || 0,
+      expected_count: data.expectedCount || 0,
+      found_count: data.foundCount || 0,
+      missing_count: data.missingCount || 0,
+      extra_count: data.extraCount || 0,
+      missing_supervisors_count: data.missingSupervisorsCount || 0,
+      missing_supernumerarios_count: data.missingSupernumerariosCount || 0,
+      missing_docs: data.missingDocs || [],
+      extra_docs: data.extraDocs || [],
+      missing_supervisors: data.missingSupervisors || [],
+      missing_supernumerarios: data.missingSupernumerarios || [],
+      errores: data.errores || [],
+      confirmado_por_uid: audit.created_by_uid,
+      confirmado_por_email: audit.created_by_email
+    })
+    .select('*')
+    .single();
+  if (importError) throw importError;
+
+  for (const a of data.attendance || []) {
+    if (!a || !a.empleadoId || !a.fecha) continue;
+    const dailyId = buildDailyRecordId(a.fecha, a.documento, a.empleadoId);
+    const { error } = await supabase.from('attendance').upsert({
+      id: dailyId,
+      fecha: a.fecha,
+      empleado_id: a.empleadoId,
+      documento: normalizeDailyDocument(a.documento) || null,
+      nombre: a.nombre || null,
+      sede_codigo: a.sedeCodigo || null,
+      sede_nombre: a.sedeNombre || null,
+      asistio: Boolean(a.asistio),
+      novedad: a.novedad || null
+    }, { onConflict: 'id' });
+    if (error) throw error;
+  }
+
+  for (const ab of data.absences || []) {
+    if (!ab || !ab.empleadoId || !ab.fecha) continue;
+    const dailyId = buildDailyRecordId(ab.fecha, ab.documento, ab.empleadoId);
+    const { error } = await supabase.from('absenteeism').upsert({
+      id: dailyId,
+      fecha: ab.fecha,
+      empleado_id: ab.empleadoId,
+      documento: normalizeDailyDocument(ab.documento) || null,
+      nombre: ab.nombre || null,
+      sede_codigo: ab.sedeCodigo || null,
+      sede_nombre: ab.sedeNombre || null,
+      estado: ab.estado || 'pendiente',
+      reemplazo_id: ab.reemplazoId || null,
+      reemplazo_documento: ab.reemplazoDocumento || null,
+      created_by_uid: audit.created_by_uid,
+      created_by_email: audit.created_by_email
+    }, { onConflict: 'id' });
+    if (error) throw error;
+  }
+
+  for (const ss of data.sedeStatus || []) {
+    if (!ss || !ss.fecha || !ss.sedeCodigo) continue;
+    const { error } = await supabase.from('sede_status').upsert({
+      id: `${ss.fecha}_${ss.sedeCodigo}`,
+      fecha: ss.fecha,
+      sede_codigo: ss.sedeCodigo,
+      sede_nombre: ss.sedeNombre || null,
+      operarios_esperados: ss.operariosEsperados || 0,
+      operarios_presentes: ss.operariosPresentes || 0,
+      faltantes: ss.faltantes || 0
+    }, { onConflict: 'id' });
+    if (error) throw error;
+  }
+
+  if (day) await recomputeDailyMetrics(day);
+  await notifyTableReload('import_history');
+  await notifyTableReload('attendance');
+  await notifyTableReload('absenteeism');
+  await notifyTableReload('sede_status');
+  return importRow.id;
+}
+
+export async function saveImportReplacements({ importId = null, fechaOperacion = null, assignments = [] } = {}) {
+  const data = Array.isArray(assignments) ? assignments.filter(Boolean) : [];
+  const fechas = [...new Set(data.map((row) => String(row?.fecha || fechaOperacion || '').trim()).filter(Boolean))];
+  for (const f of fechas) {
+    if (await isOperationDayClosed(f)) throw new Error(`La fecha ${f} ya esta cerrada y no admite cambios.`);
+  }
+  const used = new Set();
+  const audit = await getCurrentAuditFields();
+  for (const a of data) {
+    if (a.decision === 'reemplazo') {
+      const sid = String(a.supernumerarioId || '').trim();
+      if (!sid) throw new Error('Falta supernumerario en una fila de reemplazo.');
+      if (used.has(sid)) throw new Error('Un supernumerario no puede asignarse dos veces.');
+      used.add(sid);
+    }
+  }
+  const occupancyByDate = new Map();
+  for (const f of fechas) {
+    occupancyByDate.set(f, await listSupernumerarioReplacementOccupancy(f));
+  }
+  for (const a of data) {
+    if (a.decision !== 'reemplazo') continue;
+    const fecha = String(a.fecha || fechaOperacion || '').trim();
+    const contractContext = await resolveReplacementContractContext(a, fecha);
+    if (contractContext.contratoCodigo) {
+      const canCoverContract = await supernumerarioCanCoverContract({
+        employeeId: a.supernumerarioId || null,
+        documento: a.supernumerarioDocumento || null,
+        contratoCodigo: contractContext.contratoCodigo,
+        fecha
+      });
+      if (!canCoverContract) {
+        const superLabel = a.supernumerarioNombre || a.supernumerarioDocumento || 'El supernumerario';
+        const contractLabel = contractContext.contratoNombre || contractContext.contratoCodigo;
+        throw new Error(`${superLabel} no esta habilitado para cubrir el contrato ${contractLabel}.`);
+      }
+    }
+    const canCoverService = await replacementAssignmentHasScheduledService(a, fecha);
+    if (canCoverService === false) {
+      const target = a.nombre || a.documento || 'la persona';
+      throw new Error(`${target} no tiene servicio programado el ${fecha}; la novedad es solo reporte y no admite reemplazo.`);
+    }
+    const currentId = buildDailyRecordId(fecha, a.documento, a.empleadoId);
+    const superId = String(a.supernumerarioId || '').trim();
+    const superDoc = String(a.supernumerarioDocumento || '').trim();
+    const incapacity = await findActiveSupernumerarioIncapacityForDate({
+      fecha,
+      supernumerarioId: superId,
+      documento: superDoc
+    });
+    if (incapacity) {
+      const superLabel = a.supernumerarioNombre || a.supernumerarioDocumento || 'El supernumerario';
+      throw new Error(`${superLabel} esta incapacitado el ${fecha}; no puede asignarse como reemplazo.`);
+    }
+    const conflict = (occupancyByDate.get(fecha) || []).find((row) => {
+      if (String(row?.id || '').trim() === currentId) return false;
+      if (String(row?.decision || '').trim() !== 'reemplazo') return false;
+      const rowSuperId = String(row?.supernumerarioId || '').trim();
+      const rowSuperDoc = String(row?.supernumerarioDocumento || '').trim();
+      return (superId && rowSuperId && rowSuperId === superId)
+        || (superDoc && rowSuperDoc && rowSuperDoc === superDoc);
+    });
+    if (conflict) {
+      const superLabel = a.supernumerarioNombre || a.supernumerarioDocumento || 'El supernumerario';
+      const target = conflict.nombre || conflict.documento || 'otro registro';
+      const sede = conflict.sedeNombre || conflict.sedeCodigo || '-';
+      throw new Error(`${superLabel} ya esta ocupado el ${fecha} cubriendo a ${target} en ${sede}.`);
+    }
+  }
+  for (const a of data) {
+    const empId = String(a.empleadoId || '').trim();
+    const fecha = String(a.fecha || fechaOperacion || '').trim();
+    if (!empId || !fecha) continue;
+    const contractContext = await resolveReplacementContractContext(a, fecha);
+    const replacementId = buildDailyRecordId(fecha, a.documento, empId);
+    const { error } = await supabase.from('import_replacements').upsert({
+      id: replacementId,
+      import_id: importId || null,
+      fecha_operacion: fechaOperacion || fecha,
+      fecha,
+      empleado_id: a.empleadoId || null,
+      documento: a.documento || null,
+      nombre: a.nombre || null,
+      sede_codigo: a.sedeCodigo || null,
+      sede_nombre: a.sedeNombre || null,
+      contrato_codigo: contractContext.contratoCodigo || null,
+      contrato_nombre: contractContext.contratoNombre || null,
+      cliente_nombre_snapshot: contractContext.clienteNombreSnapshot || null,
+      cliente_nit_snapshot: contractContext.clienteNitSnapshot || null,
+      novedad_codigo: a.novedadCodigo || null,
+      novedad_nombre: a.novedadNombre || null,
+      decision: a.decision || 'ausentismo',
+      supernumerario_id: a.supernumerarioId || null,
+      supernumerario_documento: a.supernumerarioDocumento || null,
+      supernumerario_nombre: a.supernumerarioNombre || null,
+      actor_uid: audit.created_by_uid,
+      actor_email: audit.created_by_email
+    }, { onConflict: 'id' });
+    if (error) throw error;
+  }
+  for (const day of fechas) {
+    await refreshOperationalState(day);
+  }
+  await notifyTableReload('import_replacements');
+  return { saved: data.length };
+}
+
+async function replacementAssignmentHasScheduledService(assignment = {}, fecha = '') {
+  const employeeId = String(assignment?.empleadoId || assignment?.employeeId || '').trim();
+  const documento = String(assignment?.documento || '').trim();
+  if (!fecha || (!employeeId && !documento)) return null;
+  let query = supabase
+    .from('employee_daily_status')
+    .select('servicio_programado')
+    .eq('fecha', fecha)
+    .limit(1);
+  if (employeeId && documento) {
+    query = query.or(`employee_id.eq.${employeeId},documento.eq.${documento}`);
+  } else if (employeeId) {
+    query = query.eq('employee_id', employeeId);
+  } else {
+    query = query.eq('documento', documento);
+  }
+  const { data, error } = await query;
+  if (error) throw error;
+  const row = Array.isArray(data) ? data[0] : null;
+  if (!row) return null;
+  return row.servicio_programado === true;
+}
+
+async function resolveReplacementContractContext(assignment = {}, fecha = '') {
+  const directCode = String(assignment?.contratoCodigo || assignment?.contrato_codigo || '').trim();
+  if (directCode) {
+    const contract = await resolveContractContextByCode(directCode);
+    return {
+      contratoCodigo: contract.contratoCodigo || directCode,
+      contratoNombre: assignment.contratoNombre || assignment.contrato_nombre || contract.contratoNombre || null,
+      clienteNombreSnapshot: assignment.clienteNombreSnapshot || assignment.cliente_nombre_snapshot || contract.clienteNombreSnapshot || null,
+      clienteNitSnapshot: assignment.clienteNitSnapshot || assignment.cliente_nit_snapshot || contract.clienteNitSnapshot || null
+    };
+  }
+
+  const employeeId = String(assignment?.empleadoId || assignment?.employeeId || '').trim();
+  const documento = String(assignment?.documento || '').trim();
+  const day = String(fecha || assignment?.fecha || '').trim();
+  if (day && (employeeId || documento)) {
+    let query = supabase
+      .from('employee_daily_status')
+      .select('contrato_codigo,contrato_nombre,cliente_nombre_snapshot,cliente_nit_snapshot')
+      .eq('fecha', day)
+      .limit(1);
+    if (employeeId && documento) query = query.or(`employee_id.eq.${employeeId},documento.eq.${documento}`);
+    else if (employeeId) query = query.eq('employee_id', employeeId);
+    else query = query.eq('documento', documento);
+    const { data, error } = await query;
+    if (error) throw error;
+    const row = Array.isArray(data) ? data[0] : null;
+    if (row?.contrato_codigo) {
+      return {
+        contratoCodigo: row.contrato_codigo || null,
+        contratoNombre: row.contrato_nombre || null,
+        clienteNombreSnapshot: row.cliente_nombre_snapshot || null,
+        clienteNitSnapshot: row.cliente_nit_snapshot || null
+      };
+    }
+  }
+
+  const sedeContext = await resolveZoneBySedeCode(assignment?.sedeCodigo || assignment?.sede_codigo);
+  return {
+    contratoCodigo: sedeContext.contratoCodigo || null,
+    contratoNombre: sedeContext.contratoNombre || null,
+    clienteNombreSnapshot: sedeContext.clienteNombreSnapshot || null,
+    clienteNitSnapshot: sedeContext.clienteNitSnapshot || null
+  };
+}
+
+async function finalizePendingAbsenteeismForClosure(day) {
+  const audit = await getCurrentAuditFields();
+  await refreshEmployeeDailyStatusSnapshot(day);
+  const [
+    { data: attendanceRows, error: attendanceError },
+    { data: replacementRows, error: replacementsError },
+    { data: statusRows, error: statusError },
+    novedadesRows
+  ] = await Promise.all([
+    supabase.from('attendance').select('*').eq('fecha', day),
+    supabase.from('import_replacements').select('*').eq('fecha', day),
+    supabase.from('employee_daily_status').select('fecha, employee_id, documento, tipo_personal, servicio_programado').eq('fecha', day),
+    selectSmallTableRows('novedades', { select: 'codigo, codigo_novedad, nombre, reemplazo' })
+  ]);
+  if (attendanceError) throw attendanceError;
+  if (replacementsError) throw replacementsError;
+  if (statusError) throw statusError;
+
+  const replacementRules = buildNovedadReplacementRules((novedadesRows || []).map(mapNovedadRow));
+  const replacementMap = new Map(((replacementRows || []).map((row) => {
+    const mapped = mapImportReplacementRow(row);
+    return [metricReplacementKey(mapped), mapped];
+  })));
+  const scheduledServiceLookup = buildScheduledServiceLookup(statusRows || []);
+
+  for (const raw of attendanceRows || []) {
+    const row = mapAttendanceRow(raw);
+    if (!metricAttendanceRequiresReplacement(row, replacementRules)) continue;
+    if (!attendanceHasScheduledService(row, scheduledServiceLookup)) continue;
+    const key = metricReplacementKey(row);
+    const existing = replacementMap.get(key);
+    if (existing && String(existing?.decision || '').trim().toLowerCase() !== 'reemplazo' && String(existing?.decision || '').trim()) {
+      continue;
+    }
+    if (existing && String(existing?.decision || '').trim().toLowerCase() === 'reemplazo') continue;
+
+    const recordId = buildDailyRecordId(day, row.documento, row.empleadoId);
+    const { error: replacementError } = await supabase.from('import_replacements').upsert({
+      id: recordId,
+      fecha_operacion: day,
+      fecha: day,
+      empleado_id: row.empleadoId || null,
+      documento: row.documento || null,
+      nombre: row.nombre || null,
+      sede_codigo: row.sedeCodigo || null,
+      sede_nombre: row.sedeNombre || null,
+      novedad_codigo: row.novedadCodigo || null,
+      novedad_nombre: row.novedadNombre || row.novedad || null,
+      decision: 'ausentismo',
+      actor_uid: audit.created_by_uid,
+      actor_email: audit.created_by_email
+    }, { onConflict: 'id' });
+    if (replacementError) throw replacementError;
+
+    const { error: absenteeismError } = await supabase.from('absenteeism').upsert({
+      id: recordId,
+      fecha: day,
+      empleado_id: row.empleadoId || null,
+      documento: row.documento || null,
+      nombre: row.nombre || null,
+      sede_codigo: row.sedeCodigo || null,
+      sede_nombre: row.sedeNombre || null,
+      estado: 'confirmado',
+      created_by_uid: audit.created_by_uid,
+      created_by_email: audit.created_by_email
+    }, { onConflict: 'id' });
+    if (absenteeismError) throw absenteeismError;
+  }
+
+  await cleanupNonProgrammedClosedOperationalAbsenteeism(day);
+  await materializeClosedOperationalAbsenteeismForClosure(day, {
+    actorUid: audit.created_by_uid,
+    actorEmail: audit.created_by_email
+  });
+}
+
+function buildScheduledServiceLookup(statusRows = []) {
+  const lookup = new Set();
+  (statusRows || []).forEach((row) => {
+    if (String(row?.tipo_personal || row?.tipoPersonal || '').trim() !== 'empleado') return;
+    if (row?.servicio_programado !== true && row?.servicioProgramado !== true) return;
+    statusLookupKeys(row).forEach((key) => lookup.add(key));
+  });
+  return lookup;
+}
+
+function attendanceHasScheduledService(row = {}, lookup = new Set()) {
+  return statusLookupKeys(row).some((key) => lookup.has(key));
+}
+
+function statusLookupKeys(row = {}) {
+  const fecha = String(row?.fecha || '').trim();
+  const employeeId = String(row?.employee_id || row?.employeeId || row?.empleado_id || row?.empleadoId || '').trim();
+  const documento = String(row?.documento || '').trim();
+  return [
+    fecha && employeeId ? `${fecha}_id:${employeeId}` : '',
+    fecha && documento ? `${fecha}_doc:${documento}` : ''
+  ].filter(Boolean);
+}
+
+async function cleanupNonProgrammedClosedOperationalAbsenteeism(day) {
+  await refreshEmployeeDailyStatusSnapshot(day);
+
+  const { data: statusRows, error } = await supabase
+    .from('employee_daily_status')
+    .select('employee_id, documento, source_replacement_id, source_absenteeism_id, source_attendance_id, source_incapacity_id, tipo_personal, servicio_programado')
+    .eq('fecha', day)
+    .eq('tipo_personal', 'empleado')
+    .eq('servicio_programado', false);
+  if (error) throw error;
+
+  const candidateRows = (statusRows || []).filter((row) => row?.source_replacement_id || row?.source_absenteeism_id);
+  if (!candidateRows.length) return 0;
+
+  const chunk = (items, size = 200) => {
+    const output = [];
+    for (let index = 0; index < items.length; index += size) output.push(items.slice(index, index + size));
+    return output;
+  };
+
+  const deterministicIds = candidateRows.map((row) => buildDailyRecordId(day, row?.documento, row?.employee_id)).filter(Boolean);
+  const replacementIds = [...new Set([...candidateRows.map((row) => row?.source_replacement_id), ...deterministicIds].filter(Boolean))];
+  const absenteeismIds = [...new Set([...candidateRows.map((row) => row?.source_absenteeism_id), ...deterministicIds].filter(Boolean))];
+
+  const cronReplacementIds = [];
+  for (const batch of chunk(replacementIds)) {
+    const { data, error: replacementError } = await supabase
+      .from('import_replacements')
+      .select('id, actor_email, decision')
+      .in('id', batch);
+    if (replacementError) throw replacementError;
+    for (const row of data || []) {
+      if (String(row?.actor_email || '').trim().toLowerCase() === 'cron@system' && String(row?.decision || '').trim().toLowerCase() === 'ausentismo') {
+        cronReplacementIds.push(row.id);
+      }
+    }
+  }
+
+  const cronAbsenteeismIds = [];
+  for (const batch of chunk(absenteeismIds)) {
+    const { data, error: absenteeismError } = await supabase
+      .from('absenteeism')
+      .select('id, created_by_email')
+      .in('id', batch);
+    if (absenteeismError) throw absenteeismError;
+    for (const row of data || []) {
+      if (String(row?.created_by_email || '').trim().toLowerCase() === 'cron@system') {
+        cronAbsenteeismIds.push(row.id);
+      }
+    }
+  }
+
+  for (const batch of chunk(cronReplacementIds)) {
+    const { error: deleteError } = await supabase.from('import_replacements').delete().in('id', batch);
+    if (deleteError) throw deleteError;
+  }
+  for (const batch of chunk(cronAbsenteeismIds)) {
+    const { error: deleteError } = await supabase.from('absenteeism').delete().in('id', batch);
+    if (deleteError) throw deleteError;
+  }
+
+  const removed = new Set([...cronReplacementIds, ...cronAbsenteeismIds]).size;
+  if (removed > 0) {
+    await refreshEmployeeDailyStatusSnapshot(day);
+    await notifyTableReload('import_replacements');
+    await notifyTableReload('absenteeism');
+  }
+  return removed;
+}
+
+async function materializeClosedOperationalAbsenteeismForClosure(day, { actorUid = null, actorEmail = null } = {}) {
+  await refreshEmployeeDailyStatusSnapshot(day);
+
+  const { data: statusRows, error } = await supabase
+    .from('employee_daily_status')
+    .select('employee_id, documento, nombre, sede_codigo, sede_nombre_snapshot, novedad_codigo, novedad_nombre, tipo_personal, servicio_programado, cuenta_pago_servicio')
+    .eq('fecha', day)
+    .eq('tipo_personal', 'empleado')
+    .eq('servicio_programado', true)
+    .eq('cuenta_pago_servicio', false);
+  if (error) throw error;
+
+  let changed = 0;
+  for (const row of statusRows || []) {
+    const recordId = buildDailyRecordId(day, row?.documento, row?.employee_id);
+    const novedadCodigo = String(row?.novedad_codigo || '').trim() || '8';
+    const novedadNombre = String(row?.novedad_nombre || '').trim() || 'AUSENCIA NO JUSTIFICADA';
+
+    const { error: replacementError } = await supabase.from('import_replacements').upsert({
+      id: recordId,
+      fecha_operacion: day,
+      fecha: day,
+      empleado_id: row?.employee_id || null,
+      documento: row?.documento || null,
+      nombre: row?.nombre || null,
+      sede_codigo: row?.sede_codigo || null,
+      sede_nombre: row?.sede_nombre_snapshot || null,
+      novedad_codigo: novedadCodigo,
+      novedad_nombre: novedadNombre,
+      decision: 'ausentismo',
+      actor_uid: actorUid,
+      actor_email: actorEmail
+    }, { onConflict: 'id' });
+    if (replacementError) throw replacementError;
+
+    const { error: absenteeismError } = await supabase.from('absenteeism').upsert({
+      id: recordId,
+      fecha: day,
+      empleado_id: row?.employee_id || null,
+      documento: row?.documento || null,
+      nombre: row?.nombre || null,
+      sede_codigo: row?.sede_codigo || null,
+      sede_nombre: row?.sede_nombre_snapshot || null,
+      estado: 'confirmado',
+      created_by_uid: actorUid,
+      created_by_email: actorEmail
+    }, { onConflict: 'id' });
+    if (absenteeismError) throw absenteeismError;
+    changed += 1;
+  }
+
+  if (changed > 0) {
+    await notifyTableReload('import_replacements');
+    await notifyTableReload('absenteeism');
+  }
+  return changed;
+}
+
+export { supabase };

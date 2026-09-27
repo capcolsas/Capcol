@@ -1,5 +1,7 @@
 import { el, qs, enableSectionToggles, viewIcon } from '../utils/dom.js';
 import { createTablePagination } from '../utils/pagination.js';
+import { subscribe } from '../state.js';
+import { contractFilterCode, contractMatches } from '../utils/contractScope.js';
 
 export const RegistroSede = (mount, deps = {}) => {
   const today = todayBogota();
@@ -198,12 +200,13 @@ export const RegistroSede = (mount, deps = {}) => {
 
   async function run() {
     const date = todayBogota();
+    const contratoCodigo = contractFilterCode();
     msg.textContent = 'Consultando...';
     try {
       const [sedeStatus, attendance, replacements, sedes, novedades, employees, supernumerarios, dayClosed] = await Promise.all([
-        deps.listSedeStatusRange?.(date, date) || [],
-        deps.listAttendanceRange?.(date, date) || [],
-        deps.listImportReplacementsRange?.(date, date) || [],
+        deps.listSedeStatusRange?.(date, date, { contratoCodigo }) || [],
+        deps.listAttendanceRange?.(date, date, { contratoCodigo }) || [],
+        deps.listImportReplacementsRange?.(date, date, { contratoCodigo }) || [],
         loadSedesSnapshot(),
         loadNovedadesSnapshot(),
         loadEmployeesSnapshot(),
@@ -214,7 +217,7 @@ export const RegistroSede = (mount, deps = {}) => {
       let shiftAssignments = [];
       try {
         scheduledShifts = typeof deps.listScheduledShiftsRange === 'function'
-          ? await deps.listScheduledShiftsRange(date, date, { estados: ['programado', 'abierto', 'cerrado'] })
+          ? await deps.listScheduledShiftsRange(date, date, { contratoCodigo, estados: ['programado', 'abierto', 'cerrado'] })
           : [];
         const shiftIds = (scheduledShifts || []).map((row) => row.id).filter(Boolean);
         shiftAssignments = typeof deps.listShiftAssignmentsForShifts === 'function' && shiftIds.length
@@ -225,11 +228,14 @@ export const RegistroSede = (mount, deps = {}) => {
         scheduledShifts = [];
         shiftAssignments = [];
       }
-      buildShiftAssignmentContext(scheduledShifts || [], shiftAssignments || []);
+      const scopedSedes = scopeByContract(sedes);
+      const scopedEmployees = scopeByContract(employees);
+      const scopedSupernumerarios = scopeByContract(supernumerarios);
+      buildShiftAssignmentContext(scopeByContract(scheduledShifts || []), shiftAssignments || []);
       novedadRules = buildNovedadReplacementRules(novedades || []);
 
       const sedeMetaByCode = new Map();
-      (sedes || []).forEach((s) => {
+      (scopedSedes || []).forEach((s) => {
         sedeMetaByCode.set(String(s.codigo || ''), {
           dependenciaCodigo: String(s.dependenciaCodigo || '').trim(),
           dependenciaNombre: String(s.dependenciaNombre || '').trim(),
@@ -250,7 +256,7 @@ export const RegistroSede = (mount, deps = {}) => {
       });
 
       const statusBySede = new Map((sedeStatus || []).map((s) => [String(s.sedeCodigo || ''), s]));
-      const activeScheduledSedes = (sedes || [])
+      const activeScheduledSedes = (scopedSedes || [])
         .filter((s) => String(s.estado || 'activo').trim().toLowerCase() !== 'inactivo')
         .filter((s) => {
           const sedeCode = String(s.codigo || '').trim();
@@ -262,7 +268,7 @@ export const RegistroSede = (mount, deps = {}) => {
           .filter(Boolean)
       );
       const superDocs = new Set(
-        (supernumerarios || [])
+        (scopedSupernumerarios || [])
           .filter((s) => isPersonActiveForDate(s, date, { allowMissingIngreso: true }))
           .map((s) => String(s.documento || '').trim())
           .filter(Boolean)
@@ -271,7 +277,7 @@ export const RegistroSede = (mount, deps = {}) => {
       const contractedMapBySede = new Map();
       employeeByDoc = new Map();
       employeeById = new Map();
-      (employees || []).forEach((e) => {
+      (scopedEmployees || []).forEach((e) => {
         const doc = String(e.documento || '').trim();
         const id = String(e.id || '').trim();
         if (doc) employeeByDoc.set(doc, e);
@@ -869,10 +875,18 @@ export const RegistroSede = (mount, deps = {}) => {
     );
   }
 
+  const unSelectedContract = subscribe('selectedContractCode', () => {
+    dependencyPaginator.reset();
+    totalsPaginator.reset();
+    detailPaginator.reset();
+    run();
+  });
   mount.replaceChildren(ui);
   enableSectionToggles(ui);
   run();
-  return () => {};
+  return () => {
+    try { unSelectedContract?.(); } catch {}
+  };
 };
 
 function currentDate() {
@@ -973,6 +987,12 @@ function resolveAttendanceSedeCode(attendanceRow = {}, context = {}) {
   if (!sedeCode) return null;
   if (context?.activeSedeCodes?.size && !context.activeSedeCodes.has(sedeCode)) return null;
   return sedeCode;
+}
+
+function scopeByContract(rows = []) {
+  const code = contractFilterCode();
+  if (!code) return rows || [];
+  return (rows || []).filter((row) => contractMatches(row, code));
 }
 
 function isPersonActiveForDate(person = {}, selectedDate = '', options = {}) {
@@ -1099,11 +1119,6 @@ function toISODate(value) {
     const v = value.trim();
     if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
     const dt = new Date(v);
-    if (!Number.isNaN(dt.getTime())) return dt.toISOString().slice(0, 10);
-    return null;
-  }
-  if (typeof value?.toDate === 'function') {
-    const dt = value.toDate();
     if (!Number.isNaN(dt.getTime())) return dt.toISOString().slice(0, 10);
     return null;
   }

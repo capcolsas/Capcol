@@ -34,7 +34,7 @@ export function sedeCoordinates(sede = {}) {
 export function sedeLocationLabel(sede = {}) {
   const coords = sedeCoordinates(sede);
   if (!coords) return '-';
-  const radius = Number(sede.qrRadiusMeters || 500);
+  const radius = Number(sede.qrRadiusMeters || 200);
   const radiusLabel = Number.isFinite(radius) && radius > 0 ? ` (${Math.round(radius)} m)` : '';
   return `${coords.latitude.toFixed(6)}, ${coords.longitude.toFixed(6)}${radiusLabel}`;
 }

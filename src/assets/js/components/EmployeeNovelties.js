@@ -4,6 +4,7 @@ import { createTablePagination } from '../utils/pagination.js';
 import { showActionModal } from '../utils/actionModal.js';
 import { can, PERMS } from '../permissions.js';
 import { subscribe } from '../state.js';
+import { contractMatches } from '../utils/contractScope.js';
 
 const ACTIONS = {
   create_employee: { type: 'create', label: 'Creacion' },
@@ -119,6 +120,7 @@ export const EmployeeNovelties = (mount, deps = {}) => {
   }) || (() => {});
   const unRoleMatrix = subscribe('roleMatrix', render);
   const unUserOverrides = subscribe('userOverrides', render);
+  const unSelectedContract = subscribe('selectedContractCode', () => { paginator.reset(); render(); });
 
   scheduleRangeLoad(0);
   render();
@@ -130,6 +132,7 @@ export const EmployeeNovelties = (mount, deps = {}) => {
     unCargos?.();
     unRoleMatrix?.();
     unUserOverrides?.();
+    unSelectedContract?.();
   };
 
   function scheduleRangeLoad(delay = 250) {
@@ -241,6 +244,7 @@ export const EmployeeNovelties = (mount, deps = {}) => {
       ...audit.filter((row) => !hasMatchingHistoryNovelty(row, history))
     ]
       .filter((row) => isDateVisible(row, from, to))
+      .filter((row) => contractMatches(row))
       .filter((row) => isTypeVisible(row, type))
       .filter((row) => {
         if (!term) return true;
@@ -293,6 +297,8 @@ export const EmployeeNovelties = (mount, deps = {}) => {
       nombre: after.nombre || before.nombre || employee?.nombre || '-',
       actorEmail: row?.actorEmail || '-',
       note: row?.note || '',
+      contratoCodigo: after.contratoCodigo || before.contratoCodigo || employee?.contratoCodigo || null,
+      contratoNombre: after.contratoNombre || before.contratoNombre || employee?.contratoNombre || null,
       before,
       after,
       employee
@@ -330,6 +336,8 @@ export const EmployeeNovelties = (mount, deps = {}) => {
           nombre: employee?.nombre || item.employeeCodigo || item.documento || '-',
           actorEmail: '-',
           note: sourceLabel(item.source),
+          contratoCodigo: item.contratoCodigo || employee?.contratoCodigo || null,
+          contratoNombre: item.contratoNombre || employee?.contratoNombre || null,
           before: previousHistoryItem ? historyAssignmentData(previousHistoryItem) : {},
           after: historyAssignmentData(item),
           employee,
@@ -376,6 +384,8 @@ export const EmployeeNovelties = (mount, deps = {}) => {
           toLabel: `Retiro ${formatDate(last.fechaRetiro)}`.trim(),
           actorEmail: '-',
           note: sourceLabel(last.source),
+          contratoCodigo: last.contratoCodigo || employee?.contratoCodigo || null,
+          contratoNombre: last.contratoNombre || employee?.contratoNombre || null,
           before: historyAssignmentData(last),
           after: { estado: 'inactivo', fechaRetiro: toInputDate(last.fechaRetiro) },
           employee

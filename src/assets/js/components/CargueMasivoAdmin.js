@@ -1,12 +1,14 @@
 import { el, qs } from '../utils/dom.js';
 import { createTablePagination } from '../utils/pagination.js';
 import { can, PERMS } from '../permissions.js';
+import { contractMatches } from '../utils/contractScope.js';
+import { downloadCsv, parseDelimitedRows } from '../utils/csv.js';
 
 export const CargueMasivoAdmin=(mount,deps={})=>{
   const canImport = can(PERMS.BULK_UPLOAD_EMPLOYEES);
   const ui=el('section',{className:'main-card'},[
     el('h2',{},['Cargue masivo de empleados']),
-    el('p',{className:'text-muted mt-2'},['Columnas esperadas: documento, nombre, telefono, cargo codigo, sede codigo, fecha ingreso. Opcionales: fecha nacimiento, eps, afp, riesgo arl, camisa, pantalon, zapatos. El codigo del empleado se genera automaticamente y el telefono se guarda con prefijo 57.']),
+    el('p',{className:'text-muted mt-2'},['Columnas esperadas: documento, nombre, telefono, cargo codigo, sede codigo, fecha ingreso. Opcionales: contrato codigo, fecha nacimiento, eps, afp, riesgo arl, camisa, pantalon, zapatos. El codigo del empleado se genera automaticamente y el telefono se guarda con prefijo 57.']),
     el('div',{className:'form-row mt-2'},[
       el('button',{id:'btnTemplate',className:'btn',type:'button'},['Descargar plantilla CSV']),
       el('input',{id:'fileInput',className:'input',type:'file',accept:'.csv,.xls,.xlsx'}),
@@ -38,6 +40,7 @@ export const CargueMasivoAdmin=(mount,deps={})=>{
             el('th',{},['Telefono']),
             el('th',{},['Cargo codigo']),
             el('th',{},['Sede codigo']),
+            el('th',{},['Contrato']),
             el('th',{},['Cargo']),
             el('th',{},['Sede']),
             el('th',{},['Fecha ingreso']),
@@ -147,9 +150,9 @@ export const CargueMasivoAdmin=(mount,deps={})=>{
   });
 
   btnTemplate.addEventListener('click',()=>{
-    const headers=['documento','nombre','telefono','cargo codigo','sede codigo','fecha ingreso','fecha nacimiento','eps','afp','riesgo arl','camisa','pantalon','zapatos'];
-    const sampleA=['10000001','Empleado ejemplo','573000000000','CAR-0001','SED-0001','2026-02-13','1990-05-10','Sura','Proteccion','1','M','32','40'];
-    const sampleB=['10000002','Empleado ejemplo 2','3000000001','CAR-0002','SED-0002','2026-02-14','','','','','','',''];
+    const headers=['documento','nombre','telefono','cargo codigo','sede codigo','contrato codigo','fecha ingreso','fecha nacimiento','eps','afp','riesgo arl','camisa','pantalon','zapatos'];
+    const sampleA=['10000001','Empleado ejemplo','573000000000','CAR-0001','SED-0001','CONT-0001','2026-02-13','1990-05-10','Sura','Proteccion','1','M','32','40'];
+    const sampleB=['10000002','Empleado ejemplo 2','3000000001','CAR-0002','SED-0002','','2026-02-14','','','','','','',''];
     downloadCsv('plantilla_empleados.csv',[headers,sampleA,sampleB]);
   });
 
@@ -199,6 +202,7 @@ export const CargueMasivoAdmin=(mount,deps={})=>{
       el('td',{},[r.telefono||'-']),
       el('td',{},[r.cargoCodigo||'-']),
       el('td',{},[r.sedeCodigo||'-']),
+      el('td',{},[r.contratoNombre||r.contratoCodigo||'-']),
       el('td',{},[r.cargoNombre||'-']),
       el('td',{},[r.sedeNombre||'-']),
       el('td',{},[r.fechaIngreso||'-']),
@@ -241,6 +245,7 @@ export const CargueMasivoAdmin=(mount,deps={})=>{
         ['Telefono',row.telefono||'-'],
         ['Cargo',row.cargoNombre||row.cargoCodigo||'-'],
         ['Sede',row.sedeNombre||row.sedeCodigo||'-'],
+        ['Contrato',row.contratoNombre||row.contratoCodigo||'-'],
         ['Fecha ingreso',row.fechaIngreso||'-'],
         ['Fecha nacimiento',row.fechaNacimiento||'-'],
         ['EPS',row.eps||'-'],
@@ -288,6 +293,7 @@ export const CargueMasivoAdmin=(mount,deps={})=>{
       const telefono=String(raw.telefono||'').trim();
       const cargoCode=String(raw.cargoCodigo||raw.cargo||'').trim().toLowerCase();
       const sedeCode=String(raw.sedeCodigo||raw.sede||'').trim().toLowerCase();
+      const expectedContractCode=String(raw.contratoCodigo||raw.contrato||'').trim();
       const fechaIngreso=normalizeDate(raw.fechaIngreso||raw.fecha_ingreso||raw.fecha||'');
       const fechaNacimientoRaw=String(raw.fechaNacimiento||raw.fecha_nacimiento||'').trim();
       const fechaNacimiento=fechaNacimientoRaw ? normalizeDate(fechaNacimientoRaw) : '';
@@ -310,13 +316,15 @@ export const CargueMasivoAdmin=(mount,deps={})=>{
       const sede=sedeByCode.get(sedeCode);
       if(cargoCode && !cargo) issues.push(`Cargo no existe: ${cargoCode}`);
       if(sedeCode && !sede) issues.push(`Sede no existe: ${sedeCode}`);
+      if(sede && !contractMatches(sede)) issues.push(`Sede no pertenece al contrato seleccionado: ${sede.codigo || sedeCode}`);
+      if(expectedContractCode && sede?.contratoCodigo && expectedContractCode.toLowerCase()!==String(sede.contratoCodigo||'').trim().toLowerCase()) issues.push(`Contrato ${expectedContractCode} no coincide con la sede ${sede.codigo}.`);
       if(documento && existingDocs.has(documento)) issues.push('Documento ya existe en empleados.');
       if(documento && localDocs.has(documento)) issues.push('Documento duplicado en archivo.');
       if(documento) localDocs.add(documento);
 
       if(issues.length){
         errors.push({ row:rowNum, message: issues.join(' ') });
-        preview.push({ documento, nombre, telefono, cargoCodigo:raw.cargoCodigo||raw.cargo||'', sedeCodigo:raw.sedeCodigo||raw.sede||'', cargoNombre:cargo?.nombre||'', sedeNombre:sede?.nombre||'', fechaIngreso, fechaNacimiento, eps, afp, arlRiesgo, dotacionCamisa, dotacionPantalon, dotacionZapatos, ok:false });
+        preview.push({ documento, nombre, telefono, cargoCodigo:raw.cargoCodigo||raw.cargo||'', sedeCodigo:raw.sedeCodigo||raw.sede||'', contratoCodigo:expectedContractCode||sede?.contratoCodigo||'', contratoNombre:sede?.contratoNombre||'', cargoNombre:cargo?.nombre||'', sedeNombre:sede?.nombre||'', fechaIngreso, fechaNacimiento, eps, afp, arlRiesgo, dotacionCamisa, dotacionPantalon, dotacionZapatos, ok:false });
         return;
       }
 
@@ -328,6 +336,8 @@ export const CargueMasivoAdmin=(mount,deps={})=>{
         cargoNombre:cargo.nombre,
         sedeCodigo:sede.codigo,
         sedeNombre:sede.nombre,
+        contratoCodigo:sede.contratoCodigo||null,
+        contratoNombre:sede.contratoNombre||null,
         fechaIngreso: new Date(`${fechaIngreso}T00:00:00`),
         fechaNacimiento: fechaNacimiento||null,
         eps: eps||null,
@@ -337,7 +347,7 @@ export const CargueMasivoAdmin=(mount,deps={})=>{
         dotacionPantalon: dotacionPantalon||null,
         dotacionZapatos: dotacionZapatos||null
       });
-      preview.push({ documento, nombre, telefono, cargoCodigo:cargo.codigo, sedeCodigo:sede.codigo, cargoNombre:cargo.nombre, sedeNombre:sede.nombre, fechaIngreso, fechaNacimiento, eps, afp, arlRiesgo, dotacionCamisa, dotacionPantalon, dotacionZapatos, ok:true });
+      preview.push({ documento, nombre, telefono, cargoCodigo:cargo.codigo, sedeCodigo:sede.codigo, contratoCodigo:sede.contratoCodigo||'', contratoNombre:sede.contratoNombre||'', cargoNombre:cargo.nombre, sedeNombre:sede.nombre, fechaIngreso, fechaNacimiento, eps, afp, arlRiesgo, dotacionCamisa, dotacionPantalon, dotacionZapatos, ok:true });
     });
 
     return { rows, valid, errors, preview };
@@ -359,20 +369,7 @@ export const CargueMasivoAdmin=(mount,deps={})=>{
   }
 
   function parseCSVRows(text){
-    const rows=[]; let row=[]; let cur=''; let inQuotes=false;
-    for(let i=0;i<text.length;i++){
-      const ch=text[i]; const next=text[i+1];
-      if(ch==='\"'){
-        if(inQuotes && next==='\"'){ cur+='\"'; i++; } else { inQuotes=!inQuotes; }
-      } else if((ch===',' || ch===';' || ch==='\t') && !inQuotes){
-        row.push(cur); cur='';
-      } else if((ch==='\n' || ch==='\r') && !inQuotes){
-        if(cur!=='' || row.length){ row.push(cur); rows.push(row); row=[]; cur=''; }
-      } else {
-        cur+=ch;
-      }
-    }
-    if(cur!=='' || row.length){ row.push(cur); rows.push(row); }
+    const rows=parseDelimitedRows(text);
     if(!rows.length) return [];
     const headers=rows[0].map(h=> String(h||'').trim());
     return rows.slice(1).map(cols=>{
@@ -381,7 +378,7 @@ export const CargueMasivoAdmin=(mount,deps={})=>{
   }
 
   function normalizeInputRow(obj){
-    const out={ documento:'', nombre:'', telefono:'', cargoCodigo:'', sedeCodigo:'', fechaIngreso:'', fechaNacimiento:'', eps:'', afp:'', arlRiesgo:'', dotacionCamisa:'', dotacionPantalon:'', dotacionZapatos:'' };
+    const out={ documento:'', nombre:'', telefono:'', cargoCodigo:'', sedeCodigo:'', contratoCodigo:'', fechaIngreso:'', fechaNacimiento:'', eps:'', afp:'', arlRiesgo:'', dotacionCamisa:'', dotacionPantalon:'', dotacionZapatos:'' };
     Object.keys(obj||{}).forEach((k)=>{
       const key=normalizeHeaderKey(k);
       const v=String(obj[k]??'').trim();
@@ -390,6 +387,7 @@ export const CargueMasivoAdmin=(mount,deps={})=>{
       if(key==='telefono' || key==='celular' || key==='numero cel') out.telefono=v;
       if(key==='cargo codigo' || key==='cargo') out.cargoCodigo=v;
       if(key==='sede codigo' || key==='sede') out.sedeCodigo=v;
+      if(key==='contrato codigo' || key==='contrato') out.contratoCodigo=v;
       if(key==='fecha ingreso' || key==='fecha') out.fechaIngreso=v;
       if(key==='fecha nacimiento' || key==='nacimiento') out.fechaNacimiento=v;
       if(key==='eps') out.eps=v;
@@ -437,25 +435,6 @@ export const CargueMasivoAdmin=(mount,deps={})=>{
 
   function todayIsoDate(){
     return new Intl.DateTimeFormat('en-CA',{timeZone:'America/Bogota'}).format(new Date());
-  }
-
-  function downloadCsv(filename, rows){
-    const csv=rows.map(r=> r.map(csvCell).join(',')).join('\n');
-    const blob=new Blob([csv],{ type:'text/csv;charset=utf-8;' });
-    const url=URL.createObjectURL(blob);
-    const a=document.createElement('a');
-    a.href=url;
-    a.download=filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-  }
-
-  function csvCell(value){
-    const v=String(value??'');
-    if(v.includes(',') || v.includes('"') || v.includes('\n')) return `"${v.replace(/"/g,'""')}"`;
-    return v;
   }
 
   mount.replaceChildren(ui);

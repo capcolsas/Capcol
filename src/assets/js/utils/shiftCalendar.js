@@ -1,3 +1,5 @@
+export const SHIFT_GENERATION_DAYS = 30;
+
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const BOGOTA_OFFSET = '-05:00';
@@ -78,7 +80,8 @@ export function buildScheduledShiftCandidate({ template = {}, site = {}, rule = 
     startsAt,
     endsAt,
     estado: 'programado',
-    operariosPlaneados: Number(site.operariosPlaneados || 0)
+    operariosPlaneados: Number(site.operariosPlaneados || 0),
+    ...(rule.almuerzoMinutos === undefined ? {} : { almuerzoMinutos: rule.almuerzoMinutos })
   };
 }
 

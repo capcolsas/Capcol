@@ -6,6 +6,10 @@ import { ALL_ROLES, PERMISSION_ACTION_VIEW_MAP, ROLE_LABELS, ROLES, PERMS, perms
 import { getState } from '../state.js';
 
 const PERM_KEYS = [
+  PERMS.VIEW_INVENTORY,
+  PERMS.MANAGE_INVENTORY,
+  PERMS.DISPATCH_INVENTORY,
+  PERMS.RECEIVE_INVENTORY,
   PERMS.VIEW_PERMISSIONS,
   PERMS.MANAGE_PERMISSIONS,
   PERMS.VIEW_AUDIT,
@@ -73,6 +77,10 @@ const PERM_KEYS = [
 ];
 
 const PERM_LABELS = {
+  [PERMS.VIEW_INVENTORY]: 'Inventarios - Consulta',
+  [PERMS.MANAGE_INVENTORY]: 'Inventarios - Productos, ingresos y ajustes',
+  [PERMS.DISPATCH_INVENTORY]: 'Inventarios - Despachar',
+  [PERMS.RECEIVE_INVENTORY]: 'Inventarios - Registrar recibido',
   [PERMS.VIEW_PERMISSIONS]: 'Permisos - Consulta',
   [PERMS.MANAGE_PERMISSIONS]: 'Gestionar permisos',
   [PERMS.VIEW_AUDIT]: 'Auditoria - Consulta',
@@ -146,6 +154,9 @@ const PERMISSION_SECTIONS = [
     description: 'Catalogos base, estructura operativa y configuracion QR.',
     items: [
       { label: 'Zonas', view: PERMS.VIEW_ZONES, action: PERMS.EDIT_ZONES, actionLabel: 'Edicion' },
+      { label: 'Inventarios', view: PERMS.VIEW_INVENTORY, action: PERMS.MANAGE_INVENTORY, actionLabel: 'Ingresos y ajustes' },
+      { label: 'Entregas de inventario', view: PERMS.VIEW_INVENTORY, action: PERMS.DISPATCH_INVENTORY, actionLabel: 'Despachar' },
+      { label: 'Recibidos de inventario', view: PERMS.VIEW_INVENTORY, action: PERMS.RECEIVE_INVENTORY, actionLabel: 'Registrar firma' },
       { label: 'Dependencias', view: PERMS.VIEW_DEPENDENCIES, action: PERMS.EDIT_DEPENDENCIES, actionLabel: 'Edicion' },
       { label: 'Sedes', view: PERMS.VIEW_SEDES, action: PERMS.EDIT_SEDES, actionLabel: 'Edicion' },
       { label: 'Lector QR', view: PERMS.VIEW_QR_SCANNER, action: PERMS.USE_QR_SCANNER, actionLabel: 'Usar lector' },
@@ -411,9 +422,10 @@ export const PermissionsCenter = (mount, deps = {}) => {
             base[item.view] = true;
             syncPermissionCheckboxes(item.view, true);
           }
-          if (key === item.view && !ch && base[item.action] === true) {
-            base[item.action] = false;
-            syncPermissionCheckboxes(item.action, false);
+          if (key === item.view && !ch) {
+            Object.entries(PERMISSION_ACTION_VIEW_MAP).forEach(([action, view]) => {
+              if (view === key) { base[action] = false; syncPermissionCheckboxes(action, false); }
+            });
           }
           syncPermissionSectionCounts(base);
         }, disabled))

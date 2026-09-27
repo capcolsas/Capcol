@@ -14,6 +14,8 @@ export const ReportesDashboard = (mount, deps = {}) => renderModuleDashboard(mou
   actions: [
     { label: 'Empleados', route: '/reports-employees', perm: PERMS.VIEW_REPORTS_EMPLOYEES, detail: 'Vigentes por cargo, tipo, zona, dependencia y sede.' },
     { label: 'Contratacion por Sedes', route: '/reports-hiring', perm: PERMS.VIEW_REPORTS_HIRING, detail: 'Planeados, contratados y diferencia por sede.' },
+    { label: 'Dashboard Contrato', route: '/contract-dashboard', perm: PERMS.VIEW_REPORTS_CLIENT, detail: 'Metricas operativas separadas por contrato y cliente.' },
+    { label: 'Reporte Contratos', route: '/reports-contracts', perm: PERMS.VIEW_REPORTS_CLIENT, detail: 'Detalle diario, resumen por cliente y consolidado general.' },
     { label: 'Historico Registro Diario', route: '/reports-daily-history', perm: PERMS.VIEW_REPORTS_CLIENT, detail: 'Consulta por fecha y sede.' },
     { label: 'Historico Registro QR', route: '/reports-qr-history', perm: PERMS.VIEW_REPORTS_QR_HISTORY, detail: 'Consulta ingresos, salidas, pendientes y alertas QR.' },
     { label: 'Ausentismo', route: '/absenteeism', perm: PERMS.VIEW_REPORTS_ABSENTEEISM, detail: 'Analisis de ausencias.' },

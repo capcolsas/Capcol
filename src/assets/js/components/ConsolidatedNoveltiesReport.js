@@ -1,5 +1,6 @@
 import { el, qs } from '../utils/dom.js';
 import { can, PERMS } from '../permissions.js';
+import { contractFilterCode } from '../utils/contractScope.js';
 
 export const ConsolidatedNoveltiesReport = (mount, deps = {}) => {
   const canExport = can(PERMS.EXPORT_REPORTS_NOVELTIES_CONSOLIDATED);
@@ -7,6 +8,7 @@ export const ConsolidatedNoveltiesReport = (mount, deps = {}) => {
   let running = false;
   let selectedDateFrom = `${todayBogota().slice(0, 7)}-01`;
   let selectedDateTo = todayBogota();
+  let selectedContract = '';
   let sortKey = 'fecha';
   let sortDir = -1;
 
@@ -22,6 +24,10 @@ export const ConsolidatedNoveltiesReport = (mount, deps = {}) => {
         el('label', { className: 'label', for: 'noveltiesReportDateTo' }, ['Hasta']),
         el('input', { id: 'noveltiesReportDateTo', className: 'input', type: 'date', value: selectedDateTo, max: todayBogota(), style: 'max-width:180px' })
       ]),
+      el('div', {}, [
+        el('label', { className: 'label', for: 'noveltiesReportContractFilter' }, ['Contrato']),
+        el('select', { id: 'noveltiesReportContractFilter', className: 'input', style: 'max-width:260px' }, [el('option', { value: '' }, ['Todos'])])
+      ]),
       el('button', { id: 'btnGenerateNoveltiesReport', className: 'btn btn--primary', type: 'button' }, ['Generar reporte']),
       el('button', { id: 'btnExportNoveltiesReport', className: 'btn', type: 'button', disabled: true, title: canExport ? '' : 'Modo consulta: no puedes exportar.' }, ['Exportar Excel']),
       el('span', { id: 'noveltiesReportMsg', className: 'text-muted' }, [' '])
@@ -32,11 +38,12 @@ export const ConsolidatedNoveltiesReport = (mount, deps = {}) => {
           el('th', { 'data-sort-novelties-report': 'fecha', style: 'cursor:pointer' }, ['Fecha']),
           el('th', { 'data-sort-novelties-report': 'cedula', style: 'cursor:pointer' }, ['Cedula']),
           el('th', { 'data-sort-novelties-report': 'nombre', style: 'cursor:pointer' }, ['Nombre']),
+          el('th', { 'data-sort-novelties-report': 'contrato', style: 'cursor:pointer' }, ['Contrato']),
           el('th', { 'data-sort-novelties-report': 'sede', style: 'cursor:pointer' }, ['Sede']),
           el('th', { 'data-sort-novelties-report': 'novedad', style: 'cursor:pointer' }, ['Novedad']),
           el('th', { 'data-sort-novelties-report': 'cobertura', style: 'cursor:pointer' }, ['Reemplazo/Ausentismo'])
         ])]),
-        el('tbody', { id: 'noveltiesReportTbody' }, [el('tr', {}, [el('td', { colSpan: 6, className: 'text-muted' }, ['Sin generar.'])])])
+        el('tbody', { id: 'noveltiesReportTbody' }, [el('tr', {}, [el('td', { colSpan: 7, className: 'text-muted' }, ['Sin generar.'])])])
       ])
     ]),
     el('p', { id: 'noveltiesReportTotal', className: 'text-muted mt-2' }, ['Selecciona el periodo y genera el reporte.'])
@@ -44,6 +51,11 @@ export const ConsolidatedNoveltiesReport = (mount, deps = {}) => {
 
   qs('#btnGenerateNoveltiesReport', ui)?.addEventListener('click', generateReport);
   qs('#btnExportNoveltiesReport', ui)?.addEventListener('click', exportExcel);
+  qs('#noveltiesReportContractFilter', ui)?.addEventListener('change', () => {
+    selectedContract = String(qs('#noveltiesReportContractFilter', ui)?.value || '').trim();
+    renderTable();
+  });
+  const unContracts = deps.streamContracts?.((rows) => syncContractOptions(rows || [])) || (() => {});
   ui.querySelectorAll('#noveltiesReportTable th[data-sort-novelties-report]').forEach((th) => {
     th.addEventListener('click', () => {
       const key = String(th.getAttribute('data-sort-novelties-report') || '').trim();
@@ -59,7 +71,7 @@ export const ConsolidatedNoveltiesReport = (mount, deps = {}) => {
 
   mount.replaceChildren(ui);
   updateSortIndicators();
-  return ui;
+  return () => unContracts?.();
 
   function setMessage(text) {
     qs('#noveltiesReportMsg', ui).textContent = text || ' ';
@@ -142,6 +154,8 @@ export const ConsolidatedNoveltiesReport = (mount, deps = {}) => {
         fecha: String(row?.fecha || '').trim() || '-',
         cedula: String(row?.documento || '').trim() || '-',
         nombre: String(row?.nombre || '').trim() || '-',
+        contrato: String(row?.contratoNombre || row?.contratoCodigo || '-').trim() || '-',
+        contratoCodigo: String(row?.contratoCodigo || '').trim(),
         sede: String(row?.sedeNombreSnapshot || row?.sedeCodigo || '-').trim() || '-',
         novedad: displayNovedadLabel(row),
         cobertura: coverageDetail(row, replacementMap)
@@ -165,11 +179,12 @@ export const ConsolidatedNoveltiesReport = (mount, deps = {}) => {
   }
 
   function renderRows(rows = []) {
-    if (!rows.length) return [el('tr', {}, [el('td', { colSpan: 6, className: 'text-muted' }, ['Sin novedades para el periodo seleccionado.'])])];
+    if (!rows.length) return [el('tr', {}, [el('td', { colSpan: 7, className: 'text-muted' }, ['Sin novedades para el periodo seleccionado.'])])];
     return rows.map((row) => el('tr', {}, [
       el('td', {}, [row.fecha]),
       el('td', {}, [row.cedula]),
       el('td', {}, [row.nombre]),
+      el('td', {}, [row.contrato]),
       el('td', {}, [row.sede]),
       el('td', {}, [row.novedad]),
       el('td', {}, [row.cobertura])
@@ -178,8 +193,43 @@ export const ConsolidatedNoveltiesReport = (mount, deps = {}) => {
 
   function renderTable() {
     const tbody = qs('#noveltiesReportTbody', ui);
-    if (tbody) tbody.replaceChildren(...renderRows(sortRows(generatedRows, sortKey, sortDir)));
+    const rows = sortRows(getFilteredRows(), sortKey, sortDir);
+    if (tbody) tbody.replaceChildren(...renderRows(rows));
+    const peopleCount = new Set(rows.map((row) => `${row.cedula}|${row.nombre}`)).size;
+    const totalNode = qs('#noveltiesReportTotal', ui);
+    if (totalNode && generatedRows.length) totalNode.textContent = `Periodo: ${selectedDateFrom} a ${selectedDateTo} | Registros: ${rows.length} de ${generatedRows.length} | Personas: ${peopleCount}`;
     updateSortIndicators();
+  }
+
+  function getFilteredRows() {
+    const contract = effectiveContractFilter();
+    return (generatedRows || []).filter((row) => !contract || row.contratoCodigo === contract);
+  }
+
+  function effectiveContractFilter() {
+    return String(qs('#noveltiesReportContractFilter', ui)?.value || selectedContract || contractFilterCode() || '').trim();
+  }
+
+  function syncContractOptions(rows = []) {
+    const select = qs('#noveltiesReportContractFilter', ui);
+    if (!select) return;
+    const previous = String(select.value || selectedContract || '').trim();
+    const globalContract = contractFilterCode();
+    const byCode = new Map();
+    (rows || []).forEach((row) => {
+      const code = String(row?.codigo || row?.contratoCodigo || '').trim();
+      if (globalContract && code !== globalContract) return;
+      if (!code || byCode.has(code)) return;
+      const label = String(row?.nombre || row?.contratoNombre || code).trim() || code;
+      byCode.set(code, label);
+    });
+    const options = Array.from(byCode.entries()).sort((a, b) => a[1].localeCompare(b[1]));
+    select.replaceChildren(
+      el('option', { value: '' }, ['Todos']),
+      ...options.map(([code, label]) => el('option', { value: code, selected: code === previous }, [`${label} (${code})`]))
+    );
+    select.value = byCode.has(previous) ? previous : '';
+    selectedContract = select.value;
   }
 
   function updateSortIndicators() {
@@ -205,6 +255,7 @@ export const ConsolidatedNoveltiesReport = (mount, deps = {}) => {
     running = true;
     selectedDateFrom = dateFrom;
     selectedDateTo = dateTo;
+    selectedContract = String(qs('#noveltiesReportContractFilter', ui)?.value || '').trim();
     const btnGenerate = qs('#btnGenerateNoveltiesReport', ui);
     const btnExport = qs('#btnExportNoveltiesReport', ui);
     try {
@@ -213,13 +264,10 @@ export const ConsolidatedNoveltiesReport = (mount, deps = {}) => {
         btnGenerate.textContent = 'Generando...';
       }
       const [statusRows, replacementRows] = await Promise.all([
-        deps.listEmployeeDailyStatusRange?.(dateFrom, dateTo) || [],
-        deps.listImportReplacementsRange?.(dateFrom, dateTo) || []
+        deps.listEmployeeDailyStatusRange?.(dateFrom, dateTo, { contratoCodigo: effectiveContractFilter() }) || [],
+        deps.listImportReplacementsRange?.(dateFrom, dateTo, { contratoCodigo: effectiveContractFilter() }) || []
       ]);
       generatedRows = normalizeRows(statusRows, replacementRows);
-      const peopleCount = new Set(generatedRows.map((row) => `${row.cedula}|${row.nombre}`)).size;
-      const totalNode = qs('#noveltiesReportTotal', ui);
-      if (totalNode) totalNode.textContent = `Periodo: ${dateFrom} a ${dateTo} | Registros: ${generatedRows.length} | Personas: ${peopleCount}`;
       renderTable();
       if (btnExport) btnExport.disabled = !canExport || generatedRows.length === 0;
       setMessage(' ');
@@ -237,26 +285,29 @@ export const ConsolidatedNoveltiesReport = (mount, deps = {}) => {
   async function exportExcel() {
     const btn = qs('#btnExportNoveltiesReport', ui);
     try {
-      if (!generatedRows.length) throw new Error('Primero genera el reporte.');
+      const rows = getFilteredRows();
+      if (!rows.length) throw new Error('Primero genera el reporte o ajusta los filtros.');
       if (!canExport) throw new Error('No tienes permiso para exportar este reporte.');
       if (btn) {
         btn.disabled = true;
         btn.textContent = 'Generando...';
       }
       const mod = await import('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm');
-      const ws = mod.utils.json_to_sheet(generatedRows.map((row) => ({
+      const ws = mod.utils.json_to_sheet(rows.map((row) => ({
         Fecha: row.fecha,
         Cedula: row.cedula,
         Nombre: row.nombre,
+        Contrato: row.contrato,
+        'Codigo Contrato': row.contratoCodigo,
         Sede: row.sede,
         Novedad: row.novedad,
         'Reemplazo/Ausentismo': row.cobertura
       })));
-      ws['!cols'] = [{ wch: 12 }, { wch: 18 }, { wch: 30 }, { wch: 30 }, { wch: 28 }, { wch: 24 }];
+      ws['!cols'] = [{ wch: 12 }, { wch: 18 }, { wch: 30 }, { wch: 30 }, { wch: 18 }, { wch: 30 }, { wch: 28 }, { wch: 24 }];
       const wb = mod.utils.book_new();
       mod.utils.book_append_sheet(wb, ws, 'Consolidado Novedades');
       mod.writeFile(wb, `reporte_consolidado_novedades_${selectedDateFrom}_a_${selectedDateTo}.xlsx`);
-      setMessage(`Excel generado correctamente. Registros: ${generatedRows.length}`);
+      setMessage(`Excel generado correctamente. Registros: ${rows.length}`);
     } catch (error) {
       setMessage(`Error al generar Excel: ${error?.message || error}`);
     } finally {

@@ -1,5 +1,6 @@
 import { supabaseAdmin } from './supabase.js';
 import {
+  SHIFT_GENERATION_DAYS,
   addIsoDays,
   buildScheduledShiftCandidate,
   listIsoDatesInRange,
@@ -30,15 +31,20 @@ export function mapShiftTemplateRuleRow(row = {}) {
     horaInicio: row.hora_inicio || null,
     horaFin: row.hora_fin || null,
     cruzaDia: row.cruza_dia === true,
+    almuerzoMinutos: row.almuerzo_minutos == null ? undefined : Number(row.almuerzo_minutos),
     frecuenciaTipo: row.frecuencia_tipo || 'todos',
     frecuenciaSemanas: Number(row.frecuencia_semanas || 1),
     fechaAncla: row.fecha_ancla || null,
     semanaMes: row.semana_mes == null ? null : Number(row.semana_mes || 0),
     festivoModo: row.festivo_modo || 'excluir',
     ventanaEntradaAntesMinutos: Number(row.ventana_entrada_antes_minutos || 0),
+    alertaEntradaAntesMinutos: Number(row.alerta_entrada_antes_minutos ?? row.ventana_entrada_antes_minutos ?? 0),
     ventanaEntradaDespuesMinutos: Number(row.ventana_entrada_despues_minutos || 0),
+    alertaEntradaDespuesMinutos: Number(row.alerta_entrada_despues_minutos ?? row.ventana_entrada_despues_minutos ?? 0),
     ventanaSalidaAntesMinutos: Number(row.ventana_salida_antes_minutos || 0),
+    alertaSalidaAntesMinutos: Number(row.alerta_salida_antes_minutos ?? row.ventana_salida_antes_minutos ?? 0),
     ventanaSalidaDespuesMinutos: Number(row.ventana_salida_despues_minutos || 0),
+    alertaSalidaDespuesMinutos: Number(row.alerta_salida_despues_minutos ?? row.ventana_salida_despues_minutos ?? 0),
     ventanaNovedadHoras: Number(row.ventana_novedad_horas || 0),
     estado: row.estado || 'activo',
     orden: Number(row.orden || 0),
@@ -61,6 +67,7 @@ export function mapScheduledShiftRow(row = {}) {
     endsAt: row.ends_at || null,
     estado: row.estado || 'programado',
     operariosPlaneados: Number(row.operarios_planeados || 0),
+    almuerzoMinutos: row.almuerzo_minutos == null ? undefined : Number(row.almuerzo_minutos),
     template,
     rule
   };
@@ -73,7 +80,7 @@ function mapShiftSitePlanAssignmentRow(row = {}) {
     sedeCodigo: row.sede_codigo || null,
     sedeNombre: row.sede_nombre || null,
     operariosPlaneados: Number(row.operarios_planeados || 0),
-    horizonDays: Number(row.horizon_days || 90),
+    horizonDays: SHIFT_GENERATION_DAYS,
     estado: row.estado || 'activo'
   };
 }
@@ -128,8 +135,8 @@ export async function renewActiveShiftPlans({ dateFrom = todayBogota() } = {}) {
 
   const templateIds = [...new Set(assignments.map((row) => row.templateId))];
   const sedeCodigos = [...new Set(assignments.map((row) => row.sedeCodigo))];
-  const days = Math.min(370, Math.max(...assignments.map((row) => Number(row.horizonDays || 90))));
-  const dateTo = addIsoDays(dateFrom, days - 1);
+  // Include today's operational recovery plus the same 30 future days as activation.
+  const dateTo = addIsoDays(dateFrom, SHIFT_GENERATION_DAYS);
   const [templatesRaw, rulesRaw, existingRaw] = await Promise.all([
     selectPagedRows(() => supabaseAdmin
       .from('shift_templates')
@@ -197,7 +204,8 @@ export async function renewActiveShiftPlans({ dateFrom = todayBogota() } = {}) {
           starts_at: candidate.startsAt,
           ends_at: candidate.endsAt,
           estado: candidate.estado,
-          operarios_planeados: candidate.operariosPlaneados
+          operarios_planeados: candidate.operariosPlaneados,
+          ...(candidate.almuerzoMinutos === undefined ? {} : { almuerzo_minutos: candidate.almuerzoMinutos })
         });
         existingKeys.add(key);
       });
@@ -217,6 +225,7 @@ export async function renewActiveShiftPlans({ dateFrom = todayBogota() } = {}) {
   }
 
   return {
+    rotations: await renewShiftRotations(),
     assignments: assignments.length,
     created,
     skippedExisting,
@@ -224,6 +233,19 @@ export async function renewActiveShiftPlans({ dateFrom = todayBogota() } = {}) {
     dateFrom,
     dateTo
   };
+}
+
+async function renewShiftRotations() {
+  const { data, error } = await supabaseAdmin.from('shift_rotations').select('id').eq('estado', 'activo');
+  if (error?.code === 'PGRST205' || error?.code === '42P01') return 0;
+  if (error) throw error;
+  let assigned = 0;
+  for (const rotation of data || []) {
+    const result = await supabaseAdmin.rpc('apply_shift_rotation', { p_id: rotation.id, p_activate: false });
+    if (result.error) throw result.error;
+    assigned += Number(result.data || 0);
+  }
+  return assigned;
 }
 
 export async function listScheduledShiftsForOperationalDate(fechaOperativa, { sedeCodigo = null, estados = ['programado', 'abierto'] } = {}) {
@@ -392,24 +414,20 @@ export function classifyShiftEventTime(shift = {}, action = 'entry', eventAt = n
   }
 
   const template = shift.rule || shift.template || {};
-  const minuteMs = 60000;
-  if (action === 'exit') {
-    const before = Number(template.ventanaSalidaAntesMinutos || 0);
-    const after = Number(template.ventanaSalidaDespuesMinutos || 0);
-    const normalFrom = new Date(end.getTime() - before * minuteMs);
-    const normalUntil = new Date(end.getTime() + after * minuteMs);
-    if (eventDate < normalFrom) return { status: 'salida_anticipada', minutes: Math.ceil((normalFrom.getTime() - eventDate.getTime()) / minuteMs), requiresReview: true };
-    if (eventDate > normalUntil) return { status: 'salida_tardia', minutes: Math.ceil((eventDate.getTime() - normalUntil.getTime()) / minuteMs), requiresReview: true };
-    return { status: 'normal', minutes: 0, requiresReview: false };
-  }
-
-  const before = Number(template.ventanaEntradaAntesMinutos || 0);
-  const after = Number(template.ventanaEntradaDespuesMinutos || 0);
-  const normalFrom = new Date(start.getTime() - before * minuteMs);
-  const normalUntil = new Date(start.getTime() + after * minuteMs);
-  if (eventDate < normalFrom) return { status: 'entrada_anticipada', minutes: Math.ceil((normalFrom.getTime() - eventDate.getTime()) / minuteMs), requiresReview: true };
-  if (eventDate > normalUntil) return { status: 'entrada_tardia', minutes: Math.ceil((eventDate.getTime() - normalUntil.getTime()) / minuteMs), requiresReview: true };
-  return { status: 'normal', minutes: 0, requiresReview: false };
+  const delta = (eventDate.getTime() - (action === 'exit' ? end : start).getTime()) / 60000;
+  const side = action === 'exit' ? 'Salida' : 'Entrada';
+  const direction = delta < 0 ? 'Antes' : 'Despues';
+  const control = Number(template[`ventana${side}${direction}Minutos`] || 0);
+  const alert = Number(template[`alerta${side}${direction}Minutos`] ?? control);
+  const elapsed = Math.abs(delta);
+  const type = `${action === 'exit' ? 'salida' : 'entrada'}_${delta < 0 ? 'anticipada' : 'tardia'}`;
+  const minutes = Math.max(0, Math.ceil(elapsed - control));
+  const timingAlerts = elapsed > alert ? { [type]: Math.ceil(elapsed) } : {};
+  return {
+    status: minutes > 0 ? type : 'normal', minutes,
+    requiresReview: minutes > 0 || Object.keys(timingAlerts).length > 0,
+    timingAlerts
+  };
 }
 
 export async function closeDueScheduledShifts({ now = new Date(), limit = 100 } = {}) {
@@ -418,12 +436,17 @@ export async function closeDueScheduledShifts({ now = new Date(), limit = 100 } 
   if (Number.isNaN(nowDate.getTime())) throw new Error('invalid_now');
   const nowIso = nowDate.toISOString();
   const safeLimit = Math.min(500, Math.max(1, Number(limit) || 100));
-  const rows = await selectPagedRows(() => supabaseAdmin
-    .from('scheduled_shifts')
-    .select('*,shift_templates(*),shift_template_rules(*)')
-    .in('estado', ['programado', 'abierto'])
-    .lte('ends_at', nowIso)
-    .order('ends_at', { ascending: true }), 500);
+  const [openRows, unfinishedClosures] = await Promise.all([
+    selectPagedRows(() => supabaseAdmin.from('scheduled_shifts')
+      .select('*,shift_templates(*),shift_template_rules(*)')
+      .in('estado', ['programado', 'abierto']).lte('ends_at', nowIso)
+      .order('ends_at', { ascending: true }), 500),
+    selectPagedRows(() => supabaseAdmin.from('scheduled_shifts')
+      .select('*,shift_templates(*),shift_template_rules(*),shift_closures(id)')
+      .eq('estado', 'cerrado').is('shift_closures', null).lte('ends_at', nowIso)
+      .order('ends_at', { ascending: true }), 500)
+  ]);
+  const rows = [...unfinishedClosures, ...openRows];
 
   const due = [];
   for (const row of rows || []) {
@@ -484,7 +507,7 @@ export async function closeScheduledShiftAutomatically(scheduledShiftId, { now =
       .eq('scheduled_shift_id', shiftId)
       .maybeSingle();
     if (closureError) throw closureError;
-    return { status: 'already_closed', scheduledShiftId: shiftId, closure: closureRow || null };
+    if (closureRow) return { status: 'already_closed', scheduledShiftId: shiftId, closure: closureRow };
   }
 
   const [statusRows, assignmentRows, authorizationRows, adjustmentRows, sedeRows] = await Promise.all([
@@ -495,14 +518,15 @@ export async function closeScheduledShiftAutomatically(scheduledShiftId, { now =
     selectPagedRows(() => supabaseAdmin.from('sedes').select('codigo,qr_enabled').eq('codigo', shiftRow.sede_codigo).limit(1))
   ]);
   const qrEnabled = sedeRows[0]?.qr_enabled === true;
+  const shift = mapScheduledShiftRow(shiftRow);
   let effectiveStatusRows = statusRows || [];
   if ((assignmentRows || []).length && effectiveStatusRows.length < (assignmentRows || []).length) {
     await seedEmployeeShiftStatusFromAssignments(assignmentRows || []);
     effectiveStatusRows = await selectPagedRows(() => supabaseAdmin.from('employee_shift_status').select('*').eq('scheduled_shift_id', shiftId));
   }
 
-  const finalizedStatuses = finalizeShiftStatusesForClosure(effectiveStatusRows, { qrEnabled });
-  const shift = mapScheduledShiftRow(shiftRow);
+  const { data: finalizedStatuses, error: finalizeError } = await supabaseAdmin.rpc('finalize_shift_attendance', { p_shift_id: shiftId });
+  if (finalizeError) throw finalizeError;
   const summary = summarizeShiftClosure({
     shift,
     statuses: finalizedStatuses,
@@ -539,7 +563,6 @@ export async function closeScheduledShiftAutomatically(scheduledShiftId, { now =
     }
   };
 
-  await applyShiftStatusClosureUpdates(shiftId, { qrEnabled });
   const { data: closureRows, error: closureError } = await supabaseAdmin
     .from('shift_closures')
     .upsert(closurePayload, { onConflict: 'scheduled_shift_id' })
@@ -644,20 +667,6 @@ async function seedEmployeeShiftStatusFromAssignments(assignments = []) {
   return { saved: statusRows.length };
 }
 
-function finalizeShiftStatusesForClosure(rows = [], { qrEnabled = false } = {}) {
-  return (rows || []).map((row) => {
-    const next = { ...row };
-    const estado = String(next.estado_turno || 'programado').trim();
-    const attended = next.asistio === true || Boolean(next.entrada_at);
-    if (estado === 'programado') next.estado_turno = 'sin_registro';
-    if (qrEnabled && attended && !next.salida_at && !['ausente_con_novedad', 'cancelado'].includes(estado)) {
-      next.estado_turno = 'salida_pendiente';
-    }
-    next.closed = true;
-    return next;
-  });
-}
-
 function summarizeShiftClosure({ shift = {}, statuses = [], assignments = [], pendingAuthorizations = [], pendingAdjustments = [] } = {}) {
   const activeStatuses = (statuses || []).filter((row) => String(row.estado_turno || '') !== 'cancelado');
   const planeados = Math.max(0, Number(shift.operariosPlaneados || 0));
@@ -685,29 +694,3 @@ function summarizeShiftClosure({ shift = {}, statuses = [], assignments = [], pe
   };
 }
 
-async function applyShiftStatusClosureUpdates(shiftId, { qrEnabled = false } = {}) {
-  const id = String(shiftId || '').trim();
-  if (!id) return;
-  const { error: missingError } = await supabaseAdmin
-    .from('employee_shift_status')
-    .update({ estado_turno: 'sin_registro' })
-    .eq('scheduled_shift_id', id)
-    .eq('estado_turno', 'programado')
-    .eq('closed', false);
-  if (missingError) throw missingError;
-  if (qrEnabled) {
-    const { error: pendingExitError } = await supabaseAdmin
-      .from('employee_shift_status')
-      .update({ estado_turno: 'salida_pendiente' })
-      .eq('scheduled_shift_id', id)
-      .eq('closed', false)
-      .eq('asistio', true)
-      .is('salida_at', null);
-    if (pendingExitError) throw pendingExitError;
-  }
-  const { error: closedError } = await supabaseAdmin
-    .from('employee_shift_status')
-    .update({ closed: true })
-    .eq('scheduled_shift_id', id);
-  if (closedError) throw closedError;
-}

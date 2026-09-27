@@ -1,5 +1,6 @@
 import { el, qs, viewIcon } from '../utils/dom.js';
 import { createTablePagination } from '../utils/pagination.js';
+import { contractFilterCode } from '../utils/contractScope.js';
 
 export const ImportHistory = (mount, deps = {}) => {
   const ui = el('section', { className: 'main-card' }, [
@@ -37,6 +38,7 @@ export const ImportHistory = (mount, deps = {}) => {
               el('th', { 'data-sort-detail': 'fecha', style: 'cursor:pointer' }, ['Fecha']),
               el('th', { 'data-sort-detail': 'hora', style: 'cursor:pointer' }, ['Hora']),
               el('th', { 'data-sort-detail': 'sede', style: 'cursor:pointer' }, ['Sede']),
+              el('th', { 'data-sort-detail': 'contrato', style: 'cursor:pointer' }, ['Contrato']),
               el('th', { 'data-sort-detail': 'documento', style: 'cursor:pointer' }, ['Documento']),
               el('th', { 'data-sort-detail': 'nombre', style: 'cursor:pointer' }, ['Nombre']),
               el('th', { 'data-sort-detail': 'novedad', style: 'cursor:pointer' }, ['Novedad']),
@@ -203,9 +205,9 @@ export const ImportHistory = (mount, deps = {}) => {
     qs('#msg', ui).textContent = 'Cargando detalle...';
     try {
       const [statusRows, attendance, sedeClosures] = await Promise.all([
-        deps.listEmployeeDailyStatusRange?.(date, date) || [],
-        deps.listAttendanceRange?.(date, date) || [],
-        deps.listDailySedeClosuresRange?.(date, date) || []
+        deps.listEmployeeDailyStatusRange?.(date, date, { contratoCodigo: contractFilterCode() }) || [],
+        deps.listAttendanceRange?.(date, date, { contratoCodigo: contractFilterCode() }) || [],
+        deps.listDailySedeClosuresRange?.(date, date, { contratoCodigo: contractFilterCode() }) || []
       ]);
 
       const attendanceByKey = new Map();
@@ -231,6 +233,7 @@ export const ImportHistory = (mount, deps = {}) => {
             fecha: statusRow.fecha || date,
             hora: attendanceRow?.hora || '-',
             sede: statusRow.sedeNombreSnapshot || statusRow.sedeCodigo || '-',
+            contrato: statusRow.contratoNombre || statusRow.contratoNombreSnapshot || statusRow.contratoCodigo || '-',
             documento: statusRow.documento || '-',
             nombre: statusRow.nombre || '-',
             novedad: statusRow.novedadNombre || statusRow.novedadCodigo || '-',
@@ -244,6 +247,7 @@ export const ImportHistory = (mount, deps = {}) => {
           fecha: date,
           hora: '-',
           sede,
+          contrato: closure?.contratoNombre || closure?.contratoCodigo || '-',
           documento: '-',
           nombre: `No contratado ${index + 1}`,
           novedad: '-',
@@ -287,6 +291,7 @@ export const ImportHistory = (mount, deps = {}) => {
     if (key === 'fecha') return String(r.fecha || '');
     if (key === 'hora') return String(r.hora || '');
     if (key === 'sede') return String(r.sede || '').toLowerCase();
+    if (key === 'contrato') return String(r.contrato || '').toLowerCase();
     if (key === 'documento') return String(r.documento || '');
     if (key === 'nombre') return String(r.nombre || '').toLowerCase();
     if (key === 'novedad') return String(r.novedad || '').toLowerCase();
@@ -307,6 +312,7 @@ export const ImportHistory = (mount, deps = {}) => {
       el('td', {}, [r.fecha]),
       el('td', {}, [r.hora]),
       el('td', {}, [r.sede]),
+      el('td', {}, [r.contrato]),
       el('td', {}, [r.documento]),
       el('td', {}, [r.nombre]),
       el('td', {}, [r.novedad]),
@@ -353,6 +359,7 @@ export const ImportHistory = (mount, deps = {}) => {
       ]),
       el('dl', { className: 'record-card__meta' }, [
         ['Sede', row.sede || '-'],
+        ['Contrato', row.contrato || '-'],
         ['Novedad', row.novedad || '-'],
         ['Estado', row.estado || '-']
       ].map(([label, value]) => el('div', { className: 'record-card__meta-item' }, [

@@ -1,6 +1,8 @@
+import { markingSitesLabel } from '../utils/attendanceTracking.js';
 import { el, qs, enableSectionToggles } from '../utils/dom.js';
 import { createTablePagination } from '../utils/pagination.js';
 import { can, PERMS } from '../permissions.js';
+import { contractFilterCode, contractMatches } from '../utils/contractScope.js';
 
 export const HistoricalQrRegistry = (mount, deps = {}) => {
   const canExport = can(PERMS.EXPORT_REPORTS_QR_HISTORY);
@@ -17,7 +19,7 @@ export const HistoricalQrRegistry = (mount, deps = {}) => {
   let pendingSortDir = 1;
 
   const ui = el('section', { className: 'main-card' }, [
-    el('h2', {}, ['Historico Registro QR']),
+    el('h2', {}, ['Historico de asistencia']),
     el('div', { className: 'form-row mt-2' }, [
       el('div', {}, [
         el('label', { className: 'label', for: 'historicalQrDate' }, ['Fecha']),
@@ -42,14 +44,14 @@ export const HistoricalQrRegistry = (mount, deps = {}) => {
       el('span', { id: 'historicalQrMsg', className: 'text-muted' }, [' '])
     ]),
     el('section', { className: 'wa-stats wa-stats--nov wa-stats--qr-registry mt-2' }, [
-      statCard('Programados QR', 'historicalQrScheduled', '0'),
-      statCard('Ingresos QR', 'historicalQrEntries', '0'),
+      statCard('Turnos programados', 'historicalQrScheduled', '0'),
+      statCard('Ingresos', 'historicalQrEntries', '0'),
       statCard('Con salida', 'historicalQrWithExit', '0'),
       statCard('Pendientes ingreso', 'historicalQrPending', '0'),
       statCard('Alertas celular', 'historicalQrPhoneAlerts', '0')
     ]),
     el('div', { className: 'section-block mt-2' }, [
-      el('h3', { className: 'section-title' }, ['Registros QR del dia']),
+      el('h3', { className: 'section-title' }, ['Registros de asistencia del dia']),
       el('div', { className: 'responsive-records' }, [
         el('div', { className: 'table-wrap responsive-table-view' }, [
           el('table', { className: 'table wa-live-table', id: 'tblHistoricalQr' }, [
@@ -58,6 +60,7 @@ export const HistoricalQrRegistry = (mount, deps = {}) => {
                 el('th', { 'data-sort-qr': 'documento', style: 'cursor:pointer' }, ['Cedula']),
                 el('th', { 'data-sort-qr': 'nombre', style: 'cursor:pointer' }, ['Nombre']),
                 el('th', { 'data-sort-qr': 'sede', style: 'cursor:pointer' }, ['Sede']),
+                el('th', { 'data-sort-qr': 'contrato', style: 'cursor:pointer' }, ['Contrato']),
                 el('th', { 'data-sort-qr': 'entryAt', style: 'cursor:pointer' }, ['Ingreso']),
                 el('th', { 'data-sort-qr': 'exitAt', style: 'cursor:pointer' }, ['Salida']),
                 el('th', { 'data-sort-qr': 'employeePhone', style: 'cursor:pointer' }, ['Celular empleado']),
@@ -72,10 +75,10 @@ export const HistoricalQrRegistry = (mount, deps = {}) => {
         ]),
         el('div', { id: 'historicalQrCards', className: 'record-card-list' }, [])
       ]),
-      el('p', { id: 'historicalQrTotal', className: 'text-muted' }, ['Total registros QR: 0'])
+      el('p', { id: 'historicalQrTotal', className: 'text-muted' }, ['Total registros de asistencia: 0'])
     ]),
     el('div', { className: 'section-block mt-2' }, [
-      el('h3', { className: 'section-title' }, ['Pendientes de ingreso QR']),
+      el('h3', { className: 'section-title' }, ['Pendientes de ingreso']),
       el('div', { style: 'display:flex;justify-content:space-between;gap:.75rem;align-items:center;flex-wrap:wrap;' }, [
         el('span', { id: 'historicalQrPendingSummary', className: 'text-muted', style: 'font-size:.86rem;' }, ['0 empleados pendientes']),
         el('div', { className: 'wa-field', style: 'min-width:220px;' }, [
@@ -85,7 +88,7 @@ export const HistoricalQrRegistry = (mount, deps = {}) => {
           ])
         ])
       ]),
-      el('div', { id: 'historicalQrPendingEmpty', className: 'text-muted mt-1', style: 'display:none;' }, ['Sin pendientes de ingreso QR para la fecha seleccionada.']),
+      el('div', { id: 'historicalQrPendingEmpty', className: 'text-muted mt-1', style: 'display:none;' }, ['Sin pendientes de ingreso para la fecha seleccionada.']),
       el('div', { id: 'historicalQrPendingWrap', className: 'responsive-records mt-1' }, [
         el('div', { className: 'table-wrap responsive-table-view' }, [
           el('table', { id: 'tblHistoricalQrPending', className: 'table wa-live-table' }, [
@@ -95,6 +98,7 @@ export const HistoricalQrRegistry = (mount, deps = {}) => {
                 el('th', { 'data-pending-sort-qr': 'nombre', style: 'cursor:pointer' }, ['Nombre']),
                 el('th', { 'data-pending-sort-qr': 'telefono', style: 'cursor:pointer' }, ['Telefono']),
                 el('th', { 'data-pending-sort-qr': 'sede', style: 'cursor:pointer' }, ['Sede']),
+                el('th', { 'data-pending-sort-qr': 'contrato', style: 'cursor:pointer' }, ['Contrato']),
                 el('th', { 'data-pending-sort-qr': 'dependencia', style: 'cursor:pointer' }, ['Dependencia']),
                 el('th', { 'data-pending-sort-qr': 'zona', style: 'cursor:pointer' }, ['Zona'])
               ])
@@ -202,7 +206,8 @@ export const HistoricalQrRegistry = (mount, deps = {}) => {
         hour12: false,
         hour: '2-digit',
         minute: '2-digit',
-        second: '2-digit'
+        second: '2-digit',
+        timeZone: 'America/Bogota'
       });
     } catch (_) {
       return '-';
@@ -212,7 +217,7 @@ export const HistoricalQrRegistry = (mount, deps = {}) => {
   function formatEntry(row = {}) {
     const hour = formatHour(row.entryAt);
     const label = String(row.entryLabel || '').trim();
-    if (!label) return hour;
+    if (!label) return [hour, row.entryMethod === 'location' ? 'Ubicacion' : row.entryMethod === 'qr' ? 'QR' : '', row.turnoNombre || ''].filter(Boolean).join(' · ');
     return hour === '-' ? label : `${hour} (${label})`;
   }
 
@@ -241,8 +246,11 @@ export const HistoricalQrRegistry = (mount, deps = {}) => {
     return normalize([
       row.documento,
       row.nombre,
-      row.sedeNombre,
+      row.sedeNombre, row.entrySiteName, row.exitSiteName,
       row.sedeCodigo,
+      row.contratoCodigo,
+      row.contratoNombre,
+      row.clienteNombreSnapshot,
       row.employeePhone,
       row.entryPhone,
       row.exitPhone
@@ -256,6 +264,9 @@ export const HistoricalQrRegistry = (mount, deps = {}) => {
       row.telefono,
       row.sedeNombre,
       row.sedeCodigo,
+      row.contratoCodigo,
+      row.contratoNombre,
+      row.clienteNombreSnapshot,
       row.dependenciaNombre,
       row.zonaNombre
     ].join(' '));
@@ -263,6 +274,7 @@ export const HistoricalQrRegistry = (mount, deps = {}) => {
 
   function sortValue(row = {}, key) {
     if (key === 'sede') return normalize(row.sedeNombre || row.sedeCodigo);
+    if (key === 'contrato') return normalize(row.contratoNombre || row.contratoCodigo || row.clienteNombreSnapshot);
     if (key === 'distance') return Math.max(Number(row.entryDistanceMeters || 0), Number(row.exitDistanceMeters || 0));
     if (key === 'alert') return row.phoneDifferent ? 1 : 0;
     return normalize(row[key]);
@@ -270,6 +282,7 @@ export const HistoricalQrRegistry = (mount, deps = {}) => {
 
   function pendingSortValue(row = {}, key) {
     if (key === 'sede') return normalize(row.sedeNombre || row.sedeCodigo);
+    if (key === 'contrato') return normalize(row.contratoNombre || row.contratoCodigo || row.clienteNombreSnapshot);
     if (key === 'dependencia') return normalize(row.dependenciaNombre || row.dependenciaCodigo);
     if (key === 'zona') return normalize(row.zonaNombre || row.zonaCodigo);
     return normalize(row[key]);
@@ -300,12 +313,14 @@ export const HistoricalQrRegistry = (mount, deps = {}) => {
 
   function filteredRecords() {
     const term = normalize(searchTerm);
-    return term ? rows.filter((row) => recordSearchText(row).includes(term)) : rows;
+    const scoped = rows.filter((row) => contractMatches(row));
+    return term ? scoped.filter((row) => recordSearchText(row).includes(term)) : scoped;
   }
 
   function filteredPending() {
     const term = normalize(searchTerm);
-    const searched = term ? pendingRows.filter((row) => pendingSearchText(row).includes(term)) : pendingRows;
+    const scoped = pendingRows.filter((row) => contractMatches(row));
+    const searched = term ? scoped.filter((row) => pendingSearchText(row).includes(term)) : scoped;
     updateZoneOptions(searched);
     return searched.filter((row) => (
       pendingZone === 'all' || String(row.zonaNombre || row.zonaCodigo || '').trim() === pendingZone
@@ -313,13 +328,13 @@ export const HistoricalQrRegistry = (mount, deps = {}) => {
   }
 
   function renderStats(visibleRecords = rows, visiblePending = pendingRows) {
-    const entries = rows.filter((row) => row.entryAt).length;
-    qs('#historicalQrScheduled', ui).textContent = String(entries + pendingRows.length);
+    const entries = visibleRecords.filter((row) => row.entryAt).length;
+    qs('#historicalQrScheduled', ui).textContent = String(entries + visiblePending.length);
     qs('#historicalQrEntries', ui).textContent = String(entries);
-    qs('#historicalQrWithExit', ui).textContent = String(rows.filter((row) => row.exitAt).length);
-    qs('#historicalQrPending', ui).textContent = String(pendingRows.length);
-    qs('#historicalQrPhoneAlerts', ui).textContent = String(rows.filter((row) => row.phoneDifferent).length);
-    qs('#historicalQrTotal', ui).textContent = `Total registros QR: ${rows.length}. Filtrados: ${visibleRecords.length}.`;
+    qs('#historicalQrWithExit', ui).textContent = String(visibleRecords.filter((row) => row.exitAt).length);
+    qs('#historicalQrPending', ui).textContent = String(visiblePending.length);
+    qs('#historicalQrPhoneAlerts', ui).textContent = String(visibleRecords.filter((row) => row.phoneDifferent).length);
+    qs('#historicalQrTotal', ui).textContent = `Total registros de asistencia: ${rows.length}. Filtrados: ${visibleRecords.length}.`;
     qs('#historicalQrPendingSummary', ui).textContent = `${visiblePending.length} de ${pendingRows.length} empleado${pendingRows.length === 1 ? '' : 's'} pendiente${pendingRows.length === 1 ? '' : 's'}`;
   }
 
@@ -328,16 +343,17 @@ export const HistoricalQrRegistry = (mount, deps = {}) => {
     const cards = qs('#historicalQrCards', ui);
     const pageRows = recordsPaginator.slice(sourceRows);
     if (!pageRows.length) {
-      tbody.replaceChildren(el('tr', {}, [el('td', { colSpan: 10, className: 'text-muted' }, ['Sin registros QR para la fecha o filtros seleccionados.'])]));
-      cards.replaceChildren(el('p', { className: 'text-muted record-card__empty' }, ['Sin registros QR para la fecha o filtros seleccionados.']));
+      tbody.replaceChildren(el('tr', {}, [el('td', { colSpan: 11, className: 'text-muted' }, ['Sin registros de asistencia para la fecha o filtros seleccionados.'])]));
+      cards.replaceChildren(el('p', { className: 'text-muted record-card__empty' }, ['Sin registros de asistencia para la fecha o filtros seleccionados.']));
       return;
     }
     tbody.replaceChildren(...pageRows.map((row) => el('tr', { className: row.phoneDifferent ? 'table-row-warning' : '' }, [
       el('td', {}, [row.documento || '-']),
-      el('td', {}, [row.nombre || '-']),
-      el('td', {}, [row.sedeNombre || row.sedeCodigo || '-']),
+      el('td', {}, [row.nombre || '-', ...(row.turnoNombre ? [el('small', { className: 'text-muted', style: 'display:block;' }, [row.turnoNombre + (row.turnoInicio ? ' · ' + formatHour(row.turnoInicio) : '')])] : [])]),
+      el('td', {}, [row.sedeNombre || row.sedeCodigo || '-', el('small', { className: 'text-muted', style: 'display:block;' }, [markingSitesLabel(row)])]),
+      el('td', {}, [contractLabel(row)]),
       el('td', {}, [formatEntry(row)]),
-      el('td', {}, [formatHour(row.exitAt)]),
+      el('td', {}, [formatExit(row)]),
       el('td', {}, [phone(row.employeePhone)]),
       el('td', { className: row.entryPhoneDifferent ? 'text-danger' : '' }, [phone(row.entryPhone)]),
       el('td', { className: row.exitPhoneDifferent ? 'text-danger' : '' }, [phone(row.exitPhone)]),
@@ -345,14 +361,18 @@ export const HistoricalQrRegistry = (mount, deps = {}) => {
       el('td', {}, [alertBadge(row)])
     ])));
     cards.replaceChildren(...pageRows.map((row) => recordCard({
+      markingMethod: row.entryMethod,
       title: row.nombre || '-',
       subtitle: `Cedula: ${row.documento || '-'}`,
       badge: alertBadge(row),
       warning: row.phoneDifferent,
       meta: [
-        ['Sede', row.sedeNombre || row.sedeCodigo || '-'],
+        ['Sede del turno', row.sedeNombre || row.sedeCodigo || '-'],
+        ['Sedes de marcación', markingSitesLabel(row) || '-'],
+        ['Turno', row.turnoNombre || row.turnoId || '-'],
+        ['Contrato', contractLabel(row)],
         ['Ingreso', formatEntry(row)],
-        ['Salida', formatHour(row.exitAt)],
+        ['Salida', formatExit(row)],
         ['Celular empleado', phone(row.employeePhone)],
         ['Celular ingreso', phone(row.entryPhone)],
         ['Celular salida', phone(row.exitPhone)],
@@ -372,8 +392,8 @@ export const HistoricalQrRegistry = (mount, deps = {}) => {
       cards.replaceChildren();
       if (empty) {
         empty.textContent = pendingZone === 'all'
-          ? 'Sin pendientes de ingreso QR para la fecha seleccionada.'
-          : 'Sin pendientes de ingreso QR para la zona seleccionada.';
+          ? 'Sin pendientes de ingreso para la fecha seleccionada.'
+          : 'Sin pendientes de ingreso para la zona seleccionada.';
         empty.style.display = '';
       }
       if (wrap) wrap.style.display = 'none';
@@ -383,33 +403,42 @@ export const HistoricalQrRegistry = (mount, deps = {}) => {
     if (wrap) wrap.style.display = '';
     tbody.replaceChildren(...pageRows.map((row) => el('tr', {}, [
       el('td', {}, [row.documento || '-']),
-      el('td', {}, [row.nombre || '-']),
+      el('td', {}, [row.nombre || '-', ...(row.turnoNombre ? [el('small', { className: 'text-muted', style: 'display:block;' }, [row.turnoNombre + (row.turnoInicio ? ' · ' + formatHour(row.turnoInicio) : '')])] : [])]),
       el('td', {}, [phone(row.telefono)]),
       el('td', {}, [row.sedeNombre || row.sedeCodigo || '-']),
+      el('td', {}, [contractLabel(row)]),
       el('td', {}, [row.dependenciaNombre || row.dependenciaCodigo || '-']),
       el('td', {}, [row.zonaNombre || row.zonaCodigo || '-'])
     ])));
     cards.replaceChildren(...pageRows.map((row) => recordCard({
+      markingMethod: row.entryMethod,
       title: row.nombre || '-',
       subtitle: `Cedula: ${row.documento || '-'}`,
       badge: el('span', { className: 'badge' }, [row.zonaNombre || row.zonaCodigo || 'Pendiente']),
       meta: [
         ['Telefono', phone(row.telefono)],
         ['Sede', row.sedeNombre || row.sedeCodigo || '-'],
+        ['Turno', row.turnoNombre || row.turnoId || '-'],
+        ['Contrato', contractLabel(row)],
         ['Dependencia', row.dependenciaNombre || row.dependenciaCodigo || '-'],
         ['Zona', row.zonaNombre || row.zonaCodigo || '-']
       ]
     })));
   }
 
-  function recordCard({ title, subtitle, badge, meta = [], warning = false }) {
+  function formatExit(row) {
+    const time = formatHour(row.exitAt);
+    return row.exitAt ? `${time} · ${row.exitMethod === 'location' ? 'Ubicacion' : row.exitMethod === 'qr' ? 'QR' : 'Registro'}` : time;
+  }
+
+  function recordCard({ title, subtitle, badge, markingMethod, meta = [], warning = false }) {
     return el('article', { className: `record-card ${warning ? 'table-row-warning' : ''}`.trim() }, [
       el('div', { className: 'record-card__header' }, [
         el('div', { className: 'record-card__identity' }, [
           el('strong', { className: 'record-card__title' }, [title]),
           el('span', { className: 'record-card__subtitle' }, [subtitle])
         ]),
-        badge || el('span', { className: 'badge' }, ['QR'])
+        badge || el('span', { className: 'badge' }, [markingMethod === 'location' ? 'Ubicacion' : markingMethod === 'qr' ? 'QR' : 'Registro'])
       ]),
       el('dl', { className: 'record-card__meta' }, meta.map(([label, value]) => el('div', { className: 'record-card__meta-item' }, [
         el('dt', {}, [label]),
@@ -456,21 +485,21 @@ export const HistoricalQrRegistry = (mount, deps = {}) => {
       }
       const isClosed = await deps.isOperationDayClosed?.(date);
       if (!isClosed) throw new Error('Solo se pueden generar reportes historicos de dias cerrados.');
-      if (typeof deps.listDailyQrRecords !== 'function') throw new Error('No esta disponible la consulta de registro QR.');
-      const summary = await deps.listDailyQrRecords?.(date);
+      if (typeof deps.listDailyQrRecords !== 'function') throw new Error('No esta disponible la consulta de registro de asistencia.');
+      const summary = await deps.listDailyQrRecords?.(date, { contratoCodigo: contractFilterCode() });
       rows = (summary?.rows || []).map((row) => ({ ...row, fecha: date }));
       pendingRows = (summary?.pendingRows || []).map((row) => ({ ...row, fecha: date }));
       recordsPaginator.reset();
       pendingPaginator.reset();
       render();
-      setMessage(`Reporte QR generado para ${date}. Registros: ${rows.length}. Pendientes: ${pendingRows.length}.`);
+      setMessage(`Reporte de asistencia generado para ${date}. Registros: ${rows.length}. Pendientes: ${pendingRows.length}.`);
     } catch (error) {
       rows = [];
       pendingRows = [];
       recordsPaginator.reset();
       pendingPaginator.reset();
       render();
-      setMessage(`Error al generar historico QR: ${error?.message || error}`);
+      setMessage(`Error al generar historico de asistencia: ${error?.message || error}`);
     } finally {
       running = false;
       if (btn) {
@@ -483,7 +512,9 @@ export const HistoricalQrRegistry = (mount, deps = {}) => {
   async function exportExcel() {
     const btn = qs('#btnExportHistoricalQr', ui);
     try {
-      if (!rows.length && !pendingRows.length) throw new Error('Primero genera el reporte.');
+      const exportRows = filteredRecords();
+      const exportPendingRows = filteredPending();
+      if (!exportRows.length && !exportPendingRows.length) throw new Error('Primero genera el reporte.');
       if (!canExport) throw new Error('No tienes permiso para exportar este reporte.');
       if (btn) {
         btn.disabled = true;
@@ -491,13 +522,19 @@ export const HistoricalQrRegistry = (mount, deps = {}) => {
       }
       const mod = await import('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm');
       const wb = mod.utils.book_new();
-      const recordsSheet = mod.utils.json_to_sheet(rows.map((row) => ({
+      const recordsSheet = mod.utils.json_to_sheet(exportRows.map((row) => ({
         Fecha: selectedDate,
         Cedula: row.documento || '',
         Nombre: row.nombre || '',
-        Sede: row.sedeNombre || row.sedeCodigo || '',
+        'Sede del turno': row.sedeNombre || row.sedeCodigo || '',
+        'Sede de ingreso': row.entrySiteName || row.entrySiteCode || '',
+        'Sede de salida': row.exitSiteName || row.exitSiteCode || '',
+        Contrato: contractLabel(row),
+        Turno: row.turnoNombre || row.turnoId || '',
+        'Metodo ingreso': row.entryMethod || '',
+        'Metodo salida': row.exitMethod || '',
         Ingreso: formatEntry(row),
-        Salida: formatHour(row.exitAt),
+        Salida: formatExit(row),
         'Celular empleado': phone(row.employeePhone),
         'Celular ingreso': phone(row.entryPhone),
         'Celular salida': phone(row.exitPhone),
@@ -506,22 +543,23 @@ export const HistoricalQrRegistry = (mount, deps = {}) => {
         Alerta: alertText(row)
       })));
       recordsSheet['!cols'] = [{ wch: 12 }, { wch: 18 }, { wch: 30 }, { wch: 28 }, { wch: 18 }, { wch: 14 }, { wch: 18 }, { wch: 18 }, { wch: 18 }, { wch: 18 }, { wch: 18 }, { wch: 22 }];
-      mod.utils.book_append_sheet(wb, recordsSheet, 'Registros QR');
+      mod.utils.book_append_sheet(wb, recordsSheet, 'Registros de asistencia');
 
-      const pendingSheet = mod.utils.json_to_sheet(pendingRows.map((row) => ({
+      const pendingSheet = mod.utils.json_to_sheet(exportPendingRows.map((row) => ({
         Fecha: selectedDate,
         Cedula: row.documento || '',
         Nombre: row.nombre || '',
         Telefono: phone(row.telefono),
         Sede: row.sedeNombre || row.sedeCodigo || '',
+        Contrato: contractLabel(row),
         Dependencia: row.dependenciaNombre || row.dependenciaCodigo || '',
         Zona: row.zonaNombre || row.zonaCodigo || ''
       })));
       pendingSheet['!cols'] = [{ wch: 12 }, { wch: 18 }, { wch: 30 }, { wch: 18 }, { wch: 28 }, { wch: 24 }, { wch: 24 }];
-      mod.utils.book_append_sheet(wb, pendingSheet, 'Pendientes QR');
+      mod.utils.book_append_sheet(wb, pendingSheet, 'Pendientes');
 
       mod.writeFile(wb, `historico_registro_qr_${selectedDate}.xlsx`);
-      setMessage(`Excel QR generado correctamente para ${selectedDate}.`);
+      setMessage(`Excel de asistencia generado correctamente para ${selectedDate}.`);
     } catch (error) {
       setMessage(`Error al generar Excel: ${error?.message || error}`);
     } finally {
@@ -530,6 +568,10 @@ export const HistoricalQrRegistry = (mount, deps = {}) => {
         btn.textContent = 'Exportar Excel';
       }
     }
+  }
+
+  function contractLabel(row = {}) {
+    return row.contratoNombre || row.contratoCodigo || row.clienteNombreSnapshot || '-';
   }
 };
 

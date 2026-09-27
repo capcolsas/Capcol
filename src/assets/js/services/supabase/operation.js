@@ -1,0 +1,23 @@
+export {
+  confirmImportOperation,
+  isOperationDayClosed,
+  listAttendanceRange,
+  listClosedOperationDaysRange,
+  listDailyClosuresRange,
+  listDailyContractMetricsRange,
+  listDailyMetricsRange,
+  listDailySedeClosuresRange,
+  listEmployeeDailyStatusRange,
+  listImportReplacementsRange,
+  listSedeStatusRange,
+  listSupernumerarioReplacementOccupancy,
+  listSupervisorDailyRegistry,
+  saveImportReplacements,
+  streamAttendanceByDate,
+  streamAttendanceRecent,
+  streamDailyClosures,
+  streamDailyClosuresRange,
+  streamDailyMetricsByDate,
+  streamImportHistory,
+  streamImportReplacementsByDate
+} from './legacy.js';

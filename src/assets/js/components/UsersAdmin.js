@@ -30,7 +30,7 @@ export const UsersAdmin = (mount, deps = {}) => {
     el('div', { className: 'users-results mt-2' }, [
       el('div', { className: 'table-wrap users-table-view' }, [
         el('table', { className: 'table', id: 'tbl' }, [
-          el('thead', {}, [el('tr', {}, [el('th', {}, ['Usuario']), el('th', {}, ['Correo']), el('th', {}, ['Rol']), el('th', {}, ['Estado']), el('th', {}, ['Acciones'])])]),
+          el('thead', {}, [el('tr', {}, [el('th', {}, ['Usuario']), el('th', {}, ['Correo']), el('th', {}, ['Rol']), el('th', {}, ['Estado']), el('th', {}, ['Contratos']), el('th', {}, ['Acciones'])])]),
           el('tbody', {})
         ])
       ]),
@@ -49,6 +49,8 @@ export const UsersAdmin = (mount, deps = {}) => {
   const cards = qs('#userCards', ui);
   const paginator = createTablePagination(ui, { id: 'users', after: '.users-results', onChange: renderRows });
   let data = [];
+  let contractList = [];
+  let contractAccessRows = [];
 
   function statusOf(u) {
     const raw = String(u?.estado || 'activo').trim().toLowerCase();
@@ -63,7 +65,7 @@ export const UsersAdmin = (mount, deps = {}) => {
 
   function formatDate(ts) {
     try {
-      const d = ts?.toDate ? ts.toDate() : ts ? new Date(ts) : null;
+      const d = ts ? new Date(ts) : null;
       return d ? new Date(d).toLocaleString() : '-';
     } catch {
       return '-';
@@ -78,6 +80,7 @@ export const UsersAdmin = (mount, deps = {}) => {
       `Supervisor elegible: ${u.supervisorEligible === true ? 'Si' : 'No'}`,
       `Zona perfil: ${u.zonaCodigo || '-'}`,
       `Zonas permitidas: ${(u.zonasPermitidas || []).join(', ') || '-'}`,
+      `Contratos permitidos: ${contractSummaryForUser(u.uid)}`,
       `Creado por: ${u.createdByEmail || u.createdByUid || '-'}`,
       `Creado el: ${formatDate(u.createdAt)}`,
       `Ultimo cambio por: ${u.lastModifiedByEmail || u.lastModifiedByUid || '-'}`,
@@ -93,6 +96,61 @@ export const UsersAdmin = (mount, deps = {}) => {
 
   function roleLabel(role) {
     return ROLE_LABELS[role] || role || '-';
+  }
+
+  function normalizeCode(value) {
+    return String(value || '').trim();
+  }
+
+  function activeContractRows() {
+    return (contractList || [])
+      .filter((contract) => String(contract?.estado || 'activo').trim().toLowerCase() === 'activo')
+      .sort((a, b) => String(a.nombre || a.codigo || '').localeCompare(String(b.nombre || b.codigo || '')));
+  }
+
+  function contractByCode(code) {
+    const clean = normalizeCode(code);
+    return (contractList || []).find((contract) => normalizeCode(contract.codigo) === clean) || null;
+  }
+
+  function contractCodesForUser(uid) {
+    const targetUid = normalizeCode(uid);
+    if (!targetUid) return [];
+    const profile = (data || []).find((user) => normalizeCode(user.uid) === targetUid) || {};
+    const profileCodes = [
+      profile.contratoCodigo,
+      ...(Array.isArray(profile.contratosPermitidos) ? profile.contratosPermitidos : [])
+    ];
+    const accessCodes = (contractAccessRows || [])
+      .filter((row) => normalizeCode(row.userId) === targetUid)
+      .filter((row) => String(row.estado || 'activo').trim().toLowerCase() === 'activo')
+      .map((row) => normalizeCode(row.contratoCodigo))
+      .filter(Boolean);
+    return [...new Set([...profileCodes, ...accessCodes].map(normalizeCode).filter(Boolean))]
+      .sort((a, b) => a.localeCompare(b));
+  }
+
+  function contractLabel(code) {
+    const contract = contractByCode(code);
+    const clean = normalizeCode(code);
+    if (!contract) return clean || '-';
+    const name = String(contract.nombre || '').trim();
+    return name && clean ? `${name} (${clean})` : name || clean || '-';
+  }
+
+  function contractSummaryForUser(uid) {
+    const labels = contractCodesForUser(uid).map(contractLabel).filter(Boolean);
+    if (!labels.length) return '-';
+    if (labels.length <= 2) return labels.join(', ');
+    return `${labels.length} contratos: ${labels.slice(0, 2).join(', ')}...`;
+  }
+
+  function contractOptions() {
+    return activeContractRows().map((contract) => {
+      const code = normalizeCode(contract.codigo);
+      const name = String(contract.nombre || '').trim();
+      return { value: code, label: name && code ? `${name} (${code})` : name || code };
+    }).filter((opt) => opt.value);
   }
 
   async function handleRoleChange(user, sel) {
@@ -193,6 +251,9 @@ export const UsersAdmin = (mount, deps = {}) => {
     if (st !== 'eliminado' && canEditUsers && isSupervisor) {
       options.push({ value: 'sync_supervisor', label: 'Sincronizar acceso supervisor' });
     }
+    if (st !== 'eliminado' && canEditUsers) {
+      options.push({ value: 'assign_contracts', label: 'Asignar contratos' });
+    }
     if (st !== 'eliminado' && canEditUsers && !isSelf) {
       options.push({ value: 'toggle_status', label: st === 'activo' ? 'Desactivar usuario' : 'Activar usuario' });
     } else if (st === 'eliminado' && canEditUsers && !isSelf) {
@@ -218,7 +279,44 @@ export const UsersAdmin = (mount, deps = {}) => {
     if (!modal?.confirmed) return;
     if (modal.values.action === 'change_role') return changeRole(u);
     if (modal.values.action === 'sync_supervisor') return syncSupervisorAccess(u);
+    if (modal.values.action === 'assign_contracts') return assignContracts(u);
     if (modal.values.action === 'toggle_status') return toggleUserStatus(u, st);
+  }
+
+  async function assignContracts(u) {
+    const options = contractOptions();
+    if (!options.length) {
+      showInfoModal('Asignar contratos', ['No hay contratos activos disponibles para asignar.']);
+      return;
+    }
+    const currentCodes = contractCodesForUser(u.uid);
+    const modal = await showActionModal({
+      title: 'Asignar contratos',
+      message: `Usuario: ${u.email || u.uid || '-'}`,
+      confirmText: 'Guardar contratos',
+      fields: [{
+        id: 'contracts',
+        label: 'Contratos permitidos',
+        type: 'checkboxes',
+        value: currentCodes,
+        options
+      }]
+    });
+    if (!modal?.confirmed) return;
+    const nextCodes = [...new Set((modal.values.contracts || []).map(normalizeCode).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+    try {
+      await deps.setUserContractAccess?.(u.uid, nextCodes);
+      await deps.addAuditLog?.({
+        targetType: 'user',
+        targetId: u.uid,
+        action: 'update_user_contract_access',
+        before: { contratoCodigos: currentCodes },
+        after: { contratoCodigos: nextCodes }
+      });
+      setMsg(`Contratos actualizados para ${u.email || u.uid}: ${nextCodes.length}`);
+    } catch (e) {
+      setMsg(`Error al actualizar contratos: ${e?.message || e}`);
+    }
   }
 
   async function syncSupervisorAccess(u) {
@@ -267,6 +365,7 @@ export const UsersAdmin = (mount, deps = {}) => {
       el('td', {}, [u.email || '-']),
       el('td', {}, [roleSelect(u)]),
       el('td', {}, [statusBadge(st)]),
+      el('td', {}, [contractSummaryForUser(u.uid)]),
       el('td', {}, [actionsCell(u)])
     );
     return tr;
@@ -287,6 +386,7 @@ export const UsersAdmin = (mount, deps = {}) => {
       el('dl', { className: 'user-card__meta' }, [
         metaItem('Rol', roleLabel(role)),
         metaItem('Documento', u.documento || '-'),
+        metaItem('Contratos', contractSummaryForUser(u.uid)),
         metaItem('Ultimo cambio', lastChange)
       ]),
       el('div', { className: 'user-card__actions' }, [actionsCell(u)])
@@ -306,7 +406,7 @@ export const UsersAdmin = (mount, deps = {}) => {
     const sf = String(qs('#statusFilter', ui).value || '').trim();
     const rows = (data || [])
       .filter((u) => {
-        const text = `${u.email || ''} ${u.displayName || ''} ${u.documento || ''}`.toLowerCase();
+        const text = `${u.email || ''} ${u.displayName || ''} ${u.documento || ''} ${contractSummaryForUser(u.uid)}`.toLowerCase();
         return (!term || text.includes(term)) && (!rf || (u.role || 'empleado') === rf) && (!sf || statusOf(u) === sf);
       })
       .sort((a, b) => String(a.email || '').localeCompare(String(b.email || '')));
@@ -316,18 +416,29 @@ export const UsersAdmin = (mount, deps = {}) => {
     cards.replaceChildren(...(pageRows.length
       ? pageRows.map((u) => renderUserCard(u))
       : [el('p', { className: 'text-muted user-card__empty' }, ['Sin usuarios para mostrar.'])]));
-    setMsg(`Total registros filtrados: ${rows.length}`);
   }
 
   qs('#search', ui).addEventListener('input', () => { paginator.reset(); renderRows(); });
   qs('#roleFilter', ui).addEventListener('change', () => { paginator.reset(); renderRows(); });
   qs('#statusFilter', ui).addEventListener('change', () => { paginator.reset(); renderRows(); });
 
-  const un = deps.streamUsers?.((users) => {
+  const unUsers = deps.streamUsers?.((users) => {
     data = users || [];
+    renderRows();
+  });
+  const unContracts = deps.streamContracts?.((contracts) => {
+    contractList = contracts || [];
+    renderRows();
+  });
+  const unContractAccess = deps.streamProfileContractAccess?.((rows) => {
+    contractAccessRows = rows || [];
     renderRows();
   });
 
   mount.replaceChildren(ui);
-  return () => un?.();
+  return () => {
+    unUsers?.();
+    unContracts?.();
+    unContractAccess?.();
+  };
 };

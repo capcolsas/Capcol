@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="es" data-theme="light">
+<html lang="es" data-theme="light" data-ui="professional">
 <head>
   <meta charset="UTF-8" />
   <title>Supervisores | RockyDEMO</title>
@@ -7,12 +7,32 @@
   <meta name="description" content="App de supervisores Rocky para seguimiento diario por zona" />
   <link rel="icon" type="image/png" href="src/assets/img/capcol-logo.png" />
   <link rel="stylesheet" href="src/assets/css/base.css" />
+  <link rel="stylesheet" href="src/assets/css/layout.css" />
   <link rel="stylesheet" href="src/assets/css/components.css" />
   <link rel="stylesheet" href="src/assets/css/utils.css" />
-  <link rel="stylesheet" href="src/assets/css/supervisor.css" />
+  <link rel="stylesheet" href="src/assets/css/professional.css" />
+  <link rel="stylesheet" href="src/assets/css/employee.css?v=20260909-footer-width" />
+  <link rel="stylesheet" href="src/assets/css/supervisor.css?v=20260911-chevron" />
+  <link rel="stylesheet" href="src/assets/css/portal-footer.css?v=20260909" />
+  <link rel="stylesheet" href="src/assets/css/visits.css?v=20260911" />
+  <script defer src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js" onload="window.lucide.createIcons()"></script>
 </head>
 <body class="supervisor-body">
-  <main id="supervisor-root" class="supervisor-root"></main>
-  <script type="module" src="src/assets/js/supervisor-app.js"></script>
+  <header class="employee-hero supervisor-company-header">
+    <div class="employee-hero__brand">
+      <div class="employee-hero__logos" aria-label="Rocky y Capcol S.A.S.">
+        <img class="employee-hero__logo employee-hero__logo--rocky" src="src/assets/img/rocky-logo.png" alt="Rocky" />
+        <img class="employee-hero__logo employee-hero__logo--client" src="src/assets/img/tercero.png" alt="Capcol S.A.S." />
+        <div class="employee-company-copy">
+          <span class="employee-company-name">CAPCOL S.A.S.</span>
+          <span class="employee-company-nit">NIT 900.939.656-7</span>
+        </div>
+      </div>
+      <a class="employee-hero__tag" href="https://www.capcol.com.co/access.html">Centro de accesos</a>
+    </div>
+  </header>
+  <div id="supervisor-root" class="supervisor-root"></div>
+  <footer id="supervisor-footer" class="footer portal-footer"></footer>
+  <script type="module" src="src/assets/js/supervisor-app.js?v=20260911-visits"></script>
 </body>
 </html>

@@ -1,5 +1,9 @@
 # Rocky
 
+## Inventarios y entregas
+
+Nuevo módulo por contrato en `app.html#/inventory`: productos, ingresos, existencias, entregas, recepciones parciales con firma, devoluciones, actas PDF y exportación CSV. Para activarlo, ejecutar los bundles de `supabase/releases/` (`01` a `05`; el inventario va en el `04`). Guía de uso y alcance en [docs/inventarios.md](docs/inventarios.md).
+
 Plataforma de gestion operativa y administrativa para el seguimiento de servicios, personal y novedades.
 
 ## Estado actual
@@ -20,6 +24,7 @@ Plataforma de gestion operativa y administrativa para el seguimiento de servicio
 - Login
 - Centro de permisos
 - Gestion administrativa
+- Contratos y clientes
 - Gestion empleados
 - Operacion
 - Registro QR
@@ -31,7 +36,7 @@ Plataforma de gestion operativa y administrativa para el seguimiento de servicio
 - Configuracion activa del frontend en `src/assets/js/config.js`
 - Cliente principal de datos en `src/assets/js/supabase.js`
 - Scripts SQL de migracion en `supabase/`
-- Para una base nueva, ejecutar todas las fases documentadas en `SUPABASE_SETUP.md`, desde `schema_foundation_phase0.sql` hasta `schema_operations_phase25_employee_extended_info.sql`.
+- Para una base nueva o una base ya funcional, ejecutar en orden `supabase/releases/01_base_operacion.sql` a `05_asistencia_movil_y_revision.sql` (ver `SUPABASE_SETUP.md`); son idempotentes y sirven para proyectos nuevos y existentes.
 - Bucket requerido para soportes de incapacidades: `incapacidades-soportes`.
 - Recuperacion de contrasena: configurar `Site URL` y `Redirect URLs` segun `SUPABASE_SETUP.md`.
 
@@ -40,6 +45,7 @@ Plataforma de gestion operativa y administrativa para el seguimiento de servicio
 - Guia de migracion y despliegue en `WHATSAPP_BACKEND_MIGRATION.md`
 - Configurar nuevos secretos en `whatsapp-backend/.env` y en Vercel.
 - Atiende webhook de WhatsApp, portal de empleados, certificados laborales, registro QR y cron de cierre diario.
+- Los registros creados por WhatsApp/QR guardan contexto de contrato y cliente para cierres, dashboards y reportes por contrato.
 - Variables principales:
   - `SUPABASE_URL`
   - `SUPABASE_SERVICE_ROLE_KEY`
@@ -54,20 +60,23 @@ Plataforma de gestion operativa y administrativa para el seguimiento de servicio
   - `WHATSAPP_BACKEND_PUBLIC_URL` o `PUBLIC_BACKEND_URL`
   - `ATTENDANCE_QR_TOKEN_MINUTES`
 - Cron demo en Supabase:
-  - ejecutar `supabase/schema_operations_phase28_supabase_cron.sql`.
+  - abrir `supabase/releases/06_cron_programador.template.sql` en el editor SQL, **modificar** `TU_BACKEND` (URL del backend) y `TU_CRON_SECRET` (el mismo `CRON_SECRET` de Vercel) y ejecutarlo. Ver `SUPABASE_SETUP.md`.
   - `/api/cron/close-shifts` cada 15 minutos.
-  - `/api/cron/close-daily-operation` diario a las 18:00 UTC como consolidacion legacy.
+  - `/api/cron/close-daily-operation` diario a las 07:10 UTC (02:10 America/Bogota) como consolidacion legacy del dia anterior, en una franja de baja actividad de marcaciones. Los turnos nocturnos mantienen su cierre independiente al terminar su ventana de salida; el resumen diario es un corte a las 02:10, no una confirmacion de esas salidas.
+  - Para actualizar un programador existente, volver a ejecutar `supabase/releases/06_cron_programador.template.sql` con los mismos valores.
+  - Cada ejecucion diaria revisa primero el dia anterior al que corresponde cerrar (anteayer), y luego ayer. Los dias ya cerrados se omiten sin recalcular; si uno falla, se intenta el otro y el endpoint devuelve HTTP 500 con el resultado de ambos. La recuperacion se limita a esas dos fechas.
 
-## Registro QR por sede
-- Migracion requerida: `supabase/schema_operations_phase16_qr_attendance.sql`.
+## Ingreso y salida por turno
+- Marcación en distintas sedes por cargo: aplicar la fase 60 y consultar [la guía de activación](docs/mobile-attendance.md). Conserva el turno administrativo y registra por separado las sedes físicas de ingreso y salida.
+- Migracion requerida: bundle `supabase/releases/04_rotaciones_y_modulos.sql` (fase 54), despues de los bundles 01 a 03.
 - Cada sede puede activar o desactivar `qr_enabled`.
-- Si una sede tiene QR activo, el flujo WhatsApp `Soy yo -> Trabajando` solicita `Ingreso` o `Salida`, pide ubicacion actual y envia un QR temporal solo si el operario esta dentro del radio permitido.
-- El radio QR por sede queda en `qr_radius_meters`; por defecto son 500 metros.
-- El ingreso por QR registra en `attendance`; la salida registra en `employee_daily_exits`.
+- Si una sede tiene QR activo, el flujo WhatsApp `Soy yo -> Ingreso / Salida` solicita `Ingreso` o `Salida`, pide ubicacion actual y envia un QR temporal solo si el operario esta dentro del radio permitido.
+- El radio de marcacion por sede queda en `qr_radius_meters`; por defecto son 200 metros desde la fase 54. Ingreso y salida requieren ubicacion; solo las sedes con QR activo generan un codigo para escanear.
+- El ingreso registra en `attendance`; la salida registra en `employee_daily_exits`.
 - La tablet usa `app.html#/lector-qr` y debe activarse con un token de dispositivo generado desde `Sedes`.
 - Para tablets dedicadas usa `qr.html` con un usuario de rol `tablet_qr`; solo habilita el lector QR.
-- El seguimiento diario QR se consulta en `app.html#/registro-qr`, incluyendo hora de ingreso, hora de salida y alerta por celular diferente.
-- El historico QR de dias cerrados se consulta en `app.html#/reports-qr-history` y permite exportar registros y pendientes.
+- El seguimiento diario de ambas modalidades se consulta en `app.html#/registro-qr`, incluyendo hora de ingreso, hora de salida y alerta por celular diferente.
+- El historico de asistencia de dias cerrados se consulta en `app.html#/reports-qr-history` y permite exportar registros y pendientes.
 - Variables opcionales del backend:
   - `WHATSAPP_BACKEND_PUBLIC_URL` o `PUBLIC_BACKEND_URL`
   - `ATTENDANCE_QR_TOKEN_MINUTES`
@@ -78,13 +87,13 @@ Plataforma de gestion operativa y administrativa para el seguimiento de servicio
 - Cada certificado queda auditado en `employee_certificate_audit`.
 - Cada PDF incluye codigo/QR de verificacion publica en `/api/certificates/verify/:code`.
 - Assets privados y configuracion en `whatsapp-backend/src/certificates/`.
-- Migracion requerida: `supabase/schema_operations_phase17_employee_certificates.sql`.
+- Migracion requerida: bundle `supabase/releases/01_base_operacion.sql` (fase 17).
 
 ## Supernumerarios
 - Modulo administrativo en `app.html#/supernumerarios`.
 - La disponibilidad se calcula segun cargo vigente por fecha operativa.
 - Las fases 19, 20 y 22 agregan ocupacion diaria, incapacidades activas y listado por fecha.
-- Los indices de `schema_operations_phase22_report_performance_indexes.sql` ayudan a reportes e incapacidades.
+- Los indices de la fase 22 (`supabase/releases/01_base_operacion.sql`) ayudan a reportes e incapacidades.
 
 ## Rutas de la app
 - `#/login`
@@ -98,8 +107,8 @@ Plataforma de gestion operativa y administrativa para el seguimiento de servicio
 - `#/gobierno-dashboard`
 - `#/permissions`
 - `#/permissions-audit`
-- `#/administracion-dashboard`
 - `#/users`
+- `#/contracts`
 - `#/zones`
 - `#/dependencies`
 - `#/sedes`
@@ -127,6 +136,8 @@ Plataforma de gestion operativa y administrativa para el seguimiento de servicio
 - `#/reports-qr-history`
 - `#/reports-employees`
 - `#/reports-hiring`
+- `#/contract-dashboard`
+- `#/reports-contracts`
 - `#/reports-novelties-consolidated`
 - `#/reports-services-consolidated`
 - `#/reports-consolidated`
@@ -142,7 +153,7 @@ Plataforma de gestion operativa y administrativa para el seguimiento de servicio
 - Si cambia la zona en el modulo Supervisores, tambien se actualiza el perfil de acceso del usuario supervisor asociado.
 - Para usuarios que ya tenian rol supervisor antes de esta mejora, usa la accion `Sincronizar acceso supervisor` en Usuarios.
 - Primera version mobile-first con resumen del dia, registros, novedades y perfil.
-- Migracion RLS recomendada: `supabase/schema_operations_phase18_supervisor_rls.sql`.
+- Migracion RLS incluida en `supabase/releases/01_base_operacion.sql` (fase 18).
   Esta migracion limita lecturas de supervisores a sus zonas en sedes, empleados, registro diario, QR, ausentismo, reemplazos e incapacidades.
 
 ## Portal de empleados
@@ -159,7 +170,7 @@ Plataforma de gestion operativa y administrativa para el seguimiento de servicio
   - `EMPLOYEE_PORTAL_SESSION_HOURS`
 - Para certificados y QR tambien requiere `WHATSAPP_BACKEND_PUBLIC_URL` o `PUBLIC_BACKEND_URL`.
 - El frontend usa `EMPLOYEE_PORTAL_API_BASE` en `src/assets/js/config.js` para apuntar al backend cuando esta en otro dominio.
-- Requiere aplicar `supabase/schema_operations_phase14_employee_portal.sql`, `supabase/schema_operations_phase15_incapacidades_support.sql` y `supabase/schema_operations_phase17_employee_certificates.sql`.
+- Requiere el bundle `supabase/releases/01_base_operacion.sql` (fases 14, 15 y 17).
 
 ## Ejecucion local
 1. Abrir `index.html` con Live Server.
@@ -186,3 +197,5 @@ Plataforma de gestion operativa y administrativa para el seguimiento de servicio
 - WhatsApp backend: `WHATSAPP_BACKEND_MIGRATION.md`
 - Guia de conversacion WhatsApp: `WHATSAPP_CONVERSATION_GUIDE.md`
 - Reconexion completa: `RECONNECTION_CHECKLIST.md`
+
+Marcaciones por turno: instalacion y pruebas en [docs/shift-attendance.md](docs/shift-attendance.md).

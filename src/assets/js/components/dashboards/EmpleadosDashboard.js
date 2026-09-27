@@ -1,5 +1,8 @@
+import { metricTile, actionTile } from './DashboardUI.js';
 import { PERMS } from '../../permissions.js';
-import { navigate } from '../../router.js';
+
+import { subscribe } from '../../state.js';
+import { contractFilterCode, contractMatches } from '../../utils/contractScope.js';
 import { el } from '../../utils/dom.js';
 import { isActive, visibleActions } from './ModuleDashboardUtils.js';
 
@@ -20,7 +23,7 @@ export const EmpleadosDashboard = (mount, deps = {}) => {
   const today = todayBogota();
   const monthStart = monthStartBogota(today);
   const actions = visibleActions(ACTIONS);
-  const metricsNode = el('div', { className: 'module-dashboard__metrics' },
+  const metricsNode = el('div', { className: 'contract-demo__kpis summary-dashboard__kpis' },
     METRICS.map((metric) => metricTile(metric.label, '...', metric.tone))
   );
   const peopleChartMount = el('div', { className: 'gov-role-chart__body' }, [
@@ -37,10 +40,9 @@ export const EmpleadosDashboard = (mount, deps = {}) => {
     incapacities: null
   };
 
-  const ui = el('section', { className: 'main-card module-dashboard module-dashboard--empleados' }, [
-    el('div', { className: 'module-dashboard__header' }, [
+  const ui = el('section', { className: 'main-card module-dashboard contract-dashboard-demo summary-dashboard module-dashboard--empleados' }, [
+    el('div', { className: 'contract-demo__header' }, [
       el('div', {}, [
-        el('p', { className: 'module-dashboard__eyebrow' }, ['Dashboard de modulo']),
         el('h2', {}, ['Empleados'])
       ]),
       el('span', { className: 'badge' }, [`Corte: ${today}`])
@@ -92,6 +94,7 @@ export const EmpleadosDashboard = (mount, deps = {}) => {
   let unSupervisors = null;
   let unSupernumerarios = null;
   let unIncapacities = null;
+  let reloadIncapacitiesTimer = null;
   const setEmployees = (rows) => {
     if (!active) return;
     state.employees = Array.isArray(rows) ? rows : [];
@@ -102,6 +105,21 @@ export const EmpleadosDashboard = (mount, deps = {}) => {
     state.incapacities = Array.isArray(rows) ? rows : [];
     refreshIncapacities();
   };
+  const reloadIncapacities = () => {
+    if (!active || typeof deps.listIncapacidadesRange !== 'function') return;
+    deps.listIncapacidadesRange(monthStart, today, { contratoCodigo: contractFilterCode() }).then(setIncapacities).catch(() => setIncapacities([]));
+  };
+  const rerenderForContract = () => {
+    if (!active) return;
+    refreshPeople();
+    if (typeof deps.listIncapacidadesRange === 'function') {
+      if (reloadIncapacitiesTimer) clearTimeout(reloadIncapacitiesTimer);
+      reloadIncapacitiesTimer = setTimeout(reloadIncapacities, 150);
+    } else {
+      refreshIncapacities();
+    }
+  };
+  const unSelectedContract = subscribe('selectedContractCode', rerenderForContract);
 
   try {
     if (typeof deps.listEmployeeDashboardPeople === 'function') {
@@ -145,7 +163,7 @@ export const EmpleadosDashboard = (mount, deps = {}) => {
   }
   try {
     if (typeof deps.listIncapacidadesRange === 'function') {
-      deps.listIncapacidadesRange(monthStart, today).then(setIncapacities).catch(() => setIncapacities([]));
+      reloadIncapacities();
     } else {
       unIncapacities = deps.streamIncapacidades?.(setIncapacities) || null;
     }
@@ -165,6 +183,8 @@ export const EmpleadosDashboard = (mount, deps = {}) => {
 
   return () => {
     active = false;
+    if (reloadIncapacitiesTimer) clearTimeout(reloadIncapacitiesTimer);
+    try { unSelectedContract?.(); } catch {}
     try { unEmployees?.(); } catch {}
     try { unSupervisors?.(); } catch {}
     try { unSupernumerarios?.(); } catch {}
@@ -172,21 +192,9 @@ export const EmpleadosDashboard = (mount, deps = {}) => {
   };
 };
 
-function actionTile(action = {}) {
-  const btn = el('button', { className: 'module-dashboard__action', type: 'button' }, [
-    el('span', { className: 'module-dashboard__action-label' }, [action.label || '-']),
-    el('span', { className: 'module-dashboard__action-detail' }, [action.detail || 'Abrir modulo'])
-  ]);
-  btn.addEventListener('click', () => navigate(action.route || '/'));
-  return btn;
-}
 
-function metricTile(label, value, tone = 'blue') {
-  return el('div', { className: `metric-tile metric-tile--${tone}` }, [
-    el('span', { className: 'metric-tile__label' }, [label]),
-    el('strong', { className: 'metric-tile__value' }, [String(value ?? '-')])
-  ]);
-}
+
+
 
 function renderMetrics(container, state, today) {
   const tiles = Array.from(container.querySelectorAll('.metric-tile__value'));
@@ -242,7 +250,7 @@ function renderIncapacityChart(scope, mount, rows = null, today = todayBogota())
     return;
   }
   const monthStart = monthStartBogota(today);
-  const activeRows = rows
+  const activeRows = scopedDashboardRows(rows)
     .filter((row) => isActive(row) && incapacityOverlapsRange(row, monthStart, today))
     .map((row) => ({ ...row, monthDays: incapacityDaysInRange(row, monthStart, today) }))
     .filter((row) => row.monthDays > 0);
@@ -305,20 +313,20 @@ function barRow(label, count, percent, share, unit = '') {
 }
 
 function activePeopleCounts(state) {
-  const activeSupervisors = (state.supervisors || []).filter(isActive);
+  const activeSupervisors = scopedDashboardRows(state.supervisors || []).filter(isActive);
   return {
     employees: activeBaseEmployees(state).length,
     supervisors: activeSupervisors.length,
-    supernumerarios: (state.supernumerarios || []).filter(isActive).length
+    supernumerarios: scopedDashboardRows(state.supernumerarios || []).filter(isActive).length
   };
 }
 
 function activeBaseEmployees(state) {
-  const activeSupervisors = (state.supervisors || []).filter(isActive);
-  const activeSupernumerarios = (state.supernumerarios || []).filter(isActive);
+  const activeSupervisors = scopedDashboardRows(state.supervisors || []).filter(isActive);
+  const activeSupernumerarios = scopedDashboardRows(state.supernumerarios || []).filter(isActive);
   const supervisorDocs = new Set(activeSupervisors.map(personDoc).filter(Boolean));
   const supernumerarioDocs = new Set(activeSupernumerarios.map(personDoc).filter(Boolean));
-  return (state.employees || [])
+  return scopedDashboardRows(state.employees || [])
     .filter(isActive)
     .filter((row) => {
       const doc = personDoc(row);
@@ -336,9 +344,9 @@ function activeEmployeesForCargoChart(state) {
     if (key) seen.add(key);
     rows.push(row);
   };
-  (state.employees || []).forEach(add);
-  (state.supervisors || []).forEach(add);
-  (state.supernumerarios || []).forEach(add);
+  scopedDashboardRows(state.employees || []).forEach(add);
+  scopedDashboardRows(state.supervisors || []).forEach(add);
+  scopedDashboardRows(state.supernumerarios || []).forEach(add);
   return rows;
 }
 
@@ -348,7 +356,13 @@ function employeeCargoLabel(row = {}) {
 
 function countTodayIncapacities(rows = null, today = todayBogota()) {
   if (!Array.isArray(rows)) return 0;
-  return rows.filter((row) => isActive(row) && incapacityOverlapsDay(row, today)).length;
+  return scopedDashboardRows(rows).filter((row) => isActive(row) && incapacityOverlapsDay(row, today)).length;
+}
+
+function scopedDashboardRows(rows = []) {
+  const code = contractFilterCode();
+  if (!code) return rows || [];
+  return (rows || []).filter((row) => contractMatches(row, code));
 }
 
 function incapacityOverlapsDay(row = {}, day = todayBogota()) {

@@ -80,7 +80,7 @@ export const PermissionsAudit = (mount, deps = {}) => {
   }
 
   function renderAuditItem(it) {
-    const date = it.ts?.toDate ? it.ts.toDate() : it.ts || new Date();
+    const date = it.ts || new Date();
     const note = String(it.note || '').trim();
     const beforeText = formatAuditValue(it.before);
     const afterText = formatAuditValue(it.after);

@@ -1,9 +1,10 @@
 import { el, qs, infoIcon, moreIcon } from '../utils/dom.js';
-import { getState } from '../state.js';
+import { getState, subscribe } from '../state.js';
 import { showInfoModal } from '../utils/infoModal.js';
 import { showActionModal } from '../utils/actionModal.js';
 import { createTablePagination } from '../utils/pagination.js';
 import { can, PERMS } from '../permissions.js';
+import { contractFilterCode, contractMatches } from '../utils/contractScope.js';
 
 const SOURCE_CODE_OPTIONS = [
   { code: '3', value: 'Enfermedad General' },
@@ -64,7 +65,7 @@ export const CargarDatos = (mount, deps = {}) => {
         ]),
         el('div', {}, [
           el('label', { className: 'label', htmlFor: 'incSearch' }, ['Buscar']),
-          el('input', { id: 'incSearch', className: 'input', placeholder: 'Documento, nombre, origen o soporte...' })
+          el('input', { id: 'incSearch', className: 'input', placeholder: 'Documento, nombre, contrato, origen o soporte...' })
         ]),
         el('div', {}, [
           el('label', { className: 'label', htmlFor: 'incStatus' }, ['Estado']),
@@ -165,6 +166,13 @@ export const CargarDatos = (mount, deps = {}) => {
       novedades = rows || [];
     });
   }
+  const unSelectedContract = !portalMode
+    ? subscribe('selectedContractCode', () => {
+      paginator.reset();
+      if (hasQueried) runQuery();
+      else renderList();
+    })
+    : () => {};
 
   renderList();
   Promise.resolve().then(() => runQuery());
@@ -173,6 +181,7 @@ export const CargarDatos = (mount, deps = {}) => {
     unEmployees?.();
     unSedes?.();
     unNovedades?.();
+    unSelectedContract?.();
   };
 
   async function runQuery() {
@@ -193,7 +202,7 @@ export const CargarDatos = (mount, deps = {}) => {
         const data = await deps.apiRequest(`/api/employee-incapacities?dateFrom=${encodeURIComponent(dateFrom)}&dateTo=${encodeURIComponent(dateTo)}`, { method: 'GET' });
         incapRows = Array.isArray(data?.rows) ? data.rows : [];
       } else {
-        incapRows = await deps.listIncapacidadesRange?.(dateFrom, dateTo) || [];
+        incapRows = await deps.listIncapacidadesRange?.(dateFrom, dateTo, { contratoCodigo: contractFilterCode() }) || [];
       }
       hasQueried = true;
       paginator.reset();
@@ -402,6 +411,7 @@ export const CargarDatos = (mount, deps = {}) => {
     const support = String(supportFilter?.value || '').trim();
     return sortRows(incapRows
       .filter((row) => canViewAllIncapacities || portalMode || sanitizeDocument(row?.documento) === ownDocument)
+      .filter((row) => contractMatches(row))
       .filter((row) => !estado || String(row?.estado || '').trim().toLowerCase() === estado)
       .filter((row) => !canal || String(row?.canalRegistro || '').trim().toLowerCase() === canal)
       .filter((row) => {
@@ -414,6 +424,9 @@ export const CargarDatos = (mount, deps = {}) => {
         const blob = [
           row?.documento,
           row?.nombre,
+          row?.contratoCodigo,
+          row?.contratoNombre,
+          row?.clienteNombreSnapshot,
           row?.source,
           row?.canalRegistro,
           row?.soporteNombre
@@ -480,6 +493,7 @@ export const CargarDatos = (mount, deps = {}) => {
     if (key === 'fechaInicio' || key === 'fechaFin') return sortableDate(row?.[key]);
     if (key === 'canalRegistro') return channelLabel(row).toLowerCase();
     if (key === 'soporte') return String(row?.soporteNombre || row?.soporteUrl || '').toLowerCase();
+    if (key === 'contratoNombre') return String(row?.contratoNombre || row?.contratoCodigo || '').toLowerCase();
     return String(row?.[key] || '').toLowerCase();
   }
 
@@ -511,11 +525,16 @@ export const CargarDatos = (mount, deps = {}) => {
     ]);
   }
 
+  function contractLabel(row = {}) {
+    return row?.contratoNombre || row?.contratoCodigo || row?.clienteNombreSnapshot || '-';
+  }
+
   function renderCard(row) {
     return recordCard(row, {
       title: row?.nombre || '-',
       subtitle: `Documento: ${row?.documento || '-'}`,
       meta: [
+        ['Contrato', contractLabel(row)],
         ['Tipo', row?.source || '-'],
         ['Inicio', formatDate(row?.fechaInicio)],
         ['Fin', formatDate(row?.fechaFin)],
@@ -575,9 +594,11 @@ export const CargarDatos = (mount, deps = {}) => {
       `Cargo: ${employee?.cargoNombre || employee?.cargoCodigo || '-'}`,
       `Sede: ${sedeName}`,
       `Zona: ${zonaName}`,
-      `Dependencia: ${dependenciaName}`
+      `Dependencia: ${dependenciaName}`,
+      `Contrato: ${contractLabel(row) || employee?.contratoNombre || employee?.contratoCodigo || '-'}`
     ]);
   }
+
 
   function resolveEmployeeForRow(row = {}) {
     const employeeId = String(row?.employeeId || '').trim();
@@ -736,7 +757,7 @@ function normalizeInputDate(value) {
   if (!raw) return '';
   if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
   try {
-    const date = value?.toDate ? value.toDate() : new Date(value);
+    const date = new Date(value);
     if (!date || Number.isNaN(date.getTime())) return '';
     const pad = (number) => String(number).padStart(2, '0');
     return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;

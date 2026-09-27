@@ -1,6 +1,8 @@
 import { el, qs } from '../utils/dom.js';
 import { can, PERMS } from '../permissions.js';
 import { createTablePagination } from '../utils/pagination.js';
+import { contractMatches } from '../utils/contractScope.js';
+import { downloadCsv, parseDelimitedRows } from '../utils/csv.js';
 
 const CLEAR_VALUE = '__CLEAR__';
 const UPDATE_FIELDS = [
@@ -48,6 +50,7 @@ export const EmployeeBulkUpdateAdmin = (mount, deps = {}) => {
           el('thead', {}, [el('tr', {}, [
             el('th', {}, ['Documento']),
             el('th', {}, ['Empleado actual']),
+            el('th', {}, ['Contrato']),
             el('th', {}, ['Campos a actualizar']),
             el('th', {}, ['Estado'])
           ])]),
@@ -170,6 +173,7 @@ export const EmployeeBulkUpdateAdmin = (mount, deps = {}) => {
       const patch = {};
       if (!documento) issues.push('Documento requerido.');
       if (documento && !employee) issues.push('Documento no existe en empleados.');
+      if (employee && !contractMatches(employee)) issues.push('Empleado no pertenece al contrato seleccionado.');
       if (documento && localDocs.has(documento)) issues.push('Documento duplicado en archivo.');
       if (documento) localDocs.add(documento);
       UPDATE_FIELDS.forEach(([key]) => {
@@ -220,6 +224,7 @@ export const EmployeeBulkUpdateAdmin = (mount, deps = {}) => {
     qs('#tblPreview tbody', ui).replaceChildren(...pageRows.map((row) => el('tr', {}, [
       el('td', {}, [row.documento || '-']),
       el('td', {}, [row.employee?.nombre || '-']),
+      el('td', {}, [contractLabel(row.employee)]),
       el('td', {}, [row.fields || '-']),
       el('td', {}, [row.ok ? 'OK' : 'ERROR'])
     ])));
@@ -249,9 +254,14 @@ export const EmployeeBulkUpdateAdmin = (mount, deps = {}) => {
         el('span', { className: `badge ${row.ok ? 'badge--ok' : 'badge--off'}` }, [row.ok ? 'OK' : 'ERROR'])
       ]),
       el('dl', { className: 'record-card__meta' }, [
+        el('div', { className: 'record-card__meta-item' }, [el('dt', {}, ['Contrato']), el('dd', {}, [contractLabel(row.employee)])]),
         el('div', { className: 'record-card__meta-item' }, [el('dt', {}, ['Campos']), el('dd', {}, [row.fields || '-'])])
       ])
     ]);
+  }
+
+  function contractLabel(employee = {}) {
+    return employee?.contratoNombre || employee?.contratoCodigo || employee?.clienteNombreSnapshot || '-';
   }
 
   function errorCard(err) {
@@ -284,23 +294,7 @@ export const EmployeeBulkUpdateAdmin = (mount, deps = {}) => {
   }
 
   function parseCSVRows(text) {
-    const rows = [];
-    let row = [];
-    let cur = '';
-    let inQuotes = false;
-    for (let i = 0; i < text.length; i += 1) {
-      const ch = text[i];
-      const next = text[i + 1];
-      if (ch === '"') {
-        if (inQuotes && next === '"') { cur += '"'; i += 1; } else inQuotes = !inQuotes;
-      } else if ((ch === ',' || ch === ';' || ch === '\t') && !inQuotes) {
-        row.push(cur);
-        cur = '';
-      } else if ((ch === '\n' || ch === '\r') && !inQuotes) {
-        if (cur !== '' || row.length) { row.push(cur); rows.push(row); row = []; cur = ''; }
-      } else cur += ch;
-    }
-    if (cur !== '' || row.length) { row.push(cur); rows.push(row); }
+    const rows = parseDelimitedRows(text);
     if (!rows.length) return [];
     const headers = rows[0].map((header) => String(header || '').trim());
     return rows.slice(1).map((cols) => {
@@ -394,24 +388,6 @@ export const EmployeeBulkUpdateAdmin = (mount, deps = {}) => {
     progressNumbers.textContent = '0 / 0';
     progressFill.style.width = '0%';
     progressTrack?.setAttribute('aria-valuenow', '0');
-  }
-
-  function downloadCsv(filename, rows) {
-    const csv = rows.map((row) => row.map(csvCell).join(',')).join('\n');
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-  }
-
-  function csvCell(value) {
-    const raw = String(value ?? '');
-    return raw.includes(',') || raw.includes('"') || raw.includes('\n') ? `"${raw.replace(/"/g, '""')}"` : raw;
   }
 
   mount.replaceChildren(ui);

@@ -1,0 +1,39 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cp /tmp/sec.md ./sec.tmp.md)",
+      "Bash(node -e ' *)",
+      "Bash(rm sec.tmp.md)",
+      "Bash(sed -n '/segments as/,/totals as/p' supabase/schema_operations_phase66_rotation_business_rules.sql)",
+      "Bash(QUICK=1 node release-bundles.mjs)",
+      "Bash(node tests/rotation-rest-ui.mjs)",
+      "Bash(node tmp_probe.mjs)",
+      "Bash(sed -n '/^# /p' /dev/null)",
+      "Read(//c/Users/capco/OneDrive/Documentos/**)",
+      "Bash(node tmp_q.mjs)",
+      "Bash(sed -n '/activate.onclick/,/^    };/p' components/ShiftRotationsAdmin.js)",
+      "Bash(sed -i \"6a import * as rotationCoverage from '../src/assets/js/utils/rotationCoverage.js';\" rotation-rest-ui.mjs)",
+      "Bash(sed -i \"s/addIsoDays, ...rotationHours,/addIsoDays, ...rotationHours, ...rotationCoverage,/\" rotation-rest-ui.mjs)",
+      "Bash(node --check components/ShiftRotationsAdmin.js)",
+      "Bash(node rotation-coverage.mjs)",
+      "Bash(node tmp_dbg.mjs)",
+      "Bash(node patch_surplus.cjs)",
+      "Bash(rm patch_surplus.cjs)",
+      "Bash(node --check patch_surplus.cjs)",
+      "Bash(node --check patch_sunday.cjs)",
+      "Bash(node patch_sunday.cjs)",
+      "Bash(rm patch_sunday.cjs relief2.sql.tmp)",
+      "Bash(cp supabase/schema_operations_phase66_rotation_business_rules.sql /tmp/phase66.bak)",
+      "Bash(node patch_week.cjs)",
+      "Bash(node fix_week.cjs)",
+      "Bash(rm fix_week.cjs)",
+      "Bash(sed -i \"s/mondayOfIso/weekStartIso/g\" src/assets/js/utils/rotationHours.js src/assets/js/components/ShiftRotationsAdmin.js tests/rotation-hours.mjs tests/rotation-rest-ui.mjs)",
+      "Bash(node fix_hours.cjs)",
+      "Bash(rm fix_hours.cjs)",
+      "Bash(node --check whatsapp-backend/src/app.js)",
+      "Bash(node daily-qr-realtime-scope.mjs)",
+      "Bash(node daily-attendance-tracking.mjs)",
+      "Bash(node --check app.js)"
+    ]
+  }
+}

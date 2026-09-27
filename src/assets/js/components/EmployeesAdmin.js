@@ -1,8 +1,12 @@
 import { el, qs, infoIcon, moreIcon, viewIcon } from '../utils/dom.js';
 import { showInfoModal } from '../utils/infoModal.js';
+import { showCatalogDetail } from '../utils/catalogDetail.js';
 import { showActionModal } from '../utils/actionModal.js';
 import { createTablePagination } from '../utils/pagination.js';
 import { can, PERMS } from '../permissions.js';
+import { subscribe } from '../state.js';
+import { contractFilterCode } from '../utils/contractScope.js';
+import { EMPLOYEE_RETIREMENT_REASONS, retirementReasonLabel } from '../utils/employeeRetirement.js';
 export const EmployeesAdmin=(mount,deps={})=>{
   const canEdit=can(PERMS.EDIT_EMPLOYEES);
   const ui=el('section',{className:'main-card'},[
@@ -17,7 +21,6 @@ export const EmployeesAdmin=(mount,deps={})=>{
         el('div',{className:'table-wrap responsive-table-view'},[
           el('table',{className:'table',id:'tbl'},[
             el('thead',{},[ el('tr',{},[
-              el('th',{'data-sort':'codigo',style:'cursor:pointer'},['Codigo']),
               el('th',{'data-sort':'documento',style:'cursor:pointer'},['Documento']),
               el('th',{'data-sort':'nombre',style:'cursor:pointer'},['Nombre']),
               el('th',{'data-sort':'telefono',style:'cursor:pointer'},['Telefono']),
@@ -38,7 +41,7 @@ export const EmployeesAdmin=(mount,deps={})=>{
     el('datalist',{id:'eSedeList'},[])
   ]);
 
-  let sedeList=[]; let cargoList=[];
+  let contractList=[]; let sedeList=[]; let cargoList=[];
   const sedeListNode=qs('#eSedeList',ui);
   function buildOptions(items, selected){
     const opts=[ el('option',{value:''},['Seleccione...']) ];
@@ -63,9 +66,11 @@ export const EmployeesAdmin=(mount,deps={})=>{
     const select=qs('#selSede',ui);
     if(!select) return;
     const cur=select.value;
+    const contractCode=contractFilterCode();
+    const visibleSedes=sedeList.filter(s=>!contractCode || s.contratoCodigo===contractCode);
     const opts=[
       el('option',{value:''},['Todas']),
-      ...sedeList
+      ...visibleSedes
         .filter((s)=> String(s.codigo||'').trim())
         .sort((a,b)=> String(a.nombre||a.codigo||'').localeCompare(String(b.nombre||b.codigo||'')))
         .map((s)=>{
@@ -74,7 +79,7 @@ export const EmployeesAdmin=(mount,deps={})=>{
         })
     ];
     select.replaceChildren(...opts);
-    if(cur && !sedeList.some((s)=> String(s.codigo||'').trim()===cur)) select.value='';
+    if(cur && !visibleSedes.some((s)=> String(s.codigo||'').trim()===cur)) select.value='';
   }
   function resolveSedeCode(inputValue){
     const raw=String(inputValue||'').trim();
@@ -170,11 +175,13 @@ export const EmployeesAdmin=(mount,deps={})=>{
   let loadTimer=null;
   let loadToken=0;
   let unSedes=()=>{};
+  let unContracts=()=>{};
   let unCargos=()=>{};
   let unSup=()=>{};
   let unSupn=()=>{};
   let unHistory=()=>{};
   let supervisors=[]; let supernumerarios=[];
+  const contractNameByCode=(code)=> contractList.find(c=>c.codigo===code)?.nombre || '-';
   const sedeNameByCode=(code)=> sedeList.find(s=>s.codigo===code)?.nombre || '-';
   const cargoNameByCode=(code)=> cargoList.find(c=>c.codigo===code)?.nombre || '-';
   const isLinkedByDoc=(doc)=>{
@@ -186,11 +193,12 @@ export const EmployeesAdmin=(mount,deps={})=>{
   };
 
   const search=()=> qs('#txtSearch',ui).value.trim().toLowerCase();
+  const filterContract=()=> contractFilterCode();
   const filterSede=()=> qs('#selSede',ui)?.value||'';
   const filterStatus=()=> qs('#selStatus',ui).value;
   function toSortableDate(ts){
     try{
-      const d=ts?.toDate? ts.toDate(): (ts? new Date(ts): null);
+      const d=ts? new Date(ts): null;
       return d? d.getTime(): 0;
     }catch{ return 0; }
   }
@@ -198,6 +206,7 @@ export const EmployeesAdmin=(mount,deps={})=>{
     const view=employeeAssignmentView(e);
     if(key==='cargoNombre') return (view.current?.cargoNombre||cargoNameByCode(view.current?.cargoCodigo)||'').toLowerCase();
     if(key==='sedeNombre') return (view.current?.sedeNombre||sedeNameByCode(view.current?.sedeCodigo)||'').toLowerCase();
+    if(key==='contratoNombre') return (view.current?.contratoNombre||contractNameByCode(view.current?.contratoCodigo)||'').toLowerCase();
     if(key==='fechaIngreso') return toSortableDate(view.current?.fechaIngreso||e.fechaIngreso);
     if(key==='fechaRetiro') return toSortableDate(e[key]);
     return String(e[key]??'').toLowerCase();
@@ -250,6 +259,7 @@ export const EmployeesAdmin=(mount,deps={})=>{
       const result=typeof deps.listEmployeesAdminPage==='function'
         ? await deps.listEmployeesAdminPage({
           search:search(),
+          contratoCodigo:filterContract(),
           sedeCodigo:filterSede(),
           estado:filterStatus(),
           sortKey,
@@ -270,7 +280,9 @@ export const EmployeesAdmin=(mount,deps={})=>{
         scheduleLoadPage(0);
         return;
       }
-      historyRows=await loadHistoryForPage(snapshot);
+      const nextHistory=await loadHistoryForPage(snapshot);
+      if(token!==loadToken) return;
+      historyRows=nextHistory;
     }catch(e){
       if(token!==loadToken) return;
       snapshot=[];
@@ -286,10 +298,10 @@ export const EmployeesAdmin=(mount,deps={})=>{
   }
   async function loadEmployeesPageFallback(){
     const rows=await streamOnce((ok)=> deps.streamEmployees?.(ok));
-    const term=search(); const sedeCode=filterSede(); const st=filterStatus();
+    const term=search(); const contractCode=filterContract(); const sedeCode=filterSede(); const st=filterStatus();
     const filtered=rows.filter(e=>{
-      const text=[e.codigo,e.documento,e.nombre,e.telefono,e.cargoNombre,e.cargoCodigo,e.sedeNombre,e.sedeCodigo].join(' ').toLowerCase();
-      return (!term || text.includes(term)) && (!sedeCode || String(e.sedeCodigo||'')===sedeCode) && (!st || e.estado===st);
+      const text=[e.codigo,e.documento,e.nombre,e.telefono,e.cargoNombre,e.cargoCodigo,e.sedeNombre,e.sedeCodigo,e.contratoNombre,e.contratoCodigo,e.clienteNombreSnapshot].join(' ').toLowerCase();
+      return (!term || text.includes(term)) && (!contractCode || String(e.contratoCodigo||'')===contractCode) && (!sedeCode || String(e.sedeCodigo||'')===sedeCode) && (!st || e.estado===st);
     });
     const sorted=sortData(filtered);
     const pageSize=paginator.state.showAll ? Math.max(sorted.length,1) : Math.max(1,paginator.state.pageSize);
@@ -324,13 +336,12 @@ export const EmployeesAdmin=(mount,deps={})=>{
     updateServerPagination();
     tbody.replaceChildren(...pageRows.map(e=> row(e)));
     cards.replaceChildren(...(pageRows.length ? pageRows.map(e=> employeeCard(e)) : [el('p',{className:'text-muted record-card__empty'},['Sin empleados para mostrar.'])]));
-    const msg=qs('#msg',ui); if(msg) msg.textContent=loading ? 'Cargando empleados...' : `Total registros filtrados: ${totalRows}`;
+    const msg=qs('#msg',ui); if(msg) msg.textContent=loading ? 'Cargando empleados...' : ' ';
     updateSortIndicators();
   }
   function row(e){
     const view=employeeAssignmentView(e);
     const tr=el('tr',{'data-id':e.id});
-    const tdCodigo=el('td',{},[e.codigo||'-']);
     const linked=isLinkedByDoc(e.documento);
     const tdDoc=el('td',{}, linked ? [e.documento||'-',' ',el('span',{className:'badge'},['Vinculado'])] : [e.documento||'-']);
     const tdNombre=el('td',{},[e.nombre||'-']);
@@ -341,7 +352,7 @@ export const EmployeesAdmin=(mount,deps={})=>{
     const tdIngreso=el('td',{},[ formatDate(view.current?.fechaIngreso||e.fechaIngreso) ]);
     const tdRetiro=el('td',{},[ formatDate(e.fechaRetiro) ]);
     const tdAcc=el('td',{},[ actionsCell(e) ]);
-    tr.append(tdCodigo,tdDoc,tdNombre,tdTel,tdCargo,tdSede,tdEstado,tdIngreso,tdRetiro,tdAcc);
+    tr.append(tdDoc,tdNombre,tdTel,tdCargo,tdSede,tdEstado,tdIngreso,tdRetiro,tdAcc);
     return tr;
   }
   function employeeCard(e){
@@ -350,6 +361,7 @@ export const EmployeesAdmin=(mount,deps={})=>{
     const docValue=linked ? [e.documento||'-',' ',el('span',{className:'badge'},['Vinculado'])] : [e.documento||'-'];
     const cargoValue=[assignmentCellText(view.current,'cargo'),programmedBadge(view.programmed,'cargo')].filter(Boolean);
     const sedeValue=[assignmentCellText(view.current,'sede'),programmedBadge(view.programmed,'sede')].filter(Boolean);
+    const contractValue=[assignmentCellText(view.current,'contract'),programmedBadge(view.programmed,'contract')].filter(Boolean);
     return recordCard(e,{
       title:e.nombre||'-',
       subtitle:`Codigo: ${e.codigo||'-'}`,
@@ -358,6 +370,7 @@ export const EmployeesAdmin=(mount,deps={})=>{
         ['Telefono',e.telefono||'-'],
         ['Cargo',cargoValue.length?cargoValue:['-']],
         ['Sede',sedeValue.length?sedeValue:['-']],
+        ['Contrato',contractValue.length?contractValue:['-']],
         ['Ingreso',formatDate(view.current?.fechaIngreso||e.fechaIngreso)],
         ['Retiro',formatDate(e.fechaRetiro)]
       ],
@@ -383,6 +396,7 @@ export const EmployeesAdmin=(mount,deps={})=>{
   function statusBadge(st){ return el('span',{className:'badge '+(st==='activo'?'badge--ok':'badge--off')},[st||'-']); }
   function assignmentCellText(assignment={},kind='sede'){
     if(kind==='cargo') return assignment?.cargoNombre||cargoNameByCode(assignment?.cargoCodigo)||assignment?.cargoCodigo||'-';
+    if(kind==='contract') return assignment?.contratoNombre||contractNameByCode(assignment?.contratoCodigo)||assignment?.contratoCodigo||'-';
     const catalogName = sedeNameByCode(assignment?.sedeCodigo);
     return catalogName !== '-' ? catalogName : (assignment?.sedeNombre||assignment?.sedeCodigo||'-');
   }
@@ -414,6 +428,8 @@ export const EmployeesAdmin=(mount,deps={})=>{
       cargoNombre:e.cargoNombre||null,
       sedeCodigo:e.sedeCodigo||null,
       sedeNombre:e.sedeNombre||null,
+      contratoCodigo:e.contratoCodigo||null,
+      contratoNombre:e.contratoNombre||null,
       fechaIngreso:e.fechaIngreso||null,
       fechaRetiro:e.fechaRetiro||null
     };
@@ -469,43 +485,55 @@ export const EmployeesAdmin=(mount,deps={})=>{
   }
   function formatDate(ts){
     try{
-      const d=ts?.toDate? ts.toDate(): (ts? new Date(ts): null);
+      const d=ts? new Date(ts): null;
       return d? new Date(d).toLocaleDateString(): '-';
     }catch{ return '-'; }
   }
-  async function openCargoHistoryModal(e){
+  function loadEmployeeHistory(e,records){
+    unHistory?.();
     const employeeId=String(e?.id||'').trim();
     if(!employeeId || typeof deps.streamEmployeeCargoHistory!=='function'){
-      showInfoModal('Historial del empleado',['No hay historial disponible para este empleado.']);
+      records.replaceChildren(el('p',{className:'text-muted'},['No hay historial disponible para este empleado.']));
       return;
     }
-    showInfoModal(`Historial del empleado - ${e?.nombre||'-'}`,['Cargando...']);
     let done=false;
-    const un=deps.streamEmployeeCargoHistory(employeeId,(rows)=>{
+    let un=()=>{};
+    const finish=()=>{ done=true; clearTimeout(timer); un?.(); };
+    const fail=()=>{
       if(done) return;
-      done=true;
-      const list=Array.isArray(rows)? rows:[];
+      finish();
+      if(records.isConnected) records.replaceChildren(el('p',{className:'text-muted'},['No se pudo cargar el historial. Intenta de nuevo.']));
+    };
+    const timer=setTimeout(fail,5000);
+    unHistory=finish;
+    try{
+      un=deps.streamEmployeeCargoHistory(employeeId,(rows)=>{
+      if(done) return;
+      finish();
+      if(!records.isConnected) return;
+      const list=(Array.isArray(rows)? [...rows]:[]).sort((a,b)=>
+        String(toISODateValue(b.fechaIngreso)).localeCompare(String(toISODateValue(a.fechaIngreso)))
+      );
       if(!list.length){
-        showInfoModal(`Historial del empleado - ${e?.nombre||'-'}`,['Sin registros.']);
-        un?.();
+        records.replaceChildren(el('p',{className:'text-muted'},['Sin asignaciones registradas.']));
         return;
       }
-      const lines=list.map((row,idx)=>{
-        const ingreso=formatDate(row.fechaIngreso);
-        const retiro=row.fechaRetiro ? formatDate(row.fechaRetiro) : 'Activo';
-        const cargo=row.cargoNombre||row.cargoCodigo||'-';
-        const sede=row.sedeNombre||row.sedeCodigo||'-';
-        return `${idx+1}. Cargo: ${cargo} | Sede: ${sede} | Ingreso: ${ingreso} | Retiro: ${retiro}`;
-      });
-      showInfoModal(`Historial del empleado - ${e?.nombre||'-'}`,lines);
-      un?.();
-    });
-    setTimeout(()=>{
-      if(done) return;
-      done=true;
-      showInfoModal(`Historial del empleado - ${e?.nombre||'-'}`,['No se pudo cargar el historial. Intenta de nuevo.']);
-      un?.();
-    },5000);
+      records.replaceChildren(
+        el('p',{className:'text-muted'},[`${list.length} asignacion${list.length===1?'':'es'}. Ordenadas por ingreso, de la mas reciente a la mas antigua.`]),
+        ...list.map((row,idx)=>detailSection(`Asignacion ${idx+1}`,[
+          ['Cargo',row.cargoNombre||cargoNameByCode(row.cargoCodigo)||row.cargoCodigo],
+          ['Codigo cargo',row.cargoCodigo],
+          ['Sede',row.sedeNombre||sedeNameByCode(row.sedeCodigo)||row.sedeCodigo],
+          ['Codigo sede',row.sedeCodigo],
+          ['Contrato',row.contratoNombre||contractNameByCode(row.contratoCodigo)||row.contratoCodigo],
+          ['Codigo contrato',row.contratoCodigo],
+          ['Ingreso',formatInputDate(row.fechaIngreso)],
+          ['Retiro',row.fechaRetiro?formatInputDate(row.fechaRetiro):'Sin retiro registrado']
+        ]))
+      );
+      },fail)||(()=>{});
+      if(done) un();
+    }catch{ fail(); }
   }
   async function openMoreOptionsModal(e){
     const inactive=String(e?.estado||'').trim().toLowerCase()==='inactivo';
@@ -538,7 +566,9 @@ export const EmployeesAdmin=(mount,deps={})=>{
     if(modal.values.action==='retire') return openRetireEmployeeModal(e);
   }
   async function openCertificateModal(e){
-    if(e.estado!=='activo') return alert('Solo puedes generar certificados de empleados activos.');
+    const estado=String(e.estado||'').trim().toLowerCase();
+    if(!['activo','inactivo'].includes(estado)) return alert('El estado del empleado no permite generar certificados.');
+    const retired=estado==='inactivo';
     const modal=await showActionModal({
       title:'Generar certificado',
       message:`Empleado: ${e.nombre||'-'}`,
@@ -548,16 +578,19 @@ export const EmployeesAdmin=(mount,deps={})=>{
         label:'Tipo de certificado',
         type:'select',
         required:true,
-        options:[
+        options:retired ? [{ value:'retired', label:'Laboral de retiro (laboró)' }, { value:'retired_with_functions', label:'Laboral de retiro con funciones' }] : [
           { value:'basic', label:'Laboral basico' },
-          { value:'with_salary', label:'Laboral con salario' }
+          { value:'with_salary', label:'Laboral con salario' },
+          { value:'with_functions', label:'Laboral con funciones' }
         ]
       }]
     });
     if(!modal.confirmed) return;
+    const allowedTypes=retired ? ['retired','retired_with_functions'] : ['basic','with_salary','with_functions'];
+    const type=allowedTypes.includes(modal.values.type) ? modal.values.type : allowedTypes[0];
     try{
-      await deps.generateEmployeeCertificate?.(e.id, modal.values.type||'basic');
-      await deps.addAuditLog?.({ targetType:'employee', targetId:e.id, action:'generate_employee_certificate', after:{ documento:e.documento||null, type:modal.values.type||'basic' } });
+      await deps.generateEmployeeCertificate?.(e.id, type);
+      await deps.addAuditLog?.({ targetType:'employee', targetId:e.id, action:'generate_employee_certificate', after:{ documento:e.documento||null, type } });
     }catch(err){ alert('Error: '+(err?.message||err)); }
   }
   async function openEditEmployeeModal(e){
@@ -703,7 +736,8 @@ export const EmployeesAdmin=(mount,deps={})=>{
       confirmText:'Retirar',
       fields:[
         { id:'retiroDate', label:'Fecha de retiro', type:'date', required:true, value:suggested },
-        { id:'detail', label:'Detalle', type:'textarea', required:true, placeholder:'Escribe el motivo o detalle de esta accion' }
+        { id:'retiroMotivo', label:'Motivo de retiro', type:'select', required:true, value:'', options:[{value:'',label:'Selecciona un motivo'},...EMPLOYEE_RETIREMENT_REASONS] },
+        { id:'detail', label:'Observación', type:'textarea', required:true, placeholder:'Describe las circunstancias del retiro' }
       ]
     });
     if(!modal.confirmed) return;
@@ -749,11 +783,8 @@ export const EmployeesAdmin=(mount,deps={})=>{
     }
     try{
       const retiroDate=new Date(`${retiro}T00:00:00`);
-      for(const row of programmed){
-        if(row?.id) await deps.cancelProgrammedEmployeeAssignment?.(row.id);
-      }
-      await deps.setEmployeeStatus?.(e.id,'inactivo',{ fechaRetiro:retiroDate, cancelProgrammedAssignments:true });
-      await deps.addAuditLog?.({ targetType:'employee', targetId:e.id, action:'retire_employee', before:{estado:e.estado, fechaRetiro:e.fechaRetiro||null}, after:{estado:'inactivo', fechaRetiro:retiro, fechaRetiroSolicitada:originalRetiro!==retiro?originalRetiro:null, ultimaAsistencia:lastAttendance||null, cancelledProgrammedAssignments:programmed.map((row)=>({ id:row.id, fechaIngreso:row.fechaIngreso, sedeCodigo:row.sedeCodigo, sedeNombre:row.sedeNombre, cargoCodigo:row.cargoCodigo, cargoNombre:row.cargoNombre }))}, note:modal.values.detail||null });
+      await deps.setEmployeeStatus?.(e.id,'inactivo',{ fechaRetiro:retiroDate, retiroMotivo:modal.values.retiroMotivo, retiroObservacion:String(modal.values.detail||'').trim(), cancelProgrammedAssignments:true });
+      await deps.addAuditLog?.({ targetType:'employee', targetId:e.id, action:'retire_employee', before:{estado:e.estado, fechaRetiro:e.fechaRetiro||null}, after:{estado:'inactivo', fechaRetiro:retiro, retiroMotivo:modal.values.retiroMotivo, retiroObservacion:String(modal.values.detail||'').trim(), fechaRetiroSolicitada:originalRetiro!==retiro?originalRetiro:null, ultimaAsistencia:lastAttendance||null, cancelledProgrammedAssignments:programmed.map((row)=>({ id:row.id, fechaIngreso:row.fechaIngreso, sedeCodigo:row.sedeCodigo, sedeNombre:row.sedeNombre, cargoCodigo:row.cargoCodigo, cargoNombre:row.cargoNombre }))}, note:modal.values.detail||null });
     }catch(err){ alert('Error: '+(err?.message||err)); }
   }
   async function resolveLastAttendanceForRetirement(e){
@@ -821,28 +852,83 @@ export const EmployeesAdmin=(mount,deps={})=>{
     const btnView=el('button',{className:'btn btn--icon',type:'button',title:'Ver ficha','aria-label':'Ver ficha'},[viewIcon()]);
     btnView.addEventListener('click',()=>{ openEmployeeDetailModal(e); });
     const btnInfo=el('button',{className:'btn btn--icon',type:'button',title:'Ver informacion','aria-label':'Ver informacion'},[infoIcon()]);
-    btnInfo.addEventListener('click',()=>{ openCargoHistoryModal(e); });
+    btnInfo.addEventListener('click',()=>{ openEmployeeInfoModal(e); });
     box.append(btnView,btnInfo);
     return box;
   }
   function openEmployeeDetailModal(e){
+    unHistory?.();
     showInfoModal(`Ficha del empleado - ${e?.nombre||'-'}`,[employeeDetailContent(e)]);
   }
+  function openEmployeeInfoModal(e={}){
+    const { current={}, programmed }=employeeAssignmentView(e);
+    const contractCode=current.contratoCodigo||e.contratoCodigo;
+    const contract=contractList.find(row=>row.codigo===contractCode)||{};
+    const snapshotContract=contractCode===e.contratoCodigo?e:{};
+    const historyRecords=el('div',{className:'employee-detail','aria-live':'polite'},[
+      el('p',{className:'text-muted'},['Cargando historial laboral...'])
+    ]);
+    const sections=[
+      ['Asignacion actual',[
+        ['Estado',statusBadge(e.estado==='inactivo'?'Retirado':e.estado)],
+        ['Cargo',assignmentCellText(current,'cargo')], ['Codigo cargo',current.cargoCodigo],
+        ['Sede',assignmentCellText(current,'sede')], ['Codigo sede',current.sedeCodigo],
+        ['Ingreso',formatInputDate(current.fechaIngreso||e.fechaIngreso)],
+        ['Retiro',formatInputDate(e.fechaRetiro)]
+      ]],
+      ['Contrato y cliente',[
+        ['Contrato',current.contratoNombre||contract.nombre||snapshotContract.contratoNombre||contractCode],
+        ['Codigo contrato',contractCode],
+        ['Cliente',current.clienteNombreSnapshot||contract.clienteNombre||snapshotContract.clienteNombreSnapshot],
+        ['NIT cliente',current.clienteNitSnapshot||contract.clienteNit||snapshotContract.clienteNitSnapshot]
+      ]]
+    ];
+    if(programmed) sections.push(['Proxima asignacion programada',[
+      ['Desde',formatInputDate(programmed.fechaIngreso)],
+      ['Cargo',assignmentCellText(programmed,'cargo')],
+      ['Sede',assignmentCellText(programmed,'sede')],
+      ['Contrato',assignmentCellText(programmed,'contract')]
+    ]]);
+    sections.push(['Historial laboral',historyRecords]);
+    if(e.estado==='inactivo') sections.push(['Retiro actual',[
+      ['Estado','Retirado'],
+      ['Fecha de retiro',formatInputDate(e.fechaRetiro)],
+      ['Motivo',retirementReasonLabel(e.retiroMotivo)],
+      ['Observación',el('span',{style:'white-space:pre-wrap'},[e.retiroObservacion||'Observación no registrada'])]
+    ]]);
+    const retirementRecords=el('div',{'aria-live':'polite'},['Cargando retiros...']);
+    sections.push(['Historial de retiros',retirementRecords]);
+    showCatalogDetail(`Informacion del empleado - ${e.nombre||'-'}`,e,sections);
+    loadEmployeeHistory(e,historyRecords);
+    loadRetirementHistory(e,retirementRecords);
+  }
+  async function loadRetirementHistory(e,container){
+    try{
+      const rows=await deps.listEmployeeRetirements(e.id);
+      container.replaceChildren(...(rows.length?rows.map(row=>{
+        const section=detailSection(`Retiro: ${formatInputDate(row.fecha_retiro)}`,[
+          ['Ingreso del ciclo',formatInputDate(row.fecha_ingreso)],
+          ['Motivo',retirementReasonLabel(row.motivo)],
+          ['Observación',row.observacion||'Observación no registrada'],
+          ['Registrado por',row.created_by_email||row.created_by_uid],
+          ['Fecha de registro',row.created_at?new Date(row.created_at).toLocaleString('es-CO'):'-']
+        ]);
+        section.querySelectorAll('dd').forEach(node=>{node.style.whiteSpace='pre-wrap';});
+        return section;
+      }):[el('p',{className:'text-muted'},['Sin retiros registrados en el historial.'])]));
+    }catch(error){
+      console.error('No se pudo cargar el historial de retiros:',error);
+      container.replaceChildren(el('p',{},['No se pudo cargar el historial de retiros.']),el('button',{className:'btn',type:'button',onclick:()=>loadRetirementHistory(e,container)},['Reintentar']));
+    }
+  }
   function employeeDetailContent(e){
-    const view=employeeAssignmentView(e);
-    const current=view.current||{};
     return el('div',{className:'employee-detail'},[
       detailSection('Datos basicos',[
         ['Codigo',e.codigo],
         ['Documento',e.documento],
         ['Nombre',e.nombre],
         ['Telefono',e.telefono],
-        ['Fecha nacimiento',formatInputDate(e.fechaNacimiento)],
-        ['Estado',e.estado],
-        ['Cargo actual',assignmentCellText(current,'cargo')],
-        ['Sede actual',assignmentCellText(current,'sede')],
-        ['Ingreso',formatDate(current.fechaIngreso||e.fechaIngreso)],
-        ['Retiro',formatDate(e.fechaRetiro)]
+        ['Fecha nacimiento',formatInputDate(e.fechaNacimiento)]
       ]),
       detailSection('Seguridad social',[
         ['EPS',e.eps],
@@ -875,7 +961,7 @@ export const EmployeesAdmin=(mount,deps={})=>{
         const raw=ts.trim();
         if(/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
       }
-      const d=ts?.toDate? ts.toDate(): (ts? new Date(ts): null);
+      const d=ts? new Date(ts): null;
       if(!d) return '';
       const pad=(n)=> String(n).padStart(2,'0');
       return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
@@ -892,7 +978,7 @@ export const EmployeesAdmin=(mount,deps={})=>{
       const parsed=new Date(raw);
       return Number.isNaN(parsed.getTime())?'':parsed.toISOString().slice(0,10);
     }
-    const parsed=value?.toDate?value.toDate():(value instanceof Date?value:null);
+    const parsed=value instanceof Date?value:null;
     return parsed && !Number.isNaN(parsed.getTime())?parsed.toISOString().slice(0,10):'';
   }
   function formatInputDate(value){
@@ -928,6 +1014,7 @@ export const EmployeesAdmin=(mount,deps={})=>{
   mount.replaceChildren(ui);
   let unWatch=()=>{};
   try{
+    unContracts=deps.streamContracts?.((arr)=>{ contractList=(arr||[]).filter(c=>c.estado!=='inactivo'); render(); }) || (()=>{});
     unSedes=deps.streamSedes?.((arr)=>{ sedeList=(arr||[]).filter(s=>s.estado!=='inactivo'); renderSedeSelect(); renderSedeFilter(); render(); }) || (()=>{});
     unCargos=deps.streamCargos?.((arr)=>{ cargoList=(arr||[]).filter(c=>c.estado!=='inactivo'); render(); }) || (()=>{});
     unSup=deps.streamSupervisors?.((arr)=>{ supervisors=arr||[]; render(); }) || (()=>{});
@@ -937,5 +1024,17 @@ export const EmployeesAdmin=(mount,deps={})=>{
   }catch(e){
     const msg=qs('#msg',ui); if(msg) msg.textContent='Error cargando empleados: '+(e?.message||e);
   }
-  return ()=>{ clearTimeout(loadTimer); unWatch?.(); unSedes?.(); unCargos?.(); unSup?.(); unSupn?.(); unHistory?.(); };
+  let observedContract=contractFilterCode();
+  const unSelectedContract=subscribe('selectedContractCode',()=>{
+    const code=contractFilterCode();
+    if(code===observedContract) return;
+    observedContract=code;
+    loadToken++;
+    snapshot=[]; historyRows=[]; totalRows=0;
+    qs('#selSede',ui).value='';
+    renderSedeFilter();
+    paginator.reset();
+    scheduleLoadPage(0);
+  });
+  return ()=>{ loadToken++; clearTimeout(loadTimer); unWatch?.(); unContracts?.(); unSedes?.(); unCargos?.(); unSup?.(); unSupn?.(); unHistory?.(); unSelectedContract?.(); };
 };

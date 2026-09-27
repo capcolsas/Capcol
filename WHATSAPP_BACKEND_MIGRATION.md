@@ -63,7 +63,9 @@ El proyecto `whatsapp-backend/` usa:
 - Rewrite global hacia `/api/index`.
 - Los crons de demo se programan desde Supabase con `supabase/schema_operations_phase28_supabase_cron.sql`.
   - `/api/cron/close-shifts`: `*/15 * * * *`.
-  - `/api/cron/close-daily-operation`: `0 18 * * *`.
+  - `/api/cron/close-daily-operation`: `10 7 * * *` (02:10 America/Bogota del dia siguiente), en una franja de baja actividad de marcaciones. El resumen diario es un corte a esa hora; los nocturnos siguen abiertos y registran sus salidas y cierres por turno de forma independiente.
+  - En instalaciones existentes, aplicar `supabase/schema_operations_phase62_daily_closure_schedule.sql`; conserva el comando y la autenticacion del job diario y no modifica el job de turnos cada 15 minutos.
+  - Desplegar el backend actualizado para recuperar automaticamente el dia inmediatamente anterior al cierre previsto: primero anteayer y despues ayer, omitiendo fechas ya cerradas. Si un cierre falla se intenta el otro; la respuesta incluye `results` por fecha y devuelve HTTP 500 si cualquiera falla. No busca pendientes mas antiguos.
 
 Despues de migrar:
 1. Crear proyecto Vercel nuevo desde la carpeta `whatsapp-backend/`.

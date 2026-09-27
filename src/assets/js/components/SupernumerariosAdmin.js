@@ -1,13 +1,15 @@
-import { el, qs, infoIcon } from '../utils/dom.js';
-import { showInfoModal } from '../utils/infoModal.js';
+import { el, qs, infoIcon, lucideInlineIcon } from '../utils/dom.js';
+import { showCatalogDetail } from '../utils/catalogDetail.js';
 import { showActionModal } from '../utils/actionModal.js';
 import { createTablePagination } from '../utils/pagination.js';
+import { subscribe } from '../state.js';
+import { contractCoverageCodes, contractFilterCode, contractMatches } from '../utils/contractScope.js';
 export const SupernumerariosAdmin=(mount,deps={})=>{
   const ui=el('section',{className:'main-card'},[
     el('h2',{},['Supernumerarios']),
     el('div',{id:'listPanel'},[
       el('div',{className:'form-row'},[
-        el('div',{},[ el('label',{className:'label'},['Buscar']), el('input',{id:'txtSearch',className:'input',placeholder:'Codigo, documento, nombre, sede de hoy...'}) ]),
+        el('div',{},[ el('label',{className:'label'},['Buscar']), el('input',{id:'txtSearch',className:'input',placeholder:'Codigo, documento, nombre, contrato, sede de hoy...'}) ]),
         el('div',{},[ el('label',{className:'label'},['Estado']), el('select',{id:'selStatus',className:'select'},[
           el('option',{value:''},['Todos']),
           el('option',{value:'libre'},['Libres']),
@@ -20,10 +22,10 @@ export const SupernumerariosAdmin=(mount,deps={})=>{
         el('div',{className:'table-wrap responsive-table-view'},[
           el('table',{className:'table',id:'tbl'},[
             el('thead',{},[ el('tr',{},[
-              el('th',{'data-sort':'codigo',style:'cursor:pointer'},['Codigo']),
               el('th',{'data-sort':'documento',style:'cursor:pointer'},['Documento']),
               el('th',{'data-sort':'nombre',style:'cursor:pointer'},['Nombre']),
               el('th',{'data-sort':'telefono',style:'cursor:pointer'},['Telefono']),
+              el('th',{'data-sort':'coberturaContratos',style:'cursor:pointer'},['Cubre']),
               el('th',{'data-sort':'cargoNombre',style:'cursor:pointer'},['Cargo']),
               el('th',{'data-sort':'estadoOperativo',style:'cursor:pointer'},['Estado']),
               el('th',{'data-sort':'sedeHoy',style:'cursor:pointer'},['Sede hoy']),
@@ -39,7 +41,7 @@ export const SupernumerariosAdmin=(mount,deps={})=>{
     el('datalist',{id:'eSedeList'},[])
   ]);
 
-  let sedeList=[]; let cargoList=[];
+  let sedeList=[]; let allSedeList=[]; let cargoList=[]; let contractList=[];
   const sedeListNode=qs('#eSedeList',ui);
   function buildOptions(items, selected){
     const opts=[ el('option',{value:''},['Seleccione...']) ];
@@ -60,6 +62,10 @@ export const SupernumerariosAdmin=(mount,deps={})=>{
       .map((value)=> el('option',{value}));
     sedeListNode.replaceChildren(...opts);
   }
+  function refreshScopedLists(){
+    sedeList=(allSedeList||[]).filter(s=>s.estado!=='inactivo').filter((s)=>contractMatches(s));
+    incapacitados=(allIncapacitados||[]).filter((row)=>contractMatches(row));
+  }
   function resolveSedeCode(inputValue){
     const raw=String(inputValue||'').trim();
     if(!raw) return '';
@@ -78,6 +84,7 @@ export const SupernumerariosAdmin=(mount,deps={})=>{
   let sortKey=''; let sortDir=1;
   const paginator=createTablePagination(ui,{id:'supernumerarios',after:'#listPanel .responsive-records',onChange:render});
   const today=todayBogota();
+  let unContracts=()=>{};
   let unSedes=()=>{};
   let unCargos=()=>{};
   let unEmp=()=>{};
@@ -85,6 +92,7 @@ export const SupernumerariosAdmin=(mount,deps={})=>{
   let unReplacements=()=>{};
   let employees=[];
   let incapacitados=[];
+  let allIncapacitados=[];
   let occupancyRows=[];
   let occupancyRefreshTimer=null;
   const sedeNameByCode=(code)=> sedeList.find(s=>s.codigo===code)?.nombre || '-';
@@ -110,12 +118,14 @@ export const SupernumerariosAdmin=(mount,deps={})=>{
   const filterStatus=()=> qs('#selStatus',ui).value;
   function toSortableDate(ts){
     try{
-      const d=ts?.toDate? ts.toDate(): (ts? new Date(ts): null);
+      const d=ts? new Date(ts): null;
       return d? d.getTime(): 0;
     }catch{ return 0; }
   }
   function getSortValue(e,key){
     if(key==='cargoNombre') return (e.cargoNombre||cargoNameByCode(e.cargoCodigo)||'').toLowerCase();
+    if(key==='contratoNombre') return contractLabel(e).toLowerCase();
+    if(key==='coberturaContratos') return coverageLabel(e).toLowerCase();
     if(key==='estadoOperativo') return operationalInfo(e).label.toLowerCase();
     if(key==='sedeHoy') return operationalInfo(e).sedeLabel.toLowerCase();
     if(key==='fechaIngreso' || key==='fechaRetiro') return toSortableDate(e[key]);
@@ -153,31 +163,67 @@ export const SupernumerariosAdmin=(mount,deps={})=>{
     const term=search(); const st=filterStatus();
     const data=snapshot.filter(e=>{
       if(shouldHideInComplementaryView(e)) return false;
+      if(!contractMatches(e)) return false;
       const op=operationalInfo(e);
-      const text=[e.codigo,e.documento,e.nombre,e.cargoNombre,cargoNameByCode(e.cargoCodigo),op.label,op.sedeLabel].join(' ').toLowerCase();
+      const text=[e.codigo,e.documento,e.nombre,e.contratoCodigo,e.contratoNombre,e.clienteNombreSnapshot,coverageLabel(e),e.cargoNombre,cargoNameByCode(e.cargoCodigo),op.label,op.sedeLabel].join(' ').toLowerCase();
       return (!term || text.includes(term)) && (!st || op.key===st);
     });
     const sorted=sortData(data);
     const pageRows=paginator.slice(sorted);
     tbody.replaceChildren(...pageRows.map(e=> row(e)));
     cards.replaceChildren(...(pageRows.length?pageRows.map(e=> supernumerarioCard(e)):[el('p',{className:'text-muted record-card__empty'},['Sin supernumerarios para mostrar.'])]));
-    const msg=qs('#msg',ui); if(msg) msg.textContent=`Total registros filtrados: ${data.length}`;
     updateSortIndicators();
   }
   function row(e){
     const tr=el('tr',{'data-id':e.id});
-    const tdCodigo=el('td',{},[e.codigo||'-']);
     const linked=isLinkedByDoc(e.documento);
     const tdDoc=el('td',{}, linked ? [e.documento||'-',' ',el('span',{className:'badge'},['Vinculado'])] : [e.documento||'-']);
     const tdNombre=el('td',{},[e.nombre||'-']);
     const tdTel=el('td',{},[e.telefono||'-']);
+    const tdCobertura=el('td',{},[coverageLabel(e)]);
     const tdCargo=el('td',{},[ e.cargoNombre||cargoNameByCode(e.cargoCodigo) ]);
     const op=operationalInfo(e);
     const tdEstado=el('td',{},[ operationalBadge(op) ]);
     const tdSedeHoy=el('td',{},[ op.sedeLabel || '-' ]);
     const tdAcc=el('td',{},[ actionsCell(e) ]);
-    tr.append(tdCodigo,tdDoc,tdNombre,tdTel,tdCargo,tdEstado,tdSedeHoy,tdAcc);
+    tr.append(tdDoc,tdNombre,tdTel,tdCobertura,tdCargo,tdEstado,tdSedeHoy,tdAcc);
     return tr;
+  }
+  function contractLabel(e){ return e?.contratoNombre||e?.contratoCodigo||e?.clienteNombreSnapshot||'-'; }
+  function coverageCodes(e){
+    const codes=contractCoverageCodes(e);
+    if(codes.length) return codes;
+    const code=String(e?.contratoCodigo||'').trim();
+    return code?[code]:[];
+  }
+  function contractNameByCode(code){
+    return contractList.find((row)=>String(row.codigo||'').trim()===String(code||'').trim())?.nombre||'';
+  }
+  function coverageLabel(e){
+    const codes=coverageCodes(e);
+    if(!codes.length) return '-';
+    const mode=coverageMode(e)==='compartido'?'Compartido':'Dedicado';
+    if(codes.length===1) return `${mode}: ${contractNameByCode(codes[0])||codes[0]}`;
+    return `${mode}: ${codes.length} contratos: ${codes.join(', ')}`;
+  }
+  function coverageMode(e){
+    const codes=coverageCodes(e);
+    const primary=String(e?.contratoCodigo||'').trim();
+    if(codes.length>1) return 'compartido';
+    if(codes.length===1 && primary && codes[0]!==primary) return 'compartido';
+    return 'dedicado';
+  }
+  function contractOptions(){
+    return (contractList||[])
+      .filter((row)=>String(row.estado||'activo').trim().toLowerCase()!=='inactivo')
+      .map((row)=>{
+        const code=String(row.codigo||'').trim();
+        const name=String(row.nombre||code||'Contrato').trim();
+        const client=String(row.clienteNombre||'').trim();
+        return { value:code, label:client?`${name} (${code}) - ${client}`:`${name} (${code})` };
+      })
+      .filter((row)=>row.value)
+      .sort((a,b)=>a.label.localeCompare(b.label));
   }
   function operationalBadge(info){
     const cls={
@@ -258,7 +304,7 @@ export const SupernumerariosAdmin=(mount,deps={})=>{
       const parsed=new Date(raw);
       return Number.isNaN(parsed.getTime())?'':parsed.toISOString().slice(0,10);
     }
-    const parsed=value?.toDate?value.toDate():(value instanceof Date?value:null);
+    const parsed=value instanceof Date?value:null;
     return parsed && !Number.isNaN(parsed.getTime())?parsed.toISOString().slice(0,10):'';
   }
   function inclusiveDaysBetween(startDate,endDate){
@@ -283,8 +329,9 @@ export const SupernumerariosAdmin=(mount,deps={})=>{
       if(typeof deps.listSupernumerarioReplacementOccupancy==='function'){
         occupancyRows=await deps.listSupernumerarioReplacementOccupancy(today)||[];
       }else if(typeof deps.listImportReplacementsRange==='function'){
-        occupancyRows=(await deps.listImportReplacementsRange(today,today)||[]).filter((row)=>String(row?.decision||'').trim()==='reemplazo');
+        occupancyRows=(await deps.listImportReplacementsRange(today,today,{ contratoCodigo: contractFilterCode() })||[]).filter((row)=>String(row?.decision||'').trim()==='reemplazo');
       }
+      occupancyRows=(occupancyRows||[]).filter((row)=>contractMatches(row));
       render();
     }catch(err){
       const msg=qs('#msg',ui);
@@ -297,29 +344,77 @@ export const SupernumerariosAdmin=(mount,deps={})=>{
   }
   function formatDate(ts){
     try{
-      const d=ts?.toDate? ts.toDate(): (ts? new Date(ts): null);
+      const d=ts? new Date(ts): null;
       return d? new Date(d).toLocaleDateString(): '-';
     }catch{ return '-'; }
   }
-  function formatDateTime(ts){
-    try{
-      const d=ts?.toDate? ts.toDate(): (ts? new Date(ts): null);
-      return d? new Date(d).toLocaleString(): '-';
-    }catch{ return '-'; }
-  }
-  function auditInfoData(e){
-    const hasMod = Boolean(e.lastModifiedAt || e.lastModifiedByEmail || e.lastModifiedByUid);
-    return {
-      action: hasMod ? 'Ultima modificacion' : 'Creacion',
-      user: hasMod ? (e.lastModifiedByEmail||e.lastModifiedByUid||'-') : (e.createdByEmail||e.createdByUid||'-'),
-      date: hasMod ? formatDateTime(e.lastModifiedAt) : formatDateTime(e.createdAt)
-    };
+  function openSupernumerarioInfoModal(e={}){
+    const operational=operationalInfo(e);
+    const sede=allSedeList.find(row=>row.codigo===e.sedeCodigo)||{};
+    const coverage=coverageCodes(e);
+    const contracts=coverage.length
+      ? el('ul',{},coverage.map(code=>el('li',{},[`${contractNameByCode(code)||code} (${code})`])))
+      : 'Sin contratos habilitados';
+    showCatalogDetail(`Informacion del supernumerario - ${e.nombre||'-'}`,e,[
+      ['Datos generales',[
+        ['Codigo',e.codigo], ['Documento',e.documento], ['Nombre',e.nombre],
+        ['Telefono',e.telefono], ['Estado',statusBadge(e.estado)]
+      ]],
+      ['Asignacion',[
+        ['Cargo',e.cargoNombre||cargoNameByCode(e.cargoCodigo)], ['Codigo cargo',e.cargoCodigo],
+        ['Sede base',e.sedeNombre||sede.nombre||e.sedeCodigo], ['Codigo sede',e.sedeCodigo],
+        ['Ingreso',formatDate(e.fechaIngreso)], ['Retiro',formatDate(e.fechaRetiro)]
+      ]],
+      ['Contrato y cobertura',[
+        ['Contrato base',contractLabel(e)], ['Codigo contrato',e.contratoCodigo],
+        ['Cliente',e.clienteNombreSnapshot], ['NIT cliente',e.clienteNitSnapshot],
+        ['Tipo de cobertura',coverageMode(e)==='compartido'?'Compartido':'Dedicado'],
+        ['Contratos habilitados',contracts]
+      ]],
+      ['Disponibilidad del dia',[
+        ['Fecha',today], ['Estado operativo',operationalBadge(operational)],
+        ['Sede de cobertura',operational.sedeLabel], ['Detalle',operational.title]
+      ]]
+    ]);
   }
   function actionsCell(e){
     const box=el('div',{className:'row-actions'},[]);
     const btnInfo=el('button',{className:'btn btn--icon',title:'Ver informacion','aria-label':'Ver informacion'},[infoIcon()]);
-    btnInfo.addEventListener('click',()=>{ const info=auditInfoData(e); showInfoModal('Informacion del registro',[`Evento: ${info.action}`,`Usuario: ${info.user}`,`Fecha: ${info.date}`]); });
-    box.append(btnInfo); return box;
+    btnInfo.addEventListener('click',()=>openSupernumerarioInfoModal(e));
+    const btnContracts=el('button',{className:'btn btn--icon',type:'button',title:'Administrar contratos habilitados','aria-label':'Administrar contratos habilitados'},[lucideInlineIcon('file-text')]);
+    btnContracts.addEventListener('click',()=>openContractAccessModal(e));
+    box.append(btnContracts,btnInfo); return box;
+  }
+  async function openContractAccessModal(e){
+    try{
+      const options=contractOptions();
+      if(!options.length) return alert('No hay contratos activos para asignar.');
+      const existing=await deps.listSupernumerarioContractAccess?.({ employeeId:e.id, documento:e.documento }) || [];
+      const selected=existing.length ? existing.map((row)=>row.contratoCodigo).filter(Boolean) : coverageCodes(e);
+      const modal=await showActionModal({
+        title:'Contratos habilitados',
+        message:`Supernumerario: ${e.nombre||e.documento||'-'}`,
+        confirmText:'Guardar contratos',
+        fields:[
+          { id:'mode', label:'Tipo', type:'select', required:true, value:coverageMode(e), options:[
+            { value:'dedicado', label:'Dedicado' },
+            { value:'compartido', label:'Compartido' }
+          ] },
+          { id:'contracts', label:'Puede cubrir', type:'checkboxes', required:true, value:selected, options },
+          { id:'detail', label:'Detalle de la modificacion', type:'textarea', required:true, placeholder:'Describe brevemente el cambio realizado' }
+        ]
+      });
+      if(!modal.confirmed) return;
+      const nextCodes=Array.isArray(modal.values.contracts)?modal.values.contracts:[];
+      if(modal.values.mode==='dedicado' && nextCodes.length!==1) return alert('Un supernumerario dedicado debe tener exactamente un contrato habilitado.');
+      if(modal.values.mode==='compartido' && nextCodes.length<2) return alert('Un supernumerario compartido debe tener dos o mas contratos habilitados.');
+      await deps.setSupernumerarioContractAccess?.({ employeeId:e.id, documento:e.documento, contratoCodigos:nextCodes });
+      await deps.addAuditLog?.({ targetType:'supernumerario', targetId:e.id, action:'update_supernumerario_contract_access', before:{ tipo:coverageMode(e), contratoCodigos:selected }, after:{ tipo:modal.values.mode, contratoCodigos:nextCodes }, note:modal.values.detail||null });
+      snapshot=snapshot.map((row)=>row.id===e.id?{...row,contratosHabilitados:nextCodes}:row);
+      render();
+    }catch(err){
+      alert('Error guardando contratos: '+(err?.message||err));
+    }
   }
   function supernumerarioCard(e){
     const linked=isLinkedByDoc(e.documento);
@@ -332,6 +427,8 @@ export const SupernumerariosAdmin=(mount,deps={})=>{
       meta:[
         ['Documento',docValue],
         ['Telefono',e.telefono||'-'],
+        ['Contrato',contractLabel(e)],
+        ['Cubre',coverageLabel(e)],
         ['Cargo',e.cargoNombre||cargoNameByCode(e.cargoCodigo)],
         ['Sede hoy',op.sedeLabel||'-']
       ],
@@ -424,7 +521,7 @@ export const SupernumerariosAdmin=(mount,deps={})=>{
   }
   function toInputDate(ts){
     try{
-      const d=ts?.toDate? ts.toDate(): (ts? new Date(ts): null);
+      const d=ts? new Date(ts): null;
       if(!d) return '';
       const pad=(n)=> String(n).padStart(2,'0');
       return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
@@ -436,10 +533,11 @@ export const SupernumerariosAdmin=(mount,deps={})=>{
   mount.replaceChildren(ui);
   let un=()=>{};
   try{
-    unSedes=deps.streamSedes?.((arr)=>{ sedeList=(arr||[]).filter(s=>s.estado!=='inactivo'); renderSedeSelect(); render(); }) || (()=>{});
+    unContracts=deps.streamContracts?.((arr)=>{ contractList=arr||[]; render(); }) || (()=>{});
+    unSedes=deps.streamSedes?.((arr)=>{ allSedeList=arr||[]; refreshScopedLists(); renderSedeSelect(); render(); }) || (()=>{});
     unCargos=deps.streamCargos?.((arr)=>{ cargoList=(arr||[]).filter(c=>c.estado!=='inactivo'); render(); }) || (()=>{});
     unEmp=deps.streamEmployees?.((arr)=>{ employees=arr||[]; render(); }) || (()=>{});
-    unIncapacitados=deps.streamIncapacitadosByDate?.(today,(arr)=>{ incapacitados=arr||[]; render(); }) || (()=>{});
+    unIncapacitados=deps.streamIncapacitadosByDate?.(today,(arr)=>{ allIncapacitados=arr||[]; refreshScopedLists(); render(); }) || (()=>{});
     if(typeof deps.streamImportReplacementsByDate==='function'){
       unReplacements=deps.streamImportReplacementsByDate(today,()=>scheduleOccupancyRefresh(),()=>scheduleOccupancyRefresh()) || (()=>{});
     }
@@ -448,6 +546,7 @@ export const SupernumerariosAdmin=(mount,deps={})=>{
   }catch(e){
     const msg=qs('#msg',ui); if(msg) msg.textContent='Error cargando supernumerarios: '+(e?.message||e);
   }
-  return ()=>{ if(occupancyRefreshTimer) clearTimeout(occupancyRefreshTimer); un?.(); unSedes?.(); unCargos?.(); unEmp?.(); unIncapacitados?.(); unReplacements?.(); };
+  const unSelectedContract=subscribe('selectedContractCode',()=>{ refreshScopedLists(); renderSedeSelect(); scheduleOccupancyRefresh(); render(); });
+  return ()=>{ if(occupancyRefreshTimer) clearTimeout(occupancyRefreshTimer); un?.(); unContracts?.(); unSedes?.(); unCargos?.(); unEmp?.(); unIncapacitados?.(); unReplacements?.(); unSelectedContract?.(); };
 };
 

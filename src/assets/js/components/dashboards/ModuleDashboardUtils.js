@@ -1,22 +1,26 @@
+import { metricTile, actionTile } from './DashboardUI.js';
 import { el } from '../../utils/dom.js';
-import { navigate } from '../../router.js';
+
 import { can, isSuperAdmin } from '../../permissions.js';
+import { subscribe } from '../../state.js';
+import { contractFilterCode, contractMatches } from '../../utils/contractScope.js';
+
+const CONTRACT_SCOPED_COUNTERS = new Set(['countActiveContracts', 'countActiveSedes', 'countActiveEmployees']);
 
 export function renderModuleDashboard(mount, deps = {}, config = {}) {
   const actions = visibleActions(config.actions || []);
   const metrics = config.metrics || [];
   const today = todayBogota();
 
-  const metricsNode = el('div', { className: 'module-dashboard__metrics' },
+  const metricsNode = el('div', { className: 'contract-demo__kpis summary-dashboard__kpis' },
     metrics.map((metric) => metricTile(metric.label, '...', metric.tone))
   );
   const actionNodes = actions.map((action) => actionTile(action));
   const emptyActions = el('p', { className: 'text-muted' }, ['No hay accesos disponibles para tu rol en este modulo.']);
 
-  const ui = el('section', { className: `main-card module-dashboard ${config.className || ''}` }, [
-    el('div', { className: 'module-dashboard__header' }, [
+  const ui = el('section', { className: `main-card module-dashboard contract-dashboard-demo summary-dashboard ${config.className || ''}` }, [
+    el('div', { className: 'contract-demo__header' }, [
       el('div', {}, [
-        el('p', { className: 'module-dashboard__eyebrow' }, ['Dashboard de modulo']),
         el('h2', {}, [config.title || 'Dashboard']),
         el('p', { className: 'text-muted' }, [config.lead || ''])
       ]),
@@ -35,9 +39,16 @@ export function renderModuleDashboard(mount, deps = {}, config = {}) {
     ])
   ]);
 
+  const columns = el('div', { className: 'contract-demo__columns' });
+  columns.append(...ui.querySelectorAll(':scope > .section-block'));
+  ui.append(columns);
   mount.replaceChildren(ui);
-  loadMetrics(metricsNode, metrics, deps, actions);
-  return () => {};
+  const reloadMetrics = () => loadMetrics(metricsNode, metrics, deps, actions);
+  reloadMetrics();
+  const unSelectedContract = subscribe('selectedContractCode', reloadMetrics);
+  return () => {
+    try { unSelectedContract?.(); } catch {}
+  };
 }
 
 export function visibleActions(actions = []) {
@@ -57,18 +68,36 @@ export function countStream(streamFn, predicate = null) {
 }
 
 export function countActiveMetric(deps = {}, counterName = '', fallbackStream = null) {
+  const contratoCodigo = contractFilterCode();
+  if (contratoCodigo && CONTRACT_SCOPED_COUNTERS.has(counterName) && typeof fallbackStream === 'function') {
+    return countStream(fallbackStream, (row) => isActive(row) && metricContractMatches(row, counterName, contratoCodigo));
+  }
   if (counterName && typeof deps[counterName] === 'function') return deps[counterName]();
   return countStream(fallbackStream, isActive);
 }
 
+function metricContractMatches(row = {}, counterName = '', contratoCodigo = '') {
+  if (counterName === 'countActiveContracts') {
+    return String(row?.codigo || row?.contratoCodigo || row?.contrato_codigo || '').trim() === contratoCodigo;
+  }
+  return contractMatches(row, contratoCodigo);
+}
+
 export async function countIncapacitiesToday(deps = {}) {
   const today = todayBogota();
-  const rows = await deps.listIncapacidadesRange?.(today, today);
+  const rows = await deps.listIncapacidadesRange?.(today, today, { contratoCodigo: contractFilterCode() });
   return Array.isArray(rows) ? rows.length : 0;
 }
 
 export async function dailyMetric(deps = {}, field = '') {
   const today = todayBogota();
+  const contratoCodigo = contractFilterCode();
+  if (contratoCodigo && typeof deps.listDailyContractMetricsRange === 'function') {
+    const rows = await deps.listDailyContractMetricsRange(today, today, { contratoCodigo });
+    const row = Array.isArray(rows) ? rows.find((item) => String(item?.fecha || '').trim() === today) : null;
+    const mappedField = dailyContractField(field);
+    return Number(row?.[mappedField] || 0);
+  }
   const rows = await deps.listDailyMetricsRange?.(today, today);
   const row = Array.isArray(rows) ? rows.find((item) => String(item?.fecha || '').trim() === today) : null;
   return Number(row?.[field] || 0);
@@ -76,29 +105,33 @@ export async function dailyMetric(deps = {}, field = '') {
 
 export async function countCurrentMonthMetrics(deps = {}) {
   const today = todayBogota();
-  const rows = await deps.listDailyMetricsRange?.(monthStartBogota(today), today);
+  const contratoCodigo = contractFilterCode();
+  const rows = contratoCodigo && typeof deps.listDailyContractMetricsRange === 'function'
+    ? await deps.listDailyContractMetricsRange(monthStartBogota(today), today, { contratoCodigo })
+    : await deps.listDailyMetricsRange?.(monthStartBogota(today), today);
   return Array.isArray(rows) ? rows.length : 0;
+}
+
+function dailyContractField(field = '') {
+  return ({
+    planned: 'planeados',
+    expected: 'contratados',
+    unique: 'asistencias',
+    attendanceCount: 'asistencias',
+    missing: 'faltan',
+    absenteeism: 'ausentismos',
+    paidServices: 'pagados',
+    noContracted: 'noContratados'
+  })[field] || field;
 }
 
 export function daysElapsedInMonth() {
   return Number(todayBogota().slice(8, 10) || 0);
 }
 
-function actionTile(action = {}) {
-  const btn = el('button', { className: 'module-dashboard__action', type: 'button' }, [
-    el('span', { className: 'module-dashboard__action-label' }, [action.label || '-']),
-    el('span', { className: 'module-dashboard__action-detail' }, [action.detail || 'Abrir modulo'])
-  ]);
-  btn.addEventListener('click', () => navigate(action.route || '/'));
-  return btn;
-}
 
-function metricTile(label, value, tone = 'blue') {
-  return el('div', { className: `metric-tile metric-tile--${tone}` }, [
-    el('span', { className: 'metric-tile__label' }, [label]),
-    el('strong', { className: 'metric-tile__value' }, [String(value ?? '-')])
-  ]);
-}
+
+
 
 async function loadMetrics(container, metrics, deps, actions) {
   const tiles = Array.from(container.querySelectorAll('.metric-tile__value'));

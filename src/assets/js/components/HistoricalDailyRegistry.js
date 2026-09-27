@@ -1,6 +1,7 @@
 import { el, qs, enableSectionToggles } from '../utils/dom.js';
 import { createTablePagination } from '../utils/pagination.js';
 import { can, PERMS } from '../permissions.js';
+import { contractFilterCode } from '../utils/contractScope.js';
 
 export const HistoricalDailyRegistry = (mount, deps = {}) => {
   const canExport = can(PERMS.EXPORT_REPORTS_CLIENT);
@@ -24,6 +25,10 @@ export const HistoricalDailyRegistry = (mount, deps = {}) => {
           max: maxDate
         }, [])
       ]),
+      el('div', {}, [
+        el('label', { className: 'label', for: 'historicalDailyContractFilter' }, ['Contrato']),
+        el('select', { id: 'historicalDailyContractFilter', className: 'input' }, [el('option', { value: '' }, ['Todos'])])
+      ]),
       el('button', { id: 'btnGenerateHistoricalDaily', className: 'btn btn--primary', type: 'button' }, ['Consultar fecha']),
       el('button', { id: 'btnExportHistoricalDaily', className: 'btn', type: 'button', disabled: true, title: canExport ? '' : 'Modo consulta: no puedes exportar.' }, ['Exportar Excel']),
       el('span', { id: 'historicalDailyMsg', className: 'text-muted' }, [' '])
@@ -39,6 +44,7 @@ export const HistoricalDailyRegistry = (mount, deps = {}) => {
                 el('th', { 'data-sort-historical': 'hora', style: 'cursor:pointer' }, ['Hora']),
                 el('th', { 'data-sort-historical': 'cedula', style: 'cursor:pointer' }, ['Cedula']),
                 el('th', { 'data-sort-historical': 'nombre', style: 'cursor:pointer' }, ['Nombre']),
+                el('th', { 'data-sort-historical': 'contrato', style: 'cursor:pointer' }, ['Contrato']),
                 el('th', { 'data-sort-historical': 'sede', style: 'cursor:pointer' }, ['Sede']),
                 el('th', { 'data-sort-historical': 'novedad', style: 'cursor:pointer' }, ['Novedad']),
                 el('th', { 'data-sort-historical': 'estado', style: 'cursor:pointer' }, ['Estado'])
@@ -56,6 +62,7 @@ export const HistoricalDailyRegistry = (mount, deps = {}) => {
   const paginator = createTablePagination(ui, { id: 'historicalDaily', after: '#historicalDailyCards', onChange: syncRows });
   qs('#btnGenerateHistoricalDaily', ui)?.addEventListener('click', generateReport);
   qs('#btnExportHistoricalDaily', ui)?.addEventListener('click', exportExcel);
+  qs('#historicalDailyContractFilter', ui)?.addEventListener('change', () => { paginator.reset(); syncRows(); });
   qs('#historicalDailyDate', ui)?.addEventListener('change', () => {
     generatedRows = [];
     paginator.reset();
@@ -152,6 +159,8 @@ export const HistoricalDailyRegistry = (mount, deps = {}) => {
           hora: attendanceRow?.hora || '-',
           cedula: statusRow.documento || '-',
           nombre: statusRow.nombre || '-',
+          contrato: statusRow.contratoNombre || statusRow.contratoCodigo || '-',
+          contratoCodigo: statusRow.contratoCodigo || '',
           sede: statusRow.sedeNombreSnapshot || statusRow.sedeCodigo || '-',
           novedad: statusRow.novedadNombre || statusRow.novedadCodigo || '-',
           estado: statusDetailState(statusRow)
@@ -159,16 +168,45 @@ export const HistoricalDailyRegistry = (mount, deps = {}) => {
       });
   }
 
+  function getFilteredRows() {
+    const contract = effectiveContractFilter();
+    return (generatedRows || []).filter((row) => !contract || row.contratoCodigo === contract);
+  }
+
+  function effectiveContractFilter() {
+    return String(qs('#historicalDailyContractFilter', ui)?.value || contractFilterCode() || '').trim();
+  }
+
+  function syncContractFilterOptions(rows = []) {
+    const select = qs('#historicalDailyContractFilter', ui);
+    if (!select) return;
+    const previous = String(select.value || '').trim();
+    const globalContract = contractFilterCode();
+    const byCode = new Map();
+    rows.forEach((row) => {
+      const code = String(row.contratoCodigo || '').trim();
+      if (globalContract && code !== globalContract) return;
+      if (!code || byCode.has(code)) return;
+      byCode.set(code, String(row.contrato || code).trim() || code);
+    });
+    const options = Array.from(byCode.entries()).sort((a, b) => a[1].localeCompare(b[1]));
+    select.replaceChildren(
+      el('option', { value: '' }, ['Todos']),
+      ...options.map(([code, label]) => el('option', { value: code, selected: code === previous }, [`${label} (${code})`]))
+    );
+    select.value = byCode.has(previous) ? previous : '';
+  }
+
   function syncRows() {
     const tbody = qs('#tblHistoricalDaily tbody', ui);
     const cards = qs('#historicalDailyCards', ui);
     const totalNode = qs('#historicalDailyTotal', ui);
     const exportBtn = qs('#btnExportHistoricalDaily', ui);
-    const rows = sortRows(generatedRows, sortKey, sortDir);
+    const rows = sortRows(getFilteredRows(), sortKey, sortDir);
     const pageRows = paginator.slice(rows);
     if (tbody) tbody.replaceChildren(...renderRows(pageRows, rows.length));
     if (cards) cards.replaceChildren(...renderCards(pageRows, rows.length));
-    if (totalNode) totalNode.textContent = `Total registros del dia: ${generatedRows.length}`;
+    if (totalNode) totalNode.textContent = `Total registros del dia: ${rows.length} de ${generatedRows.length}`;
     if (exportBtn) exportBtn.disabled = !canExport || generatedRows.length === 0;
     updateSortIndicators(ui, '#tblHistoricalDaily th[data-sort-historical]', 'data-sort-historical', sortKey, sortDir);
   }
@@ -199,11 +237,13 @@ export const HistoricalDailyRegistry = (mount, deps = {}) => {
       }
       const isClosed = await deps.isOperationDayClosed?.(date);
       if (!isClosed) throw new Error('Solo se pueden generar reportes historicos de dias cerrados.');
+      const contratoCodigo = effectiveContractFilter();
       const [statusRows, attendanceRows] = await Promise.all([
-        deps.listEmployeeDailyStatusRange?.(date, date) || [],
-        deps.listAttendanceRange?.(date, date) || []
+        deps.listEmployeeDailyStatusRange?.(date, date, { contratoCodigo }) || [],
+        deps.listAttendanceRange?.(date, date, { contratoCodigo }) || []
       ]);
       generatedRows = normalizeRows(date, statusRows, attendanceRows);
+      syncContractFilterOptions(generatedRows);
       paginator.reset();
       syncRows();
       setMessage(`Reporte generado para ${date}. Registros: ${generatedRows.length}`);
@@ -224,27 +264,30 @@ export const HistoricalDailyRegistry = (mount, deps = {}) => {
   async function exportExcel() {
     const btn = qs('#btnExportHistoricalDaily', ui);
     try {
-      if (!generatedRows.length) throw new Error('Primero genera el reporte.');
+      const rows = getFilteredRows();
+      if (!rows.length) throw new Error('Primero genera el reporte o ajusta los filtros.');
       if (!canExport) throw new Error('No tienes permiso para exportar este reporte.');
       if (btn) {
         btn.disabled = true;
         btn.textContent = 'Generando...';
       }
       const mod = await import('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm');
-      const ws = mod.utils.json_to_sheet(generatedRows.map((row) => ({
+      const ws = mod.utils.json_to_sheet(rows.map((row) => ({
         Fecha: row.fecha,
         Hora: row.hora,
         Cedula: row.cedula,
         Nombre: row.nombre,
+        Contrato: row.contrato,
+        'Codigo Contrato': row.contratoCodigo,
         Sede: row.sede,
         Novedad: row.novedad,
         Estado: row.estado
       })));
-      ws['!cols'] = [{ wch: 12 }, { wch: 12 }, { wch: 18 }, { wch: 30 }, { wch: 26 }, { wch: 26 }, { wch: 30 }];
+      ws['!cols'] = [{ wch: 12 }, { wch: 12 }, { wch: 18 }, { wch: 30 }, { wch: 30 }, { wch: 18 }, { wch: 26 }, { wch: 26 }, { wch: 30 }];
       const wb = mod.utils.book_new();
       mod.utils.book_append_sheet(wb, ws, 'Historico registro');
       mod.writeFile(wb, `historico_registro_diario_${selectedDate}.xlsx`);
-      setMessage(`Excel generado correctamente para ${selectedDate}. Registros: ${generatedRows.length}`);
+      setMessage(`Excel generado correctamente para ${selectedDate}. Registros: ${rows.length}`);
     } catch (error) {
       setMessage(`Error al generar Excel: ${error?.message || error}`);
     } finally {
@@ -258,13 +301,14 @@ export const HistoricalDailyRegistry = (mount, deps = {}) => {
 
 function renderRows(rows = [], totalRows = rows.length) {
   if (!totalRows) {
-    return [el('tr', {}, [el('td', { colSpan: 7, className: 'text-muted' }, ['Sin registros para la fecha seleccionada.'])])];
+    return [el('tr', {}, [el('td', { colSpan: 8, className: 'text-muted' }, ['Sin registros para la fecha seleccionada.'])])];
   }
   return rows.map((row) => el('tr', {}, [
     el('td', {}, [row.fecha]),
     el('td', {}, [row.hora]),
     el('td', {}, [row.cedula]),
     el('td', {}, [row.nombre]),
+    el('td', {}, [row.contrato]),
     el('td', {}, [row.sede]),
     el('td', {}, [row.novedad]),
     el('td', {}, [row.estado])
@@ -285,6 +329,7 @@ function renderCards(rows = [], totalRows = rows.length) {
     ]),
     el('dl', { className: 'record-card__meta' }, [
       ['Sede', row.sede || '-'],
+      ['Contrato', row.contrato || '-'],
       ['Novedad', row.novedad || '-'],
       ['Estado', row.estado || '-']
     ].map(([label, value]) => el('div', { className: 'record-card__meta-item' }, [

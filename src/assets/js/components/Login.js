@@ -31,14 +31,14 @@ export const Login = (mount, deps = {}) => {
 
   function loginForm() {
     const ui = el('form', { className: 'login-form' }, [
-      el('label', { className: 'label mt-2' }, ['Correo']),
+      el('label', { className: 'label mt-2', for: 'email' }, ['Correo']),
       el('input', { id: 'email', type: 'email', placeholder: 'correo@dominio.com', className: 'input', autocomplete: 'email' }),
-      el('label', { className: 'label mt-2' }, ['Contrasena']),
+      el('label', { className: 'label mt-2', for: 'pass' }, ['Contraseña']),
       el('input', { id: 'pass', type: 'password', placeholder: '********', className: 'input', autocomplete: 'current-password' }),
-      el('button', { id: 'btnForgotPassword', className: 'login-link', type: 'button' }, ['Olvide mi contrasena']),
+      el('button', { id: 'btnForgotPassword', className: 'login-link', type: 'button' }, ['Olvidé mi contraseña']),
       el('div', { className: 'form-row login-actions mt-2' }, [
         el('button', { id: 'btnLogin', className: 'btn btn--primary', type: 'submit' }, ['Iniciar sesion']),
-        el('button', { id: 'btnOpenCreate', className: 'btn btn--primary', type: 'button' }, ['Crear cuenta'])
+        el('button', { id: 'btnOpenCreate', className: 'btn', type: 'button' }, ['Crear cuenta'])
       ]),
       el('p', { id: 'msg', className: 'text-muted mt-2' }, [' '])
     ]);
@@ -54,7 +54,7 @@ export const Login = (mount, deps = {}) => {
         try {
           const email = ui.querySelector('#email').value.trim();
           const pass = ui.querySelector('#pass').value;
-          if (!email || !pass) throw new Error('Ingresa correo y contrasena.');
+          if (!email || !pass) throw new Error('Ingresa correo y contraseña.');
           ui.querySelector('#btnLogin').disabled = true;
           await deps.login(email, pass);
           setMessage('Sesion iniciada.');
@@ -85,7 +85,7 @@ export const Login = (mount, deps = {}) => {
         { id: 'doc', label: 'Documento', type: 'text', required: true, placeholder: 'Numero de documento' },
         { id: 'name', label: 'Nombre completo', type: 'text', required: true, placeholder: 'Tu nombre y apellidos' },
         { id: 'email', label: 'Correo', type: 'email', required: true, placeholder: 'correo@dominio.com' },
-        { id: 'pass', label: 'Contrasena', type: 'password', required: true, placeholder: '********' }
+        { id: 'pass', label: 'Contraseña', type: 'password', required: true, placeholder: '********' }
       ]
     });
     if (!modal.confirmed) return;
@@ -95,7 +95,7 @@ export const Login = (mount, deps = {}) => {
       const name = String(modal.values.name || '').trim();
       const email = String(modal.values.email || '').trim();
       const pass = String(modal.values.pass || '');
-      if (!doc || !name || !email || !pass) throw new Error('Completa documento, nombre, correo y contrasena.');
+      if (!doc || !name || !email || !pass) throw new Error('Completa documento, nombre, correo y contraseña.');
       const cred = await deps.register(email, pass, { nombre: name, documento: doc });
       if (cred?.session && cred?.user?.uid && deps.createUserProfile) {
         await deps.createUserProfile(cred.user.uid, { email, nombre: name, documento: doc });
@@ -114,8 +114,8 @@ export const Login = (mount, deps = {}) => {
 
 export const ForgotPassword = (mount, deps = {}) => {
   const root = el('section', { className: 'main-card login-card' }, [
-    el('h2', {}, ['Recuperar contrasena']),
-    el('p', { className: 'auth-copy' }, ['Ingresa tu correo y te enviaremos un enlace para crear una nueva contrasena.']),
+    el('h2', {}, ['Recuperar contraseña']),
+    el('p', { className: 'auth-copy' }, ['Ingresa tu correo y te enviaremos un enlace para crear una nueva contraseña.']),
     el('form', { className: 'login-form' }, [
       el('label', { className: 'label mt-2' }, ['Correo']),
       el('input', { id: 'resetEmail', type: 'email', placeholder: 'correo@dominio.com', className: 'input', autocomplete: 'email' }),
@@ -169,16 +169,16 @@ export const ForgotPassword = (mount, deps = {}) => {
 
 export const ResetPassword = (mount, deps = {}) => {
   const root = el('section', { className: 'main-card login-card' }, [
-    el('h2', {}, ['Nueva contrasena']),
-    el('p', { className: 'auth-copy' }, ['Crea una contrasena nueva para recuperar el acceso a tu cuenta.']),
+    el('h2', {}, ['Nueva contraseña']),
+    el('p', { className: 'auth-copy' }, ['Crea una contraseña nueva para recuperar el acceso a tu cuenta.']),
     el('form', { className: 'login-form' }, [
-      el('label', { className: 'label mt-2' }, ['Nueva contrasena']),
+      el('label', { className: 'label mt-2' }, ['Nueva contraseña']),
       el('input', { id: 'newPass', type: 'password', placeholder: 'Minimo 8 caracteres', className: 'input', autocomplete: 'new-password' }),
-      el('label', { className: 'label mt-2' }, ['Confirmar contrasena']),
-      el('input', { id: 'confirmPass', type: 'password', placeholder: 'Repite la contrasena', className: 'input', autocomplete: 'new-password' }),
-      el('div', { className: 'auth-hint' }, ['Usa una contrasena que no hayas utilizado antes.']),
+      el('label', { className: 'label mt-2' }, ['Confirmar contraseña']),
+      el('input', { id: 'confirmPass', type: 'password', placeholder: 'Repite la contraseña', className: 'input', autocomplete: 'new-password' }),
+      el('div', { className: 'auth-hint' }, ['Usa una contraseña que no hayas utilizado antes.']),
       el('div', { className: 'form-row login-actions mt-2' }, [
-        el('button', { id: 'btnUpdatePassword', className: 'btn btn--primary', type: 'submit' }, ['Guardar contrasena']),
+        el('button', { id: 'btnUpdatePassword', className: 'btn btn--primary', type: 'submit' }, ['Guardar contraseña']),
         el('button', { id: 'btnBackLogin', className: 'btn', type: 'button' }, ['Volver'])
       ]),
       el('p', { id: 'msg', className: 'text-muted mt-2' }, [' '])
@@ -191,8 +191,8 @@ export const ResetPassword = (mount, deps = {}) => {
   function showSuccess() {
     form.replaceChildren(
       el('div', { className: 'auth-state auth-state--success' }, [
-        el('strong', {}, ['Contrasena actualizada']),
-        el('p', {}, ['Ya puedes iniciar sesion con tu nueva contrasena.'])
+        el('strong', {}, ['Contraseña actualizada']),
+        el('p', {}, ['Ya puedes iniciar sesion con tu nueva contraseña.'])
       ]),
       el('div', { className: 'form-row login-actions mt-2' }, [
         el('button', { id: 'btnBackLoginDone', className: 'btn btn--primary', type: 'button' }, ['Ir al login'])
@@ -213,13 +213,13 @@ export const ResetPassword = (mount, deps = {}) => {
       const pass = qs('#newPass', root).value;
       const confirm = qs('#confirmPass', root).value;
       try {
-        if (pass.length < 8) throw new Error('La contrasena debe tener al menos 8 caracteres.');
-        if (pass !== confirm) throw new Error('Las contrasenas no coinciden.');
+        if (pass.length < 8) throw new Error('La contraseña debe tener al menos 8 caracteres.');
+        if (pass !== confirm) throw new Error('Las contraseñas no coinciden.');
         updateButton.disabled = true;
         await deps.updatePassword(pass);
         showSuccess();
       } catch (e) {
-        qs('#msg', root).textContent = `No pudimos actualizar la contrasena: ${e?.message || e}`;
+        qs('#msg', root).textContent = `No pudimos actualizar la contraseña: ${e?.message || e}`;
       } finally {
         updateButton.disabled = false;
       }

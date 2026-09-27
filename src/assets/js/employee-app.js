@@ -1,3 +1,4 @@
+import { mountPortalFooter } from './components/PortalFooter.js';
 import { EmployeeIncapacities } from './components/EmployeeIncapacities.js?v=20260715-copy';
 import { EMPLOYEE_PORTAL_API_BASE } from './config.js';
 import { el, qs } from './utils/dom.js';
@@ -137,23 +138,23 @@ function renderLoading(text = 'Validando acceso...') {
 }
 
 function renderLogin() {
-  const msg = el('p', { className: 'employee-message text-muted' }, [' ']);
+  const msg = el('p', { className: 'employee-message text-muted', role: 'status' }, [' ']);
   const ui = employeeCard([
     el('div', { className: 'employee-card__heading' }, [
       el('span', { className: 'employee-card__icon' }, ['✓']),
       el('div', {}, [
-        el('p', { className: 'employee-card__kicker' }, ['Validacion de identidad']),
-        el('h2', {}, ['Ingreso rapido']),
-        el('p', { className: 'text-muted' }, ['No necesitas crear cuenta. Usa el documento y los ultimos 4 digitos del celular registrado en empleados.'])
+        el('p', { className: 'employee-card__kicker' }, ['Acceso de empleados']),
+        el('h2', {}, ['Iniciar sesión']),
+        el('p', { className: 'text-muted' }, ['Ingresa tu documento y los últimos 4 dígitos de tu celular registrado.'])
       ])
     ]),
     el('form', { className: 'employee-form' }, [
       el('div', {}, [
         el('label', { className: 'label', htmlFor: 'employeeDoc' }, ['Documento']),
-        el('input', { id: 'employeeDoc', className: 'input', inputMode: 'numeric', autocomplete: 'username', placeholder: 'Numero de documento' })
+        el('input', { id: 'employeeDoc', className: 'input', inputMode: 'numeric', autocomplete: 'username', placeholder: 'Número de documento' })
       ]),
       el('div', {}, [
-        el('label', { className: 'label', htmlFor: 'employeeLast4' }, ['Ultimos 4 del celular']),
+        el('label', { className: 'label', htmlFor: 'employeeLast4' }, ['Últimos 4 dígitos del celular']),
         el('input', { id: 'employeeLast4', className: 'input', inputMode: 'numeric', autocomplete: 'one-time-code', placeholder: '1234', maxLength: 4 })
       ]),
       el('div', { className: 'employee-form__actions' }, [
@@ -163,7 +164,7 @@ function renderLogin() {
     ]),
     el('div', { className: 'employee-help-strip' }, [
       el('span', {}, ['¿Tu celular no coincide?']),
-      el('strong', {}, ['Comunicate con tu supervisor para actualizar tus datos.'])
+      el('strong', {}, ['Comunícate con tu supervisor para actualizar tus datos.'])
     ])
   ]);
 
@@ -191,6 +192,7 @@ function renderLogin() {
     }
   });
 
+  ui.classList.add('employee-login-card');
   root.replaceChildren(ui);
 }
 
@@ -220,6 +222,7 @@ function formatDate(value) {
 }
 
 function renderDashboardCard(session) {
+  const retired = session?.estado === 'inactivo';
   const host = el('div', { className: 'employee-dashboard-stack' });
   const uploadMount = el('div');
   const info = employeeCard([
@@ -227,40 +230,45 @@ function renderDashboardCard(session) {
       el('div', { className: 'employee-session-copy' }, [
         el('div', { className: 'employee-session-titlebar' }, [
           el('div', {}, [
-            el('p', { className: 'employee-card__kicker' }, ['Sesion activa']),
+            el('p', { className: 'employee-card__kicker' }, ['Sesión activa']),
             el('h2', {}, [`Hola, ${session?.nombre || 'Empleado'}`])
           ]),
-          el('button', { className: 'btn', type: 'button' }, ['Cerrar sesion'])
+          el('button', { className: 'btn', type: 'button' }, ['Cerrar sesión'])
         ]),
-        el('p', { className: 'text-muted' }, ['Gestiona tus incapacidades desde este portal.']),
+        el('p', { className: 'text-muted' }, [retired ? 'Tu acceso permite descargar el certificado del periodo laborado.' : 'Gestiona tus incapacidades desde este portal.']),
         el('div', { className: 'employee-session-meta' }, [
           sessionMetaItem('Documento', session?.documento || '-'),
-          sessionMetaItem('Sesion vence', formatDate(session?.expiresAt))
+          sessionMetaItem('Sesión vence', formatDate(session?.expiresAt))
         ])
       ]),
-      ...(EMPLOYEE_CERTIFICATES_VISIBLE ? [renderCertificateActions()] : [])
+      ...(EMPLOYEE_CERTIFICATES_VISIBLE ? [renderCertificateActions(retired)] : [])
     ]),
   ]);
 
   info.querySelector('button')?.addEventListener('click', logout);
-  host.append(info, uploadMount);
-  EmployeeIncapacities(uploadMount, { apiRequest: request, session });
+  host.append(info);
+  if (!retired) {
+    host.append(uploadMount);
+    EmployeeIncapacities(uploadMount, { apiRequest: request, session });
+  }
   return host;
 }
 
-function renderCertificateActions() {
+function renderCertificateActions(retired = false) {
   const msg = el('p', { className: 'employee-message text-muted mt-1' }, [' ']);
-  const btnBasic = el('button', { className: 'btn btn--primary', type: 'button' }, ['Certificado laboral']);
+  const btnBasic = el('button', { className: 'btn btn--primary', type: 'button' }, [retired ? 'Certificado laboral de retiro (laboró)' : 'Certificado laboral']);
   const btnSalary = el('button', { className: 'btn', type: 'button' }, ['Certificado con salario']);
+  const btnFunctions = el('button', { className: 'btn', type: 'button' }, ['Certificado con funciones']);
   const node = el('section', { className: 'employee-cert-actions' }, [
     el('h3', {}, ['Certificados laborales']),
-    el('p', { className: 'text-muted' }, ['Descarga tu certificado laboral en PDF, con o sin informacion salarial.']),
-    el('div', { className: 'employee-form__actions' }, [btnBasic, btnSalary]),
+    el('p', { className: 'text-muted' }, [retired ? 'Descarga tu certificado en PDF con las fechas de ingreso y retiro.' : 'Descarga tu certificado laboral en PDF, con o sin informacion salarial.']),
+    el('div', { className: 'employee-form__actions' }, (retired ? [btnBasic, btnFunctions] : [btnBasic, btnSalary, btnFunctions])),
     msg
   ]);
 
-  btnBasic.addEventListener('click', () => downloadCertificate('basic', msg));
+  btnBasic.addEventListener('click', () => downloadCertificate(retired ? 'retired' : 'basic', msg));
   btnSalary.addEventListener('click', () => downloadCertificate('with_salary', msg));
+  btnFunctions.addEventListener('click', () => downloadCertificate(retired ? 'retired_with_functions' : 'with_functions', msg));
   return node;
 }
 
@@ -303,5 +311,6 @@ async function renderDashboard() {
   }
 }
 
+mountPortalFooter('employee-footer', 'Empleado');
 renderLoading();
 renderDashboard();

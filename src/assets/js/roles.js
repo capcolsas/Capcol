@@ -12,7 +12,7 @@ export const ROLE_LABELS = {
   [ROLES.SUPERADMIN]: 'SuperAdmin',
   [ROLES.ADMIN]: 'Administrativo',
   [ROLES.EDITOR]: 'Coordinador Operativo',
-  [ROLES.CONSULTOR]: 'Supervisor Contrato',
+  [ROLES.CONSULTOR]: 'Administrador Contrato',
   [ROLES.SUPERVISOR]: 'Supervisor Zona',
   [ROLES.TABLET_QR]: 'Tablet QR',
   [ROLES.EMPLEADO]: 'Empleado'
@@ -21,12 +21,18 @@ export const ROLE_LABELS = {
 export const ALL_ROLES = [ROLES.SUPERADMIN, ROLES.ADMIN, ROLES.EDITOR, ROLES.CONSULTOR, ROLES.SUPERVISOR, ROLES.TABLET_QR, ROLES.EMPLEADO];
 
 export const PERMS = {
+  VIEW_INVENTORY: 'viewInventory',
+  MANAGE_INVENTORY: 'manageInventory',
+  DISPATCH_INVENTORY: 'dispatchInventory',
+  RECEIVE_INVENTORY: 'receiveInventory',
   VIEW_PERMISSIONS: 'viewPermissions',
   MANAGE_PERMISSIONS: 'managePermissions',
   VIEW_AUDIT: 'viewAudit',
   MANAGE_AUDIT: 'manageAudit',
   VIEW_USERS: 'viewUsers',
   EDIT_USERS: 'editUsers',
+  VIEW_CONTRACTS: 'viewContracts',
+  EDIT_CONTRACTS: 'editContracts',
   VIEW_ZONES: 'viewZones',
   EDIT_ZONES: 'editZones',
   VIEW_DEPENDENCIES: 'viewDependencies',
@@ -90,9 +96,13 @@ export const PERMS = {
 };
 
 export const PERMISSION_ACTION_VIEW_MAP = {
+  [PERMS.MANAGE_INVENTORY]: PERMS.VIEW_INVENTORY,
+  [PERMS.DISPATCH_INVENTORY]: PERMS.VIEW_INVENTORY,
+  [PERMS.RECEIVE_INVENTORY]: PERMS.VIEW_INVENTORY,
   [PERMS.MANAGE_PERMISSIONS]: PERMS.VIEW_PERMISSIONS,
   [PERMS.MANAGE_AUDIT]: PERMS.VIEW_AUDIT,
   [PERMS.EDIT_USERS]: PERMS.VIEW_USERS,
+  [PERMS.EDIT_CONTRACTS]: PERMS.VIEW_CONTRACTS,
   [PERMS.EDIT_ZONES]: PERMS.VIEW_ZONES,
   [PERMS.EDIT_DEPENDENCIES]: PERMS.VIEW_DEPENDENCIES,
   [PERMS.EDIT_SEDES]: PERMS.VIEW_SEDES,
@@ -135,8 +145,14 @@ export function permsForRole(role) {
     case ROLES.ADMIN:
       return {
         ...none,
+        [PERMS.VIEW_INVENTORY]: true,
+        [PERMS.MANAGE_INVENTORY]: true,
+        [PERMS.DISPATCH_INVENTORY]: true,
+        [PERMS.RECEIVE_INVENTORY]: true,
         [PERMS.VIEW_USERS]: true,
         [PERMS.EDIT_USERS]: true,
+        [PERMS.VIEW_CONTRACTS]: true,
+        [PERMS.EDIT_CONTRACTS]: true,
         [PERMS.VIEW_ZONES]: true,
         [PERMS.EDIT_ZONES]: true,
         [PERMS.VIEW_DEPENDENCIES]: true,
@@ -197,6 +213,12 @@ export function permsForRole(role) {
     case ROLES.CONSULTOR:
       return {
         ...none,
+        [PERMS.VIEW_INVENTORY]: true,
+        [PERMS.VIEW_CONTRACTS]: true,
+        [PERMS.VIEW_ZONES]: true,
+        [PERMS.VIEW_DEPENDENCIES]: true,
+        [PERMS.VIEW_SEDES]: true,
+        [PERMS.VIEW_EMPLOYEES]: true,
         [PERMS.VIEW_REPORTS]: true,
         [PERMS.VIEW_REPORTS_CLIENT]: true,
         [PERMS.EXPORT_REPORTS_CLIENT]: true,

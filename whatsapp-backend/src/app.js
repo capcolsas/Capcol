@@ -1,10 +1,15 @@
 ﻿
 import crypto from 'node:crypto';
+import { closeDailyOperationWithPrevious } from './daily-closure-run.js';
+import { attendanceReasonPrompt, validateAttendanceReason } from './attendance-reasons.js';
+import { attendanceRadius, validateAttendanceLocation, selectAttendanceShift } from './attendance-location.js';
+import { addIsoDays } from './shift-calendar.js';
+import { listEmployeeShiftAssignmentsForRange, listScheduledShiftsForOperationalDate } from './shifts.js';
 import express from 'express';
 import QRCode from 'qrcode';
 import { config, isAllowedCorsOrigin } from './config.js';
-import { buildEmployeeCertificatePdf, certificateFileName, normalizeCertificateType } from './certificates/certificate-service.js';
-import { getActiveEmployeePortalContext, registerEmployeePortalRoutes } from './employee-portal.js';
+import { buildEmployeeCertificatePdf, certificateFileName, normalizeCertificateType, validateCertificateData } from './certificates/certificate-service.js';
+import { getEmployeePortalContext, registerEmployeePortalRoutes } from './employee-portal.js';
 import { classifyShiftEventTime, closeDueScheduledShifts, getScheduledShiftById, openScheduledShiftForEmployeeEvent, resolveScheduledShiftForEmployeeEvent } from './shifts.js';
 import { supabaseAdmin } from './supabase.js';
 
@@ -25,6 +30,7 @@ const SESSION = {
   AWAITING_WORKING_SEDE_SELECTION: 'awaiting_working_sede_selection',
   AWAITING_QR_ATTENDANCE_ACTION: 'awaiting_qr_attendance_action',
   AWAITING_QR_LOCATION: 'awaiting_qr_location',
+  AWAITING_MARKING_SITE: 'awaiting_marking_site',
   AWAITING_UPDATE_ACTION: 'awaiting_update_action',
   AWAITING_TRANSFER_KEYWORD: 'awaiting_transfer_keyword',
   AWAITING_TRANSFER_SELECTION: 'awaiting_transfer_selection',
@@ -81,8 +87,8 @@ app.get(['/cron/close-daily-operation', '/api/cron/close-daily-operation'], asyn
     assertCronAuthorized(req);
     const shiftClosures = await closeDueScheduledShifts({ limit: 500 });
     const day = addDaysToIsoDate(currentDate(), -1) || currentDate();
-    const result = await closeOperationDay(day);
-    res.json({ ok: true, shiftClosures, ...result });
+    const result = await closeDailyOperationWithPrevious(day, closeOperationDay);
+    res.status(result.ok ? 200 : 500).json({ shiftClosures, ...result });
   } catch (error) {
     const message = error?.message || 'cron_close_failed';
     const status = message === 'unauthorized_cron' ? 401 : 500;
@@ -249,12 +255,13 @@ function registerAttendanceQrRoutes(appInstance) {
 
   appInstance.get(['/attendance-qr/daily', '/api/attendance-qr/daily'], async (req, res) => {
     try {
-      await requireQrRegistryUser(req);
+      const profile = await requireQrRegistryUser(req);
       const date = String(req.query?.date || currentDate()).trim();
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
         return sendQrJson(res, 400, { ok: false, error: 'Fecha invalida.' });
       }
-      const summary = await listDailyQrRecords(date);
+      const contratoCodigo = String(req.query?.contratoCodigo || req.query?.contrato_codigo || '').trim();
+      const summary = filterQrSummaryByContractScope(await listDailyQrRecords(date), profile, { contratoCodigo });
       sendQrJson(res, 200, { ok: true, date, ...summary });
     } catch (error) {
       console.error('Error consultando registro diario QR:', error);
@@ -311,11 +318,13 @@ function registerAttendanceQrRoutes(appInstance) {
         fecha: tokenRow.fecha || null,
         employee_id: tokenRow.employee_id || null,
         documento: tokenRow.documento || null,
-        sede_codigo: tokenRow.sede_codigo || null
+        sede_codigo: tokenRow.sede_codigo || null,
+        ...contractContextPayloadFrom(tokenRow)
       };
 
       if (!(await qrDeviceAllowsSede(device, tokenRow.sede_codigo))) throw qrError('sede_mismatch', 403);
-      if (String(tokenRow.fecha || '').trim() !== currentDate()) throw qrError('wrong_day', 409);
+      if (!tokenRow.turno_id) throw qrError('attendance_shift_missing', 409);
+      if (!(await isQrEnabledForSede(tokenRow.sede_codigo))) throw qrError('qr_disabled', 409);
       if (new Date(tokenRow.expires_at).getTime() <= Date.now()) throw qrError('qr_expired', 409);
       if (tokenRow.used_at) throw qrError('qr_used', 409);
 
@@ -323,12 +332,12 @@ function registerAttendanceQrRoutes(appInstance) {
       if (!employee || String(employee.estado || '').trim().toLowerCase() !== 'activo') throw qrError('employee_inactive', 403);
 
       await validateQrActionReady(tokenRow);
-      const claimedToken = await claimQrToken(tokenRow.id, device.id);
-      if (!claimedToken) throw qrError('qr_used', 409);
 
       const result = tokenRow.action === 'exit'
         ? await registerQrExit({ tokenRow, device })
         : await registerQrEntry({ tokenRow, device, employee });
+
+      if (result.reasonRequest) await notifyAttendanceReason(result.reasonRequest);
 
       await touchQrDevice(device.id);
       await insertQrScanAudit({
@@ -351,6 +360,11 @@ function registerAttendanceQrRoutes(appInstance) {
         sede: {
           codigo: tokenRow.sede_codigo,
           nombre: tokenRow.sede_nombre || null
+        },
+        contrato: {
+          codigo: tokenRow.contrato_codigo || null,
+          nombre: tokenRow.contrato_nombre || null,
+          cliente: tokenRow.cliente_nombre_snapshot || null
         }
       });
     } catch (error) {
@@ -485,9 +499,9 @@ function registerCertificateRoutes(appInstance) {
     const ip = getClientIp(req);
     const userAgent = getUserAgent(req);
     try {
-      const { session, employee: portalEmployee } = await getActiveEmployeePortalContext(req, { ip, userAgent });
+      const { session, employee: portalEmployee } = await getEmployeePortalContext(req, { ip, userAgent });
       const type = normalizeCertificateType(req.body?.type);
-      const { employee, cargo } = await loadCertificateContextByEmployeeId(portalEmployee.id);
+      const { employee, cargo } = await loadCertificateContextByEmployeeId(portalEmployee.id, type);
       const verificationCode = await insertEmployeeCertificateAudit({
         employee,
         type,
@@ -518,7 +532,7 @@ function registerCertificateRoutes(appInstance) {
       const employeeId = String(req.params?.employeeId || '').trim();
       if (!employeeId) throw certificateError('invalid_employee', 400);
       const type = normalizeCertificateType(req.body?.type);
-      const { employee, cargo } = await loadCertificateContextByEmployeeId(employeeId);
+      const { employee, cargo } = await loadCertificateContextByEmployeeId(employeeId, type);
       const verificationCode = await insertEmployeeCertificateAudit({
         employee,
         type,
@@ -601,6 +615,12 @@ function certificateMessageFromError(error) {
       return 'No encontramos el empleado seleccionado.';
     case 'employee_inactive':
       return 'Solo se pueden generar certificados de empleados activos.';
+    case 'certificate_type_not_allowed':
+      return 'Este certificado no esta disponible para el estado actual del empleado.';
+    case 'invalid_employment_dates':
+      return 'Las fechas de ingreso y retiro faltan o son inconsistentes. Contacta a Recursos Humanos.';
+    case 'missing_functions':
+      return 'El cargo del empleado aún no tiene funciones registradas. Contacta a Recursos Humanos.';
     case 'missing_salary':
       return 'El cargo del empleado no tiene salario configurado.';
     case 'verification_code_failed':
@@ -616,20 +636,43 @@ async function requireCertificateAdminUser(req) {
   ));
 }
 
-async function loadCertificateContextByEmployeeId(employeeId) {
+async function loadCertificateContextByEmployeeId(employeeId, type) {
   const id = String(employeeId || '').trim();
   if (!id) throw certificateError('invalid_employee', 400);
   const { data: employee, error } = await supabaseAdmin
     .from('employees')
-    .select('id,codigo,documento,nombre,cargo_codigo,cargo_nombre,fecha_ingreso,estado')
+    .select('id,codigo,documento,nombre,cargo_codigo,cargo_nombre,sede_codigo,sede_nombre,contrato_codigo,contrato_nombre,cliente_nombre_snapshot,cliente_nit_snapshot,fecha_ingreso,fecha_retiro,estado')
     .eq('id', id)
     .maybeSingle();
   if (error) throw error;
   if (!employee?.id) throw certificateError('employee_not_found', 404);
-  if (String(employee.estado || '').trim().toLowerCase() !== 'activo') throw certificateError('employee_inactive', 409);
-  employee.fecha_ingreso = await resolveCertificateEmploymentStartDate(employee);
+  if (['retired', 'retired_with_functions'].includes(type)) {
+    validateCertificateData({ employee, type: 'retired' });
+    employee.fecha_ingreso = await resolveRetiredEmploymentStartDate(employee);
+  } else {
+    employee.fecha_ingreso = await resolveCertificateEmploymentStartDate(employee);
+  }
   const cargo = await loadCertificateCargo(employee);
+  validateCertificateData({ employee, cargo, type });
   return { employee, cargo };
+}
+
+async function resolveRetiredEmploymentStartDate(employee) {
+  const { data, error } = await supabaseAdmin.from('employee_cargo_history')
+    .select('fecha_ingreso,source')
+    .eq('employee_id', employee.id);
+  if (error) throw error;
+  const end = toISODate(employee.fecha_retiro);
+  const rows = (data || []).filter((row) => {
+    const start = toISODate(row.fecha_ingreso);
+    return start && start <= end;
+  });
+  // Transfers may change employees.fecha_ingreso; a rehire starts a new period.
+  const lastRehire = rows.filter((row) => row.source === 'rehire_employee')
+    .map((row) => toISODate(row.fecha_ingreso)).sort().pop();
+  const candidates = [employee.fecha_ingreso, ...rows.map((row) => row.fecha_ingreso)]
+    .filter((value) => !lastRehire || toISODate(value) >= lastRehire);
+  return earliestDateCandidate(candidates)?.value || employee.fecha_ingreso;
 }
 
 async function resolveCertificateEmploymentStartDate(employee = {}) {
@@ -687,7 +730,7 @@ async function loadCertificateCargo(employee) {
   const cargoCodigo = String(employee?.cargo_codigo || '').trim();
   const cargoNombre = String(employee?.cargo_nombre || '').trim();
   if (!cargoCodigo && !cargoNombre) return null;
-  let query = supabaseAdmin.from('cargos').select('codigo,nombre,salario');
+  let query = supabaseAdmin.from('cargos').select('codigo,nombre,salario,funciones');
   if (cargoCodigo) query = query.eq('codigo', cargoCodigo);
   else query = query.eq('nombre', cargoNombre);
   const { data, error } = await query.maybeSingle();
@@ -696,6 +739,10 @@ async function loadCertificateCargo(employee) {
 }
 
 async function insertEmployeeCertificateAudit({ employee, type, channel, requestedByProfileId = null, requestedByEmail = null, requestedByEmployeeSessionId = null, ip = null, userAgent = null }) {
+  const contractContext = await resolveBackendContractContext({
+    employee,
+    sedeCodigo: employee?.sede_codigo
+  });
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const verificationCode = createCertificateVerificationCode();
     const { data, error } = await supabaseAdmin.from('employee_certificate_audit').insert({
@@ -703,6 +750,7 @@ async function insertEmployeeCertificateAudit({ employee, type, channel, request
       employee_codigo: employee?.codigo || null,
       documento: employee?.documento || null,
       nombre: employee?.nombre || null,
+      ...contractContext,
       verification_code: verificationCode,
       certificate_type: type,
       channel,
@@ -733,7 +781,7 @@ function normalizeCertificateVerificationCode(value) {
 async function getCertificateAuditByVerificationCode(code) {
   const { data, error } = await supabaseAdmin
     .from('employee_certificate_audit')
-    .select('verification_code,documento,nombre,certificate_type,channel,created_at')
+    .select('verification_code,documento,nombre,contrato_codigo,contrato_nombre,cliente_nombre_snapshot,certificate_type,channel,created_at')
     .eq('verification_code', code)
     .maybeSingle();
   if (error) throw error;
@@ -746,7 +794,7 @@ function sendCertificateVerificationHtml(res, statusCode, row, customMessage = '
   const message = customMessage || (ok
     ? 'Este certificado fue emitido por CAPCOL S.A.S. a través de Rocky.'
     : 'No encontramos un certificado emitido con este codigo de verificacion.');
-  const typeLabel = row?.certificate_type === 'with_salary' ? 'Laboral con salario' : 'Laboral basico';
+  const typeLabel = row?.certificate_type === 'retired_with_functions' ? 'Laboral de retiro con funciones' : row?.certificate_type === 'with_functions' ? 'Laboral con funciones' : row?.certificate_type === 'retired' ? 'Laboral de retiro (laboró)' : row?.certificate_type === 'with_salary' ? 'Laboral con salario' : 'Laboral basico';
   const channelLabel = row?.channel === 'employee_portal' ? 'Portal de empleados' : 'Administrativo';
   const issuedAt = row?.created_at ? new Date(row.created_at).toLocaleString('es-CO', { timeZone: 'America/Bogota' }) : '-';
   const html = `<!doctype html>
@@ -775,6 +823,8 @@ function sendCertificateVerificationHtml(res, statusCode, row, customMessage = '
       <dt>Codigo</dt><dd>${escapeHtml(row.verification_code || '')}</dd>
       <dt>Empleado</dt><dd>${escapeHtml(row.nombre || '-')}</dd>
       <dt>Documento</dt><dd>${escapeHtml(maskDocument(row.documento))}</dd>
+      <dt>Contrato</dt><dd>${escapeHtml(row.contrato_nombre || row.contrato_codigo || '-')}</dd>
+      <dt>Cliente</dt><dd>${escapeHtml(row.cliente_nombre_snapshot || '-')}</dd>
       <dt>Tipo</dt><dd>${escapeHtml(typeLabel)}</dd>
       <dt>Canal</dt><dd>${escapeHtml(channelLabel)}</dd>
       <dt>Fecha de emision</dt><dd>${escapeHtml(issuedAt)}</dd>
@@ -828,8 +878,21 @@ function qrMessageFromError(error) {
       return 'No se detecto un QR valido.';
     case 'qr_not_found':
       return 'QR no encontrado.';
+    case 'attendance_zone_missing': return 'No tienes una zona asignada para marcar en distintas sedes. Solicita la actualización de tu zona.';
+    case 'attendance_contract_missing': return 'El turno no tiene contrato configurado. Solicita la revisión de tu programación.';
+    case 'attendance_site_forbidden': return 'La sede no está habilitada para tu marcación. Comparte nuevamente tu ubicación actual.';
+    case 'attendance_open_shift': return 'Tienes un turno pendiente de salida. Registra la salida antes de iniciar otro turno.';
     case 'sede_mismatch':
       return 'El QR pertenece a otra sede.';
+    case 'attendance_shift_missing':
+      return 'No hay un turno asignado disponible para esta marcacion. Comunicate con el supervisor.';
+    case 'attendance_shift_ambiguous':
+      return 'Hay varios turnos posibles. El supervisor debe revisar la asignacion antes de marcar.';
+    case 'qr_disabled':
+      return 'La configuracion QR de la sede cambio. Inicia nuevamente el registro por WhatsApp.';
+    case 'location_required':
+    case 'location_outside':
+      return 'Comparte nuevamente tu ubicacion actual dentro del radio de la sede.';
     case 'wrong_day':
       return 'El QR no corresponde al dia actual.';
     case 'qr_expired':
@@ -839,11 +902,11 @@ function qrMessageFromError(error) {
     case 'employee_inactive':
       return 'El empleado no esta activo.';
     case 'entry_exists':
-      return 'El ingreso de hoy ya esta registrado.';
+      return 'El ingreso de este turno ya esta registrado.';
     case 'exit_requires_entry':
-      return 'Primero debe existir un ingreso del dia.';
+      return 'Primero debe existir un ingreso de este turno.';
     case 'exit_exists':
-      return 'La salida de hoy ya esta registrada.';
+      return 'La salida de este turno ya esta registrada.';
     default:
       return 'No se pudo procesar el QR.';
   }
@@ -869,7 +932,7 @@ async function requireAdminQrUser(req) {
 
 async function requireQrRegistryUser(req) {
   return requireQrUser(req, ({ role, profile }) => (
-    ['superadmin', 'admin', 'editor'].includes(role) || (role === 'supervisor' && profile?.supervisor_eligible === true)
+    ['superadmin', 'admin', 'editor', 'consultor'].includes(role) || (role === 'supervisor' && profile?.supervisor_eligible === true)
   ));
 }
 
@@ -883,7 +946,7 @@ async function requireQrUser(req, canAccess) {
 
   const { data: profile, error: profileError } = await supabaseAdmin
     .from('profiles')
-    .select('id,email,role,estado,supervisor_eligible')
+    .select('id,email,role,estado,supervisor_eligible,contrato_codigo,contratos_permitidos')
     .eq('id', userData.user.id)
     .maybeSingle();
   if (profileError) throw profileError;
@@ -894,12 +957,72 @@ async function requireQrUser(req, canAccess) {
   return profile;
 }
 
+function isInternalQrProfile(profile = {}) {
+  return ['superadmin', 'admin', 'editor'].includes(String(profile?.role || '').trim().toLowerCase());
+}
+
+function allowedProfileContractCodes(profile = {}) {
+  const raw = [
+    profile?.contrato_codigo,
+    ...(Array.isArray(profile?.contratos_permitidos) ? profile.contratos_permitidos : [])
+  ];
+  return new Set(raw.map((value) => String(value || '').trim()).filter(Boolean));
+}
+
+function filterQrSummaryByContractScope(summary = {}, profile = {}, { contratoCodigo = '' } = {}) {
+  const requestedContract = String(contratoCodigo || '').trim();
+  if (isInternalQrProfile(profile) && !requestedContract) return summary || { rows: [], pendingRows: [] };
+  const allowed = allowedProfileContractCodes(profile);
+  const visible = (row = {}) => {
+    const rowContract = String(row?.contratoCodigo || row?.contrato_codigo || '').trim();
+    if (requestedContract) {
+      if (!isInternalQrProfile(profile) && !allowed.has(requestedContract)) return false;
+      return rowContract === requestedContract;
+    }
+    return allowed.has(rowContract);
+  };
+  return {
+    rows: (summary?.rows || []).filter(visible),
+    pendingRows: (summary?.pendingRows || []).filter(visible)
+  };
+}
+
 async function getSedeByCode(codigo) {
   const code = String(codigo || '').trim();
   if (!code) return null;
   const { data, error } = await supabaseAdmin.from('sedes').select('*').eq('codigo', code).maybeSingle();
   if (error) throw error;
   return data || null;
+}
+
+function firstText(...values) {
+  return values.map((value) => String(value || '').trim()).find(Boolean) || null;
+}
+
+function contractContextPayloadFrom(row = {}) {
+  return {
+    contrato_codigo: firstText(row?.contrato_codigo, row?.contratoCodigo),
+    contrato_nombre: firstText(row?.contrato_nombre, row?.contratoNombre, row?.contrato_nombre_snapshot, row?.contratoNombreSnapshot),
+    cliente_nombre_snapshot: firstText(row?.cliente_nombre_snapshot, row?.clienteNombreSnapshot),
+    cliente_nit_snapshot: firstText(row?.cliente_nit_snapshot, row?.clienteNitSnapshot)
+  };
+}
+
+async function resolveBackendContractContext({ tokenRow = null, sedeRow = null, employee = null, sedeCodigo = null } = {}) {
+  const effectiveSedeCode = firstText(sedeCodigo, sedeRow?.codigo, sedeRow?.sede_codigo, tokenRow?.sede_codigo, employee?.sede_codigo);
+  let fetchedSede = null;
+  if (effectiveSedeCode && (!sedeRow || !firstText(sedeRow?.contrato_codigo, sedeRow?.contratoCodigo))) {
+    fetchedSede = await getSedeByCode(effectiveSedeCode);
+  }
+  const token = contractContextPayloadFrom(tokenRow || {});
+  const sede = contractContextPayloadFrom(sedeRow || fetchedSede || {});
+  const emp = contractContextPayloadFrom(employee || {});
+  return {
+    contrato_codigo: firstText(token.contrato_codigo, sede.contrato_codigo, emp.contrato_codigo),
+    contrato_nombre: firstText(token.contrato_nombre, sede.contrato_nombre, emp.contrato_nombre),
+    cliente_nombre_snapshot: firstText(token.cliente_nombre_snapshot, sede.cliente_nombre_snapshot, emp.cliente_nombre_snapshot),
+    cliente_nit_snapshot: firstText(token.cliente_nit_snapshot, sede.cliente_nit_snapshot, emp.cliente_nit_snapshot)
+  };
 }
 
 function normalizeSedeCodeList(value, fallback = '') {
@@ -913,7 +1036,7 @@ async function getActiveQrSedesByCodes(codes = []) {
   if (!normalized.length) return [];
   const { data, error } = await supabaseAdmin
     .from('sedes')
-    .select('id,codigo,nombre,qr_enabled,estado')
+    .select('id,codigo,nombre,contrato_codigo,contrato_nombre,cliente_nombre_snapshot,cliente_nit_snapshot,qr_enabled,estado')
     .in('codigo', normalized);
   if (error) throw error;
   const byCode = new Map((data || [])
@@ -981,156 +1104,129 @@ async function touchQrDevice(deviceId) {
   if (error) throw error;
 }
 
-async function claimQrToken(tokenId, deviceId) {
-  const { data, error } = await supabaseAdmin
-    .from('attendance_qr_tokens')
-    .update({
-      used_at: new Date().toISOString(),
-      used_by_device_id: deviceId
-    })
-    .eq('id', tokenId)
-    .is('used_at', null)
-    .select('id')
-    .maybeSingle();
-  if (error) throw error;
-  return data || null;
+async function resolveAttendanceShift(employee, sedeCodigo, action) {
+  if (action === 'exit') {
+    let query = supabaseAdmin.from('employee_shift_status')
+      .select('scheduled_shift_id').eq('employee_id', employee.id)
+      .not('entrada_at', 'is', null).is('salida_at', null).neq('estado_turno', 'cancelado');
+    if (sedeCodigo) query = query.eq('sede_codigo', sedeCodigo);
+    const { data, error } = await query;
+    if (error) throw error;
+    if (!data?.length) throw qrError('exit_requires_entry', 409);
+    if (data.length > 1) throw qrError('attendance_shift_ambiguous', 409);
+    const shift = await getScheduledShiftById(data[0].scheduled_shift_id);
+    if (!shift || shift.estado === 'cancelado') throw qrError('attendance_shift_missing', 409);
+    return shift;
+  }
+  const day = currentDate();
+  const assignments = await listEmployeeShiftAssignmentsForRange({
+    employeeId: employee.id, documento: employee.documento,
+    dateFrom: addIsoDays(day, -1), dateTo: addIsoDays(day, 1)
+  });
+  let shifts = assignments.filter(row => !['cancelado', 'ausente', 'reemplazado'].includes(row.estado))
+    .map(row => row.shift).filter(shift => shift && (!sedeCodigo || shift.sedeCodigo === sedeCodigo));
+  if (!shifts.length && employee.isSupernumerario && !employee.marcacionMovil && sedeCodigo) {
+    shifts = (await Promise.all([-1, 0, 1].map(offset => listScheduledShiftsForOperationalDate(addIsoDays(day, offset), {
+      sedeCodigo, estados: ['programado', 'abierto']
+    })))).flat();
+  }
+  return selectAttendanceShift(shifts);
 }
 
 async function validateQrActionReady(tokenRow) {
-  return validateQrActionAvailability({
-    action: tokenRow.action,
-    fecha: tokenRow.fecha,
-    documento: tokenRow.documento
-  });
+  return validateQrActionAvailability({ action: tokenRow.action, documento: tokenRow.documento, turnoId: tokenRow.turno_id });
 }
 
-async function validateQrActionAvailability({ action, fecha, documento }) {
-  if (action === 'exit') {
-    const { data: attendanceRow, error: attendanceError } = await supabaseAdmin
-      .from('attendance')
-      .select('id,created_at,turno_id,fecha_operativa')
-      .eq('fecha', fecha)
-      .eq('documento', documento)
-      .limit(1)
-      .maybeSingle();
-    if (attendanceError) throw attendanceError;
-    if (!attendanceRow?.id) throw qrError('exit_requires_entry', 409);
-
-    const { data: exitRow, error: exitError } = await supabaseAdmin
-      .from('employee_daily_exits')
-      .select('id')
-      .eq('fecha', fecha)
-      .eq('documento', documento)
-      .limit(1)
-      .maybeSingle();
-    if (exitError) throw exitError;
-    if (exitRow?.id) throw qrError('exit_exists', 409);
-    return attendanceRow;
-  }
-
-  const { data: attendanceRow, error } = await supabaseAdmin
-    .from('attendance')
-    .select('id')
-    .eq('fecha', fecha)
-    .eq('documento', documento)
-    .limit(1)
-    .maybeSingle();
+async function validateQrActionAvailability({ action, documento, turnoId }) {
+  if (!turnoId) throw qrError('attendance_shift_missing', 409);
+  const { data: attendanceRow, error } = await supabaseAdmin.from('attendance')
+    .select('id,created_at,turno_id,fecha_operativa,asistio').eq('turno_id', turnoId)
+    .eq('documento', documento).eq('asistio', true).maybeSingle();
   if (error) throw error;
-  if (attendanceRow?.id) throw qrError('entry_exists', 409);
-  return null;
+  if (action === 'entry') {
+    if (attendanceRow) throw qrError('entry_exists', 409);
+    return null;
+  }
+  if (!attendanceRow) throw qrError('exit_requires_entry', 409);
+  const { data: exitRow, error: exitError } = await supabaseAdmin.from('employee_daily_exits')
+    .select('id').eq('turno_id', turnoId).eq('documento', documento).maybeSingle();
+  if (exitError) throw exitError;
+  if (exitRow) throw qrError('exit_exists', 409);
+  return attendanceRow;
 }
 
-async function registerQrEntry({ tokenRow, employee }) {
+async function registerAttendanceEvent({ tokenRow, device = null, employee = null, method = 'qr' }) {
+  const shift = await getScheduledShiftById(tokenRow.turno_id);
+  if (!shift || shift.estado === 'cancelado') throw qrError('attendance_shift_missing', 409);
+  const options = await attendanceSiteOptions(tokenRow.employee_id, shift.id);
+  if (!options.sites.some(site => site.codigo === tokenRow.sede_codigo)) throw qrError('attendance_site_forbidden', 403);
   const eventAt = new Date();
-  const attendanceId = buildDailyRecordId(tokenRow.fecha, tokenRow.documento, tokenRow.employee_id);
-  const shiftResult = await openOperationalShiftFromAttendance({
-    fecha: tokenRow.fecha,
-    employeeId: tokenRow.employee_id,
-    documento: tokenRow.documento,
-    sedeCodigo: tokenRow.sede_codigo,
-    action: 'entry',
-    eventAt,
-    source: 'qr_entry'
+  if (tokenRow.action === 'entry') {
+    const freshEmployee = await reloadEmployeeForAttendance(employee || { documento: tokenRow.documento });
+    await validateSupernumerarioEntrySite(freshEmployee, shift.sedeCodigo);
+    if (freshEmployee.isSupernumerario && !freshEmployee.marcacionMovil) await assertNoOpenMobileShift(freshEmployee.id);
+    const currentShift = await resolveAttendanceShift(freshEmployee, shift.sedeCodigo, 'entry');
+    if (currentShift.id !== shift.id) throw qrError('attendance_shift_missing', 409);
+  }
+  const classification = classifyShiftEventTime(shift, tokenRow.action, eventAt);
+  const contractContext = await resolveBackendContractContext({ sedeCodigo: shift.sedeCodigo });
+  const { data, error } = await supabaseAdmin.rpc('register_shift_attendance', {
+    p_event: {
+      ...tokenRow, ...contractContext, method,
+      qr_token_id: method === 'qr' ? tokenRow.id : null,
+      device_id: device?.id || null,
+      classification
+    }
   });
-  const { error } = await supabaseAdmin.from('attendance').upsert({
-    id: attendanceId,
-    fecha: tokenRow.fecha,
-    empleado_id: tokenRow.employee_id,
-    documento: tokenRow.documento,
-    nombre: tokenRow.nombre || employee?.nombre || null,
-    sede_codigo: tokenRow.sede_codigo,
-    sede_nombre: tokenRow.sede_nombre || null,
-    asistio: true,
-    novedad: NOVELTIES.WORKING.code,
-    ...shiftRegistrationFields(shiftResult, 'entry', eventAt)
-  }, { onConflict: 'id' });
   if (error) throw error;
-  await clearDailyOperationalAbsenceArtifacts(attendanceId);
-  await upsertEmployeeShiftStatusFromEvent({
-    shiftResult,
-    action: 'entry',
-    eventAt,
-    sourceId: attendanceId,
-    employeeId: tokenRow.employee_id,
-    documento: tokenRow.documento,
-    nombre: tokenRow.nombre || employee?.nombre || null,
-    sedeCodigo: tokenRow.sede_codigo,
-    novelty: NOVELTIES.WORKING
-  });
-  await refreshOperationalState(tokenRow.fecha);
-  return { status: 'entry_registered', attendanceId, shift: shiftResult?.shift || null };
+  // The marking has already committed. Derived daily summaries may be retried independently.
+  await refreshOperationalState(shift.fechaOperativa).catch(error => console.error('Marcacion guardada; resumen diario pendiente:', error));
+  return { ...data, shift };
 }
 
-async function registerQrExit({ tokenRow, device }) {
-  const eventAt = new Date();
-  const attendanceRow = await validateQrActionReady(tokenRow);
-  const exitId = buildDailyRecordId(tokenRow.fecha, tokenRow.documento, tokenRow.employee_id);
-  let shiftResult = await openOperationalShiftFromAttendance({
-    fecha: tokenRow.fecha,
-    employeeId: tokenRow.employee_id,
-    documento: tokenRow.documento,
-    sedeCodigo: tokenRow.sede_codigo,
-    action: 'exit',
-    eventAt,
-    source: 'qr_exit'
-  });
-  if (!shiftResult?.shift?.id && attendanceRow?.turno_id) {
-    const closedShift = await getScheduledShiftById(attendanceRow.turno_id);
-    if (closedShift?.id) shiftResult = { shift: closedShift, opened: false };
+async function registerQrEntry(args) { return registerAttendanceEvent(args); }
+async function registerQrExit(args) { return registerAttendanceEvent(args); }
+
+async function notifyAttendanceReason(request) {
+  try {
+    const { data, error } = await supabaseAdmin.from('attendance_reason_requests').select('*')
+      .eq('recipient', request.recipient).is('answered_at', null).order('event_at', { ascending: true }).limit(1);
+    if (error) throw error;
+    if (data?.[0]) await sendText(request.recipient, attendanceReasonPrompt(data[0]));
+  } catch (error) {
+    // The marking and pending explanation are durable; the next incoming message resumes it.
+    console.error('Marcación guardada; solicitud de motivo pendiente de entrega:', error);
   }
-  const shiftFields = shiftRegistrationFields(shiftResult, 'exit', eventAt);
-  if (!shiftFields.turno_id && attendanceRow?.turno_id) {
-    shiftFields.turno_id = attendanceRow.turno_id;
-    shiftFields.fecha_operativa = attendanceRow.fecha_operativa || tokenRow.fecha;
+}
+
+async function handlePendingAttendanceReason(phone, message) {
+  if (message.id) {
+    const previous = await supabaseAdmin.from('attendance_reason_requests').select('id')
+      .eq('recipient', phone).eq('message_id', message.id).limit(1);
+    if (previous.error) throw previous.error;
+    if (previous.data?.length) return true;
   }
-  const { error } = await supabaseAdmin.from('employee_daily_exits').insert({
-    id: exitId,
-    fecha: tokenRow.fecha,
-    employee_id: tokenRow.employee_id,
-    documento: tokenRow.documento,
-    nombre: tokenRow.nombre || null,
-    sede_codigo: tokenRow.sede_codigo,
-    sede_nombre: tokenRow.sede_nombre || null,
-    qr_token_id: tokenRow.id,
-    device_id: device.id,
-    entry_attendance_id: attendanceRow?.id || null,
-    ...shiftFields
-  });
-  if (error) {
-    if (error.code === '23505') throw qrError('exit_exists', 409);
-    throw error;
+  const { data, error } = await supabaseAdmin.from('attendance_reason_requests').select('*')
+    .eq('recipient', phone).is('answered_at', null).order('event_at', { ascending: true }).limit(1);
+  if (error) throw error;
+  const request = data?.[0];
+  if (!request) return false;
+  // A delayed message from before the marking cannot become its explanation.
+  const messageAt = Number(message.timestamp) * 1000;
+  const predatesMarking = Number.isFinite(messageAt) && messageAt > 0
+    && messageAt < Math.floor(new Date(request.event_at).getTime() / 1000) * 1000;
+  const result = predatesMarking ? { error: 'El registro tiene una explicación pendiente.' } : validateAttendanceReason(message);
+  if (result.error) {
+    await sendText(phone, `${result.error}\n${attendanceReasonPrompt(request)}`);
+    return true;
   }
-  await upsertEmployeeShiftStatusFromEvent({
-    shiftResult: shiftResult || (shiftFields.turno_id ? { shift: { id: shiftFields.turno_id, fechaOperativa: shiftFields.fecha_operativa || tokenRow.fecha, sedeCodigo: tokenRow.sede_codigo } } : null),
-    action: 'exit',
-    eventAt,
-    sourceId: exitId,
-    employeeId: tokenRow.employee_id,
-    documento: tokenRow.documento,
-    nombre: tokenRow.nombre || null,
-    sedeCodigo: tokenRow.sede_codigo
+  const { error: saveError } = await supabaseAdmin.rpc('answer_attendance_reason', {
+    p_request_id: request.id, p_recipient: phone, p_reason: result.reason, p_message_id: message.id || null
   });
-  return { status: 'exit_registered', exitId, shift: shiftResult?.shift || null };
+  if (saveError) throw saveError;
+  await sendText(phone, 'Motivo guardado. Tu registro está completo.');
+  await notifyAttendanceReason(request);
+  return true;
 }
 
 async function openOperationalShiftFromAttendance({
@@ -1246,6 +1342,7 @@ async function upsertEmployeeShiftStatusFromEvent({
   const eventIso = eventAt instanceof Date ? eventAt.toISOString() : new Date().toISOString();
   const classification = classifyShiftEventTime(shift, action, eventAt);
   const isAbsence = novelty?.absenteeism === true;
+  const contractContext = await resolveBackendContractContext({ sedeCodigo: sedeCodigo || shift.sedeCodigo });
   const base = {
     id,
     scheduled_shift_id: shift.id,
@@ -1254,7 +1351,9 @@ async function upsertEmployeeShiftStatusFromEvent({
     documento: doc || null,
     nombre: nombre || null,
     sede_codigo: sedeCodigo || shift.sedeCodigo || null,
-    requires_review: classification.requiresReview === true || isAbsence
+    ...contractContext,
+    requires_review: classification.requiresReview === true || isAbsence,
+    ...(action === 'entry' ? { timing_alerts: classification.timingAlerts || {} } : {})
   };
 
   if (action === 'exit') {
@@ -1310,6 +1409,7 @@ async function insertQrScanAudit(payload = {}) {
     employee_id: payload.employee_id || null,
     documento: payload.documento || null,
     sede_codigo: payload.sede_codigo || null,
+    ...contractContextPayloadFrom(payload),
     turno_id: payload.turno_id || null,
     fecha_operativa: payload.fecha_operativa || null,
     ok: payload.ok === true,
@@ -1342,8 +1442,7 @@ async function listDailyQrRecords(date) {
       .order('exit_at', { ascending: true }),
     supabaseAdmin
       .from('sedes')
-      .select('codigo,nombre,dependencia_codigo,dependencia_nombre,zona_codigo,zona_nombre,qr_enabled,estado')
-      .eq('qr_enabled', true),
+      .select('codigo,nombre,contrato_codigo,contrato_nombre,cliente_nombre_snapshot,dependencia_codigo,dependencia_nombre,zona_codigo,zona_nombre,qr_enabled,estado'),
     supabaseAdmin
       .from('incapacitados')
       .select('employee_id,documento,nombre,source,fecha_inicio,fecha_fin')
@@ -1352,7 +1451,7 @@ async function listDailyQrRecords(date) {
       .gte('fecha_fin', day),
     supabaseAdmin
       .from('attendance')
-      .select('id,empleado_id,documento,nombre,sede_codigo,sede_nombre,asistio,novedad,created_at')
+      .select('id,empleado_id,documento,nombre,sede_codigo,sede_nombre,contrato_codigo,contrato_nombre,cliente_nombre_snapshot,asistio,novedad,created_at,reported_at,turno_id,marking_method,request_distance_meters,phone_number,marking_sede_codigo,marking_sede_nombre,timing_alert_type,timing_control_required,employee_reason,early_entry_minutes,late_entry_minutes,early_entry_reason,late_entry_reason')
       .eq('fecha', day)
   ]);
   if (tokenError) throw tokenError;
@@ -1373,13 +1472,33 @@ async function listDailyQrRecords(date) {
     qrSedesByCode.has(String(row?.sede_codigo || '').trim())
     && (row?.asistio === true || String(row?.novedad || '').trim())
   ));
+  // Supernumerarios cover on demand: they have no scheduled_shifts row and no employee_daily_status row with
+  // servicio_programado, so neither of the two sources below ever sees them. They must be gathered separately
+  // (same "supernumerario" cargo alignment used by list_supernumerarios_for_current_supervisor), or the pending
+  // list silently drops them while showing everyone else correctly.
+  const { data: cargoRows, error: cargoError } = await supabaseAdmin.from('cargos').select('codigo,nombre,alineacion_crud');
+  if (cargoError) throw cargoError;
+  const supernumerarioCargoCodes = new Set((cargoRows || [])
+    .filter((row) => String(row?.alineacion_crud || '').trim().toLowerCase() === 'supernumerario'
+      || String(row?.nombre || '').trim().toLowerCase().includes('supernumer'))
+    .map((row) => String(row?.codigo || '').trim())
+    .filter(Boolean));
+  const { data: supernumerarioEmployeeRows, error: supernumerarioError } = await supabaseAdmin
+    .from('employees')
+    .select('id,documento,nombre,telefono,estado,cargo_codigo,cargo_nombre,sede_codigo,sede_nombre,contrato_codigo,contrato_nombre,cliente_nombre_snapshot,fecha_ingreso,fecha_retiro')
+    .or('estado.is.null,estado.neq.eliminado');
+  if (supernumerarioError) throw supernumerarioError;
+  const supernumerarioCandidates = (supernumerarioEmployeeRows || []).filter((row) => (
+    supernumerarioCargoCodes.has(String(row?.cargo_codigo || '').trim())
+    || String(row?.cargo_nombre || '').trim().toLowerCase().includes('supernumer')
+  )).filter((row) => isPersonActiveForDate(row, day, { allowMissingIngreso: true }));
   let statusRows = [];
   let pendingStatusRows = [];
   let registeredStatusRows = [];
   if (qrSedeCodes.length) {
     const { data: dailyStatusRows, error: statusError } = await supabaseAdmin
       .from('employee_daily_status')
-      .select('employee_id,documento,nombre,sede_codigo,sede_nombre_snapshot,zona_codigo_snapshot,zona_nombre_snapshot,dependencia_codigo_snapshot,dependencia_nombre_snapshot,tipo_personal,servicio_programado,estado_dia,novedad_nombre,source_incapacity_id')
+      .select('employee_id,documento,nombre,sede_codigo,sede_nombre_snapshot,contrato_codigo,contrato_nombre,cliente_nombre_snapshot,zona_codigo_snapshot,zona_nombre_snapshot,dependencia_codigo_snapshot,dependencia_nombre_snapshot,tipo_personal,servicio_programado,estado_dia,novedad_nombre,source_incapacity_id')
       .eq('fecha', day)
       .eq('tipo_personal', 'empleado')
       .in('sede_codigo', qrSedeCodes)
@@ -1397,14 +1516,15 @@ async function listDailyQrRecords(date) {
     ...tokens.map((row) => row?.employee_id).filter(Boolean),
     ...exits.map((row) => row?.employee_id).filter(Boolean),
     ...attendance.map((row) => row?.empleado_id).filter(Boolean),
-    ...statusRows.map((row) => row?.employee_id).filter(Boolean)
+    ...statusRows.map((row) => row?.employee_id).filter(Boolean),
+    ...supernumerarioCandidates.map((row) => row?.id).filter(Boolean)
   ])];
 
   const employeesById = new Map();
   if (employeeIds.length) {
     const { data: employees, error: employeesError } = await supabaseAdmin
       .from('employees')
-      .select('id,documento,nombre,telefono,sede_codigo,sede_nombre')
+      .select('id,documento,nombre,telefono,sede_codigo,sede_nombre,contrato_codigo,contrato_nombre,cliente_nombre_snapshot')
       .in('id', employeeIds);
     if (employeesError) throw employeesError;
     (employees || []).forEach((employee) => employeesById.set(String(employee.id), employee));
@@ -1412,18 +1532,24 @@ async function listDailyQrRecords(date) {
 
   const tokenById = new Map(tokens.map((row) => [String(row.id), row]));
   const rowMap = new Map();
-  const keyFor = (row = {}) => String(row?.employee_id || row?.documento || '').trim();
+  const keyFor = (row = {}) => `${row.turno_id || 'legacy'}:${String(row?.employee_id || row?.documento || '').trim()}`;
   const ensureRow = (source = {}) => {
     const key = keyFor(source);
     if (!key) return null;
     if (!rowMap.has(key)) {
       const employee = employeesById.get(String(source.employee_id || '')) || {};
+      const sede = qrSedesByCode.get(String(source.sede_codigo || employee.sede_codigo || '').trim()) || {};
       rowMap.set(key, {
+        fechaOperativa: day,
+        turnoId: source.turno_id || null,
         employeeId: source.employee_id || null,
         documento: source.documento || employee.documento || null,
         nombre: source.nombre || employee.nombre || null,
         sedeCodigo: source.sede_codigo || employee.sede_codigo || null,
         sedeNombre: source.sede_nombre || employee.sede_nombre || null,
+        contratoCodigo: source.contrato_codigo || employee.contrato_codigo || sede.contrato_codigo || null,
+        contratoNombre: source.contrato_nombre || employee.contrato_nombre || sede.contrato_nombre || null,
+        clienteNombreSnapshot: source.cliente_nombre_snapshot || employee.cliente_nombre_snapshot || sede.cliente_nombre_snapshot || null,
         employeePhone: employee.telefono || null,
         entryAt: null,
         entryPhone: null,
@@ -1442,6 +1568,9 @@ async function listDailyQrRecords(date) {
     const row = ensureRow(tokenRow);
     if (!row) return;
     row.entryAt = tokenRow.used_at || null;
+    row.entrySiteCode = tokenRow.sede_codigo || null;
+    row.entrySiteName = tokenRow.sede_nombre || null;
+    row.entryMethod = 'qr';
     row.entryPhone = tokenRow.phone_number || null;
     row.entryDistanceMeters = tokenRow.request_distance_meters == null ? null : Number(tokenRow.request_distance_meters);
   });
@@ -1456,14 +1585,30 @@ async function listDailyQrRecords(date) {
   );
   attendance.forEach((attendanceRow) => {
     const row = ensureRow({
+      turno_id: attendanceRow.turno_id || null,
       employee_id: attendanceRow.empleado_id || null,
       documento: attendanceRow.documento || null,
       nombre: attendanceRow.nombre || null,
       sede_codigo: attendanceRow.sede_codigo || null,
-      sede_nombre: attendanceRow.sede_nombre || null
+      sede_nombre: attendanceRow.sede_nombre || null,
+      contrato_codigo: attendanceRow.contrato_codigo || null,
+      contrato_nombre: attendanceRow.contrato_nombre || null,
+      cliente_nombre_snapshot: attendanceRow.cliente_nombre_snapshot || null
     });
     if (!row) return;
-    if (!row.entryAt) row.entryAt = attendanceRow.created_at || null;
+    row.attendanceId = attendanceRow.id;
+    // Tokens refer to the scanner site; operational sede remains the administrative shift site.
+    row.sedeCodigo = attendanceRow.sede_codigo || row.sedeCodigo;
+    row.sedeNombre = attendanceRow.sede_nombre || row.sedeNombre;
+    row.entrySiteCode = attendanceRow.marking_sede_codigo || attendanceRow.sede_codigo;
+    row.entrySiteName = attendanceRow.marking_sede_nombre || attendanceRow.sede_nombre;
+    if (!row.entryAt) row.entryAt = attendanceRow.reported_at || attendanceRow.created_at || null;
+    row.entryMethod = attendanceRow.marking_method || row.entryMethod || null;
+    row.entryPhone = attendanceRow.phone_number || row.entryPhone;
+    row.entryDistanceMeters = attendanceRow.request_distance_meters ?? row.entryDistanceMeters;
+    row.entryReason = attendanceRow.employee_reason || attendanceRow.early_entry_reason || attendanceRow.late_entry_reason || null;
+    row.entryTimingAlert = attendanceRow.timing_alert_type || (attendanceRow.early_entry_minutes > 0 ? 'entrada_anticipada' : attendanceRow.late_entry_minutes > 0 ? 'entrada_tardia' : null);
+    row.entryControlRequired = attendanceRow.timing_control_required === true || attendanceRow.early_entry_minutes > 0 || attendanceRow.late_entry_minutes > 0;
     if (!row.entrySource) row.entrySource = 'attendance';
     const noveltyCode = String(attendanceRow.novedad || '').trim();
     const noveltyLabel = noveltyLabelByCode(noveltyCode);
@@ -1505,7 +1650,10 @@ async function listDailyQrRecords(date) {
       documento: statusRow.documento || incapacity?.documento || null,
       nombre: statusRow.nombre || incapacity?.nombre || null,
       sede_codigo: statusRow.sede_codigo || null,
-      sede_nombre: statusRow.sede_nombre_snapshot || null
+      sede_nombre: statusRow.sede_nombre_snapshot || null,
+      contrato_codigo: statusRow.contrato_codigo || null,
+      contrato_nombre: statusRow.contrato_nombre || null,
+      cliente_nombre_snapshot: statusRow.cliente_nombre_snapshot || null
     });
     if (!row) return;
     if (!row.entrySource) row.entrySource = incapacity ? 'incapacity' : 'daily_status';
@@ -1516,14 +1664,24 @@ async function listDailyQrRecords(date) {
     const row = ensureRow(exitRow);
     if (!row) return;
     const exitToken = tokenById.get(String(exitRow.qr_token_id || '')) || null;
+    row.sedeCodigo = exitRow.sede_codigo || row.sedeCodigo;
+    row.sedeNombre = exitRow.sede_nombre || row.sedeNombre;
+    row.exitSiteCode = exitRow.marking_sede_codigo || exitRow.sede_codigo;
+    row.exitSiteName = exitRow.marking_sede_nombre || exitRow.sede_nombre;
     row.exitAt = exitRow.exit_at || null;
-    row.exitPhone = exitToken?.phone_number || null;
-    row.exitDistanceMeters = exitToken?.request_distance_meters == null ? null : Number(exitToken.request_distance_meters);
+    row.exitMethod = exitRow.marking_method || (exitToken ? 'qr' : null);
+    row.exitPhone = exitRow.phone_number || exitToken?.phone_number || null;
+    row.exitDistanceMeters = exitRow.request_distance_meters ?? exitToken?.request_distance_meters ?? null;
+    row.exitReason = exitRow.employee_reason || exitRow.early_exit_reason || exitRow.late_exit_reason || null;
+    row.exitTimingAlert = exitRow.timing_alert_type || (exitRow.early_exit_minutes > 0 ? 'salida_anticipada' : exitRow.late_exit_minutes > 0 ? 'salida_tardia' : null);
+    row.exitControlRequired = exitRow.timing_control_required === true || exitRow.early_exit_minutes > 0 || exitRow.late_exit_minutes > 0;
   });
 
   tokens.filter((row) => row?.action === 'exit' && !rowMap.has(keyFor(row))).forEach((tokenRow) => {
     const row = ensureRow(tokenRow);
     if (!row) return;
+    row.exitSiteCode = tokenRow.sede_codigo || null;
+    row.exitSiteName = tokenRow.sede_nombre || null;
     row.exitAt = tokenRow.used_at || null;
     row.exitPhone = tokenRow.phone_number || null;
     row.exitDistanceMeters = tokenRow.request_distance_meters == null ? null : Number(tokenRow.request_distance_meters);
@@ -1542,7 +1700,7 @@ async function listDailyQrRecords(date) {
       };
     })
     .sort((a, b) => String(a.sedeNombre || '').localeCompare(String(b.sedeNombre || '')) || String(a.nombre || '').localeCompare(String(b.nombre || '')));
-  const pendingRows = pendingStatusRows
+  let pendingRows = pendingStatusRows
     .filter((row) => {
       const employeeId = String(row?.employee_id || '').trim();
       const documento = String(row?.documento || '').trim();
@@ -1561,15 +1719,121 @@ async function listDailyQrRecords(date) {
         telefono: employee.telefono || null,
         sedeCodigo: row.sede_codigo || sede.codigo || null,
         sedeNombre: row.sede_nombre_snapshot || sede.nombre || null,
+        contratoCodigo: row.contrato_codigo || sede.contrato_codigo || employee.contrato_codigo || null,
+        contratoNombre: row.contrato_nombre || sede.contrato_nombre || employee.contrato_nombre || null,
+        clienteNombreSnapshot: row.cliente_nombre_snapshot || sede.cliente_nombre_snapshot || employee.cliente_nombre_snapshot || null,
         dependenciaCodigo: row.dependencia_codigo_snapshot || sede.dependencia_codigo || null,
         dependenciaNombre: row.dependencia_nombre_snapshot || sede.dependencia_nombre || null,
         zonaCodigo: row.zona_codigo_snapshot || sede.zona_codigo || null,
         zonaNombre: row.zona_nombre_snapshot || sede.zona_nombre || null
       };
+    });
+  pendingRows.push(...supernumerarioCandidates
+    .filter((row) => {
+      const employeeId = String(row?.id || '').trim();
+      const documento = String(row?.documento || '').trim();
+      const hasEntry = (employeeId && entryKeys.has(`id:${employeeId}`)) || (documento && entryKeys.has(`doc:${documento}`));
+      const hasAttendance = (employeeId && attendanceKeys.has(`id:${employeeId}`)) || (documento && attendanceKeys.has(`doc:${documento}`));
+      const hasIncapacity = (employeeId && incapacityKeys.has(`id:${employeeId}`)) || (documento && incapacityKeys.has(`doc:${documento}`));
+      return !hasEntry && !hasAttendance && !hasIncapacity;
     })
-    .sort((a, b) => String(a.sedeNombre || '').localeCompare(String(b.sedeNombre || '')) || String(a.nombre || '').localeCompare(String(b.nombre || '')));
+    .map((row) => {
+      const sede = qrSedesByCode.get(String(row?.sede_codigo || '').trim()) || {};
+      return {
+        employeeId: row.id || null,
+        documento: row.documento || null,
+        nombre: row.nombre || null,
+        telefono: row.telefono || null,
+        sedeCodigo: row.sede_codigo || sede.codigo || null,
+        sedeNombre: row.sede_nombre || sede.nombre || null,
+        contratoCodigo: row.contrato_codigo || sede.contrato_codigo || null,
+        contratoNombre: row.contrato_nombre || sede.contrato_nombre || null,
+        clienteNombreSnapshot: row.cliente_nombre_snapshot || sede.cliente_nombre_snapshot || null,
+        dependenciaCodigo: sede.dependencia_codigo || null,
+        dependenciaNombre: sede.dependencia_nombre || null,
+        zonaCodigo: sede.zona_codigo || null,
+        zonaNombre: sede.zona_nombre || null,
+        isSupernumerario: true,
+        tipoPersonal: 'supernumerario'
+      };
+    }));
+  pendingRows = pendingRows.sort((a, b) => String(a.sedeNombre || '').localeCompare(String(b.sedeNombre || '')) || String(a.nombre || '').localeCompare(String(b.nombre || '')));
 
+  // Pending entries are per assignment, so a first shift cannot hide a second one.
+  const { data: assignments, error: assignmentsError } = await supabaseAdmin.from('shift_assignments')
+    .select('employee_id,documento,nombre,estado,scheduled_shifts!inner(id,nombre,fecha_operativa,sede_codigo,sede_nombre,starts_at,ends_at,estado)')
+    .eq('scheduled_shifts.fecha_operativa', day).neq('estado', 'cancelado');
+  if (assignmentsError) throw assignmentsError;
+  const { data: shiftStatuses, error: shiftStatusError } = await supabaseAdmin.from('employee_shift_status')
+    .select('scheduled_shift_id,employee_id,documento,entrada_at,estado_turno').eq('fecha_operativa', day);
+  if (shiftStatusError) throw shiftStatusError;
+  const statusByKey = new Map((shiftStatuses || []).map(status => [keyFor({ ...status, turno_id: status.scheduled_shift_id }), status]));
+  const { data: dayShifts, error: dayShiftsError } = await supabaseAdmin.from('scheduled_shifts')
+    .select('id,nombre,starts_at,ends_at').eq('fecha_operativa', day);
+  if (dayShiftsError) throw dayShiftsError;
+  const shiftById = new Map([...(assignments || []).map(row => [row.scheduled_shifts.id, row.scheduled_shifts]),
+    ...(dayShifts || []).map(shift => [shift.id, shift])]);
+  for (const row of rows) {
+    const shift = shiftById.get(row.turnoId);
+    row.turnoNombre = shift?.nombre || null;
+    row.turnoInicio = shift?.starts_at || null;
+    row.turnoFin = shift?.ends_at || null;
+  }
+  // The assignment keeps a snapshot of documento/nombre from when it was created; prefer the employee's current data
+  // (an outdated snapshot must not make an assignment look like a different, unrelated identity).
+  const missingAssignmentEmployeeIds = [...new Set((assignments || [])
+    .map((row) => String(row.employee_id || '').trim())
+    .filter((id) => id && !employeesById.has(id)))];
+  if (missingAssignmentEmployeeIds.length) {
+    const { data: extraEmployees, error: extraEmployeesError } = await supabaseAdmin
+      .from('employees')
+      .select('id,documento,nombre,telefono,sede_codigo,sede_nombre,contrato_codigo,contrato_nombre,cliente_nombre_snapshot')
+      .in('id', missingAssignmentEmployeeIds);
+    if (extraEmployeesError) throw extraEmployeesError;
+    (extraEmployees || []).forEach((employee) => employeesById.set(String(employee.id), employee));
+  }
+  const assignedIdentities = new Set((assignments || []).map(row => String(row.employee_id || row.documento || '')));
+  pendingRows = pendingRows.filter(row => !assignedIdentities.has(String(row.employeeId || row.documento || '')));
+  for (const assignment of assignments || []) {
+    const shift = assignment.scheduled_shifts;
+    const status = statusByKey.get(keyFor({ ...assignment, turno_id: shift.id }));
+    if (shift.estado === 'cancelado' || ['ausente','reemplazado'].includes(assignment.estado)
+      || status?.entrada_at || ['ausente_con_novedad','cancelado'].includes(status?.estado_turno)) continue;
+    const sede = qrSedesByCode.get(shift.sede_codigo) || {};
+    const employee = employeesById.get(String(assignment.employee_id || '')) || {};
+    pendingRows.push({ employeeId: assignment.employee_id, documento: employee.documento || assignment.documento, nombre: employee.nombre || assignment.nombre,
+      turnoId: shift.id, turnoNombre: shift.nombre, turnoInicio: shift.starts_at,
+      sedeCodigo: shift.sede_codigo, sedeNombre: shift.sede_nombre,
+      contratoCodigo: sede.contrato_codigo, contratoNombre: sede.contrato_nombre,
+      clienteNombreSnapshot: sede.cliente_nombre_snapshot,
+      zonaCodigo: sede.zona_codigo, zonaNombre: sede.zona_nombre,
+      dependenciaCodigo: sede.dependencia_codigo, dependenciaNombre: sede.dependencia_nombre });
+  }
   return { rows, pendingRows };
+}
+
+// Mirrors the front-end isPersonActiveForDate (src/assets/js/components/WhatsAppLive.js): whether a person (an
+// employee row here) counts as active for a given operational date, based on estado/fecha_ingreso/fecha_retiro.
+function isPersonActiveForDate(person, day, { allowMissingIngreso = false } = {}) {
+  const target = String(day || '').trim();
+  if (!target) return false;
+  const estado = String(person?.estado || '').trim().toLowerCase();
+  if (estado === 'eliminado') return false;
+  const ingreso = toDateOnly(person?.fecha_ingreso);
+  if (ingreso && ingreso > target) return false;
+  if (!ingreso && !allowMissingIngreso) return false;
+  const retiro = toDateOnly(person?.fecha_retiro);
+  if (estado === 'inactivo') return Boolean(retiro && retiro >= target);
+  if (retiro && retiro < target) return false;
+  return true;
+}
+
+function toDateOnly(value) {
+  if (!value) return null;
+  const text = String(value).trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(text)) return text.slice(0, 10);
+  const parsed = new Date(text);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString().slice(0, 10);
 }
 
 function isDifferentQrPhone(qrPhone, employeePhone) {
@@ -1644,6 +1908,10 @@ async function notifyProcessingError(message, error) {
 
 function userMessageForProcessingError(error) {
   const raw = `${error?.message || ''} ${error?.details || ''} ${error?.hint || ''}`.toLowerCase();
+  const markingErrors = ['attendance_zone_missing', 'attendance_contract_missing', 'attendance_site_forbidden', 'attendance_open_shift', 'attendance_shift_missing', 'attendance_shift_ambiguous', 'entry_exists', 'exit_exists', 'exit_requires_entry', 'qr_disabled', 'location_required', 'location_outside'];
+  const markingError = markingErrors.find(code => raw.includes(code));
+  if (markingError) return qrMessageFromError({ message: markingError });
+  if (raw.includes('register_shift_attendance')) return 'Falta habilitar la actualizacion de marcaciones por turno. Comunicate con el supervisor.';
   if (raw.includes('request_latitude') || raw.includes('qr_latitude') || raw.includes('location_verified_at')) {
     return 'No pudimos generar el QR porque falta actualizar la base de datos con la migracion de ubicacion QR. Comunicate con el supervisor.';
   }
@@ -1665,6 +1933,8 @@ function userMessageForProcessingError(error) {
 async function processIncomingMessage(message) {
   const phone = getWhatsAppRecipient(message);
   if (!phone) throw new Error('missing_whatsapp_recipient');
+
+  if (await handlePendingAttendanceReason(phone, message)) return;
 
   const session = await getSession(phone);
   const parsed = parseInboundAction(message);
@@ -1717,6 +1987,9 @@ async function processIncomingMessage(message) {
       return;
     case SESSION.AWAITING_QR_ATTENDANCE_ACTION:
       await handleQrAttendanceAction(phone, session, parsed);
+      return;
+    case SESSION.AWAITING_MARKING_SITE:
+      await handleMarkingSiteSelection(phone, session, parsed);
       return;
     case SESSION.AWAITING_QR_LOCATION:
       await handleQrLocationInput(phone, session, parsed);
@@ -1845,7 +2118,7 @@ async function sendIdentityOrMenu(phone, employee) {
     await sendButtons(phone,
       `Hola, soy Rocky\n\nEres: ${employee.nombre}\nCédula: ${employee.documento}\nEstas como SUPERNUMERARIO\n\nElige una opción:`,
       [
-        { id: MENU_IDS.ACTION_WORKING, title: 'Trabajando' },
+        { id: MENU_IDS.ACTION_WORKING, title: 'Ingreso / Salida' },
         { id: MENU_IDS.ACTION_NOVELTY, title: 'Novedad' },
         { id: MENU_IDS.UPDATE_DATA, title: 'Actualizar Datos' }
       ]
@@ -1898,7 +2171,7 @@ async function handleActionSelection(phone, session, parsed) {
       session_data: { employee: sessionEmployee(employee), menuReady: true }
     });
     await sendButtons(phone, 'Elige una opción:', [
-      { id: MENU_IDS.ACTION_WORKING, title: 'Trabajando' },
+      { id: MENU_IDS.ACTION_WORKING, title: 'Ingreso / Salida' },
       { id: MENU_IDS.ACTION_COMPENSATORY, title: 'Compensatorio' },
       { id: MENU_IDS.ACTION_NOVELTY, title: 'Novedad' }
     ]);
@@ -1929,21 +2202,7 @@ async function handleActionSelection(phone, session, parsed) {
   }
 
   if (choice === 'working') {
-    if (employee.isSupernumerario) {
-      await storeSession(phone, {
-        employee_id: employee.id,
-        documento: employee.documento,
-        session_state: SESSION.AWAITING_WORKING_SEDE_KEYWORD,
-        session_data: { employee: sessionEmployee(employee), pendingNovelty: NOVELTIES.WORKING }
-      });
-      await sendText(phone, 'Escribe una palabra clave del nombre de la sede en la que te encuentras:');
-      return;
-    }
-    if (await isQrEnabledForSede(employee.sede_codigo)) {
-      await promptQrAttendanceAction(phone, employee, null);
-      return;
-    }
-    await registerNovelty(phone, employee, NOVELTIES.WORKING, null);
+    await promptQrAttendanceAction(phone, employee, null);
     return;
   }
 
@@ -2247,7 +2506,7 @@ async function handleWorkingSedeSelection(phone, session, parsed) {
     return;
   }
 
-  if (novelty?.code === NOVELTIES.WORKING.code && await isQrEnabledForSede(selected.codigo)) {
+  if (novelty?.code === NOVELTIES.WORKING.code) {
     await promptQrAttendanceAction(phone, employee, selected);
     return;
   }
@@ -2264,7 +2523,7 @@ async function promptQrAttendanceAction(phone, employee, selectedSede = null) {
   const freshEmployee = await reloadEmployeeForAttendance(employee);
   const sedeCodigo = selectedSede?.codigo || freshEmployee?.sede_codigo || null;
   const sedeNombre = selectedSede?.nombre || freshEmployee?.sede_nombre || null;
-  if (!sedeCodigo) {
+  if (!sedeCodigo && !freshEmployee?.isSupernumerario) {
     throw new Error(`attendance_missing_sede:${freshEmployee?.id || 'no_id'}:${freshEmployee?.documento || 'no_doc'}`);
   }
 
@@ -2284,7 +2543,7 @@ async function promptQrAttendanceAction(phone, employee, selectedSede = null) {
     }
   });
 
-  await sendButtons(phone, `La sede ${sedeNombre || sedeCodigo} usa registro por QR.\n\nQue deseas registrar?`, [
+  await sendButtons(phone, `Registro de asistencia por turno.\n\nQue deseas registrar?`, [
     { id: MENU_IDS.QR_ENTRY, title: 'Ingreso' },
     { id: MENU_IDS.QR_EXIT, title: 'Salida' }
   ]);
@@ -2311,12 +2570,20 @@ async function handleQrAttendanceAction(phone, session, parsed) {
   const selectedSede = session?.session_data?.selectedSede || null;
   const freshEmployee = await reloadEmployeeForAttendance(employee);
   const documento = normalizeDocument(freshEmployee?.documento);
-  try {
-    await validateQrActionAvailability({
-      action,
-      fecha: currentDate(),
-      documento
+  if (freshEmployee.isSupernumerario && !freshEmployee.marcacionMovil && action === 'entry') {
+    await assertNoOpenMobileShift(freshEmployee.id);
+    await storeSession(phone, {
+      employee_id: freshEmployee.id, documento: freshEmployee.documento,
+      session_state: SESSION.AWAITING_QR_LOCATION,
+      session_data: { employee: sessionEmployee(freshEmployee), pendingQrAction: action, pendingShiftId: null }
     });
+    await sendText(phone, 'Comparte tu ubicación actual para identificar la sede donde vas a trabajar y registrar el ingreso al turno.');
+    return;
+  }
+  let shift;
+  try {
+    shift = await resolveAttendanceShift(freshEmployee, freshEmployee.marcacionMovil || freshEmployee.isSupernumerario ? null : selectedSede?.codigo || null, action);
+    await validateQrActionAvailability({ action, documento, turnoId: shift.id });
   } catch (error) {
     if (String(error?.message || '') === 'entry_exists') {
       await storeSession(phone, {
@@ -2325,11 +2592,11 @@ async function handleQrAttendanceAction(phone, session, parsed) {
         session_state: SESSION.COMPLETED,
         session_data: { employee: sessionEmployee(freshEmployee) }
       });
-      await sendText(phone, 'Ya tienes un ingreso registrado para hoy. Si necesitas marcar salida, escribe "Hola" y selecciona Salida.');
+      await sendText(phone, 'Ya tienes un ingreso registrado para este turno. Si necesitas marcar salida, escribe "Hola" y selecciona Salida.');
       return;
     }
     if (String(error?.message || '') === 'exit_requires_entry') {
-      await sendText(phone, 'No encontramos un ingreso registrado para hoy. Primero debes registrar Ingreso.');
+      await sendText(phone, 'No encontramos un ingreso pendiente de salida para esta sede. Primero debes registrar Ingreso.');
       return;
     }
     if (String(error?.message || '') === 'exit_exists') {
@@ -2339,12 +2606,14 @@ async function handleQrAttendanceAction(phone, session, parsed) {
         session_state: SESSION.COMPLETED,
         session_data: { employee: sessionEmployee(freshEmployee) }
       });
-      await sendText(phone, 'Ya tienes una salida registrada para hoy. No es necesario generar otro QR.');
+      await sendText(phone, 'Ya tienes una salida registrada para este turno.');
       return;
     }
     throw error;
   }
 
+  const options = await attendanceSiteOptions(freshEmployee.id, shift.id);
+  if (options.mobile && action === 'entry') await assertNoOpenMobileShift(freshEmployee.id);
   await storeSession(phone, {
     employee_id: freshEmployee.id,
     documento: freshEmployee.documento,
@@ -2352,12 +2621,18 @@ async function handleQrAttendanceAction(phone, session, parsed) {
     session_data: {
       ...(session.session_data || {}),
       employee: sessionEmployee(freshEmployee),
-      selectedSede,
-      pendingQrAction: action
+      selectedSede: { codigo: shift.sedeCodigo, nombre: shift.sedeNombre },
+      pendingQrAction: action,
+      pendingShiftId: shift.id
     }
   });
 
-  await sendText(phone, 'Para generar el QR comparte tu ubicacion actual desde WhatsApp. Debes estar a maximo 500 metros de la sede.');
+  if (options.mobile) {
+    await sendText(phone, `Para registrar ${action === 'exit' ? 'salida' : 'ingreso'} del turno ${shift.nombre || ''}, comparte tu ubicación actual. Identificaremos la sede de tu zona donde te encuentras. Tu turno sigue asignado a ${shift.sedeNombre || shift.sedeCodigo}.`);
+    return;
+  }
+  const sede = await getSedeByCode(shift.sedeCodigo);
+  await sendText(phone, `Para registrar ${action === 'exit' ? 'salida' : 'ingreso'} del turno ${shift.nombre || ''} (${shift.fechaOperativa}) en ${sede?.nombre || shift.sedeCodigo}, comparte tu ubicacion actual desde WhatsApp. Debes estar a maximo ${attendanceRadius(sede)} metros de la sede.`);
 }
 
 async function handleQrLocationInput(phone, session, parsed) {
@@ -2370,97 +2645,165 @@ async function handleQrLocationInput(phone, session, parsed) {
 
   const location = parsed.location || null;
   if (!location) {
-    await sendText(phone, 'Por favor comparte tu ubicacion actual usando la opcion Ubicacion de WhatsApp para generar el QR.');
+    await sendText(phone, 'Por favor comparte tu ubicacion actual usando la opcion Ubicacion de WhatsApp para registrar tu asistencia.');
     return;
   }
   if (parsed.forwarded) {
-    await sendText(phone, 'Recibimos una ubicacion reenviada. Para generar el QR debes compartir tu ubicacion actual directamente desde WhatsApp.');
+    await sendText(phone, 'Recibimos una ubicacion reenviada. Para registrar tu asistencia debes compartir tu ubicacion actual directamente desde WhatsApp.');
     return;
   }
   if (isNamedLocation(location)) {
-    await sendText(phone, 'Recibimos una ubicacion con nombre o direccion, que puede corresponder a una busqueda. Para generar el QR comparte tu ubicacion actual desde WhatsApp, sin seleccionar una direccion del mapa.');
+    await sendText(phone, 'Recibimos una ubicacion con nombre o direccion, que puede corresponder a una busqueda. Para registrar tu asistencia comparte tu ubicacion actual desde WhatsApp, sin seleccionar una direccion del mapa.');
     return;
   }
 
   const action = String(session?.session_data?.pendingQrAction || '').trim();
   if (!['entry', 'exit'].includes(action)) {
     await resetSession(phone, session, {});
-    await sendText(phone, 'No encontramos la accion QR pendiente. Escribe "Hola" para iniciar de nuevo.');
+    await sendText(phone, 'No encontramos la marcacion pendiente. Escribe "Hola" para iniciar de nuevo.');
     return;
   }
 
-  const selectedSede = session?.session_data?.selectedSede || null;
-  const sedeCodigo = selectedSede?.codigo || employee?.sede_codigo || null;
-  const sede = await getSedeByCode(sedeCodigo);
-  const validation = validateQrLocationForSede(location, sede);
-  if (!validation.ok) {
-    await sendText(phone, validation.message);
+  const { shift, options } = await locatedMarkingContext(employee, session.session_data || {});
+  const candidates = options.sites.filter(site => validateAttendanceLocation(location, site).ok);
+  if (!candidates.length) {
+    const message = options.supernumerario
+      ? 'Tu ubicación no corresponde a una sede activa de tus contratos habilitados. Acércate a la sede donde vas a trabajar y comparte nuevamente tu ubicación actual.'
+      : options.mobile
+      ? 'Tu ubicación no corresponde a una sede habilitada de tu zona y contrato. Acércate a una sede autorizada y comparte nuevamente tu ubicación actual.'
+      : validateAttendanceLocation(location, options.sites[0]).message;
+    await sendText(phone, message);
     return;
   }
+  const verifiedAt = new Date().toISOString();
+  if (candidates.length > 1) {
+    await storeSession(phone, { session_state: SESSION.AWAITING_MARKING_SITE,
+      session_data: { ...session.session_data, markingLocation: location, markingVerifiedAt: verifiedAt,
+        markingSiteCodes: candidates.map(site => site.codigo), markingSitePage: 0 } });
+    await sendMarkingSiteList(phone, candidates, 0);
+    return;
+  }
+  await completeLocatedMarking(phone, session, employee, shift, candidates[0], location, verifiedAt);
+}
 
-  try {
-    await sendAttendanceQr(phone, employee, action, selectedSede, {
-      latitude: location.latitude,
-      longitude: location.longitude,
-      distanceMeters: validation.distanceMeters
-    });
-  } catch (error) {
-    console.error('Error generando QR despues de validar ubicacion:', error);
-    await sendText(phone, userMessageForProcessingError(error));
-    error.userNotified = true;
-    throw error;
+// A covering supernumerario chooses the working shift AFTER geolocation identifies the site.
+async function locatedMarkingContext(employee, saved) {
+  if (!saved.pendingShiftId && saved.pendingQrAction === 'entry' && employee.isSupernumerario && !employee.marcacionMovil) {
+    return { shift: null, options: { supernumerario: true, sites: await supernumerarioLocationSites(employee) } };
+  }
+  const shift = await getScheduledShiftById(saved.pendingShiftId);
+  if (!shift || shift.estado === 'cancelado') throw qrError('attendance_shift_missing', 409);
+  return { shift, options: await attendanceSiteOptions(employee.id, shift.id) };
+}
+
+async function supernumerarioContractCodes(employee) {
+  const { data, error } = await supabaseAdmin.rpc('supernumerario_contract_codes', {
+    p_employee_id: employee.id, p_documento: employee.documento, p_fecha: currentDate()
+  });
+  if (error) throw error;
+  return Array.isArray(data) ? data : [];
+}
+
+async function supernumerarioLocationSites(employee) {
+  const codes = await supernumerarioContractCodes(employee);
+  if (!codes.length) return [];
+  const sites = [];
+  for (let offset = 0; ; offset += 500) {
+    const { data, error } = await supabaseAdmin.from('sedes')
+      .select('codigo,nombre,contrato_codigo,qr_latitude,qr_longitude,qr_radius_meters,qr_enabled')
+      .eq('estado', 'activo').in('contrato_codigo', codes).order('codigo').range(offset, offset + 499);
+    if (error) throw error;
+    sites.push(...(data || []));
+    if (!data || data.length < 500) return sites;
   }
 }
 
-function validateQrLocationForSede(location, sede) {
-  const sedeLat = Number(sede?.qr_latitude);
-  const sedeLng = Number(sede?.qr_longitude);
-  const userLat = Number(location?.latitude);
-  const userLng = Number(location?.longitude);
-  const radius = Number(sede?.qr_radius_meters || 500);
+async function validateSupernumerarioEntrySite(employee, sedeCodigo) {
+  if (!employee?.isSupernumerario || employee.marcacionMovil) return;
+  const [codes, site] = await Promise.all([supernumerarioContractCodes(employee), getSedeByCode(sedeCodigo)]);
+  if (!site || site.estado !== 'activo' || !codes.includes(site.contrato_codigo)) throw qrError('attendance_site_forbidden', 403);
+}
 
-  if (!Number.isFinite(sedeLat) || !Number.isFinite(sedeLng)) {
-    return {
-      ok: false,
-      message: 'Esta sede tiene QR activo pero no tiene latitud/longitud configurada. Comunicate con el supervisor.'
-    };
-  }
-  if (!Number.isFinite(userLat) || !Number.isFinite(userLng)) {
-    return {
-      ok: false,
-      message: 'No pudimos leer tu ubicacion. Por favor comparte tu ubicacion actual desde WhatsApp.'
-    };
-  }
+async function attendanceSiteOptions(employeeId, shiftId) {
+  const { data, error } = await supabaseAdmin.rpc('attendance_site_options', { p_employee_id: employeeId, p_shift_id: shiftId });
+  if (error) throw error;
+  return { mobile: data?.mobile === true, sites: Array.isArray(data?.sites) ? data.sites : [] };
+}
 
-  const distanceMeters = Math.round(distanceBetweenMeters(userLat, userLng, sedeLat, sedeLng));
-  if (distanceMeters > radius) {
-    return {
-      ok: false,
-      distanceMeters,
-      message: `Tu ubicacion esta a ${distanceMeters} metros de la sede. El maximo permitido es ${radius} metros. Comparte tu ubicacion actual cuando estes en la sede.`
-    };
-  }
+async function assertNoOpenMobileShift(employeeId) {
+  const { data, error } = await supabaseAdmin.from('employee_shift_status').select('id')
+    .eq('employee_id', employeeId).not('entrada_at', 'is', null).is('salida_at', null).neq('estado_turno', 'cancelado').limit(1);
+  if (error) throw error;
+  if (data?.length) throw qrError('attendance_open_shift', 409);
+}
 
-  return { ok: true, distanceMeters };
+async function sendMarkingSiteList(phone, sites, page) {
+  const rows = sites.slice(page * 9, page * 9 + 9).map(site => ({ id: `marking_site:${site.codigo}`, title: String(site.nombre || site.codigo).slice(0, 24), description: String(site.codigo).slice(0, 72) }));
+  if (sites.length > 9) rows.push({ id: 'marking_site:more', title: 'Ver más sedes' });
+  await sendList(phone, 'Hay varias sedes cercanas. Selecciona dónde estás realizando la marcación:', 'Seleccionar sede', [{ title: 'Sedes cercanas', rows }]);
+}
+
+async function handleMarkingSiteSelection(phone, session, parsed) {
+  if (parsed.location) return handleQrLocationInput(phone, session, parsed);
+  const saved = session.session_data || {};
+  const age = Date.now() - new Date(saved.markingVerifiedAt).getTime();
+  if (!Number.isFinite(age) || age < 0 || age > 5 * 60000) {
+    await storeSession(phone, { session_state: SESSION.AWAITING_QR_LOCATION, session_data: saved });
+    await sendText(phone, 'La ubicación venció. Comparte nuevamente tu ubicación actual.');
+    return;
+  }
+  const employee = await loadEmployeeFromSession(session);
+  if (!employee) throw qrError('employee_inactive', 409);
+  const { shift, options } = await locatedMarkingContext(employee, saved);
+  const sites = options.sites.filter(site => saved.markingSiteCodes?.includes(site.codigo) && validateAttendanceLocation(saved.markingLocation, site).ok);
+  if (parsed.id === 'marking_site:more' && sites.length) {
+    const page = ((saved.markingSitePage || 0) + 1) % Math.ceil(sites.length / 9);
+    await storeSession(phone, { session_state: SESSION.AWAITING_MARKING_SITE, session_data: { ...saved, markingSitePage: page } });
+    await sendMarkingSiteList(phone, sites, page);
+    return;
+  }
+  const site = sites.find(site => parsed.id === `marking_site:${site.codigo}`);
+  if (!site) { await sendText(phone, 'Selecciona una sede válida o comparte nuevamente tu ubicación actual.'); return; }
+  await completeLocatedMarking(phone, session, employee, shift, site, saved.markingLocation, saved.markingVerifiedAt);
+}
+
+async function completeLocatedMarking(phone, session, employee, shift, sede, location, verifiedAt) {
+  const action = session.session_data.pendingQrAction;
+  if (!['entry', 'exit'].includes(action)) throw qrError('invalid_marking', 400);
+  if (!shift) {
+    if (action !== 'entry' || !employee.isSupernumerario || employee.marcacionMovil) throw qrError('attendance_shift_missing', 409);
+    await assertNoOpenMobileShift(employee.id);
+    await validateSupernumerarioEntrySite(employee, sede.codigo);
+    shift = await resolveAttendanceShift(employee, sede.codigo, 'entry');
+  }
+  if (action === 'entry') selectAttendanceShift([shift]);
+  await validateQrActionAvailability({ action, documento: employee.documento, turnoId: shift.id });
+  const validation = validateAttendanceLocation(location, sede);
+  if (!validation.ok) { await sendText(phone, validation.message); return; }
+  const proof = { latitude: Number(location.latitude), longitude: Number(location.longitude), distanceMeters: validation.distanceMeters, verifiedAt };
+  if (sede.qr_enabled === true) {
+    await sendAttendanceQr(phone, employee, action, sede, proof, shift);
+    return;
+  }
+  const result = await registerAttendanceEvent({ employee, method: 'location', tokenRow: {
+    action, turno_id: shift.id, fecha: shift.fechaOperativa, fecha_operativa: shift.fechaOperativa,
+    employee_id: employee.id, documento: normalizeDocument(employee.documento), nombre: employee.nombre,
+    sede_codigo: sede.codigo, sede_nombre: sede.nombre, phone_number: getSessionPhone(session) || normalizePhone(phone),
+    whatsapp_recipient: phone,
+    request_latitude: proof.latitude, request_longitude: proof.longitude,
+    request_distance_meters: proof.distanceMeters, location_verified_at: proof.verifiedAt
+  }});
+  await storeSession(phone, { employee_id: employee.id, documento: employee.documento,
+    session_state: SESSION.COMPLETED, session_data: { employee: sessionEmployee(employee) } });
+  await sendText(phone, `${action === 'exit' ? 'Salida' : 'Ingreso'} registrado correctamente.\nSede de marcación: ${sede.nombre || sede.codigo}\nTurno: ${shift.nombre || ''} (${shift.fechaOperativa})\nSede del turno: ${shift.sedeNombre || shift.sedeCodigo}\nHora: ${new Date(result.eventAt).toLocaleTimeString('es-CO', { timeZone: 'America/Bogota', hour12: false })}\nUbicación validada: ${proof.distanceMeters} m.`);
+  if (result.reasonRequest) await notifyAttendanceReason(result.reasonRequest);
 }
 
 function isNamedLocation(location = {}) {
   return Boolean(String(location?.name || '').trim() || String(location?.address || '').trim());
 }
 
-function distanceBetweenMeters(latA, lngA, latB, lngB) {
-  const earthRadiusMeters = 6371000;
-  const toRadians = (value) => Number(value) * Math.PI / 180;
-  const deltaLat = toRadians(latB - latA);
-  const deltaLng = toRadians(lngB - lngA);
-  const startLat = toRadians(latA);
-  const endLat = toRadians(latB);
-  const a = Math.sin(deltaLat / 2) ** 2
-    + Math.cos(startLat) * Math.cos(endLat) * Math.sin(deltaLng / 2) ** 2;
-  return earthRadiusMeters * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-
-async function sendAttendanceQr(phone, employee, action, selectedSede = null, locationProof = null) {
+async function sendAttendanceQr(phone, employee, action, selectedSede = null, locationProof = null, shift = null) {
   const freshEmployee = await reloadEmployeeForAttendance(employee);
   const session = await getSession(phone);
   const contactPhone = getSessionPhone(session) || normalizePhone(phone) || null;
@@ -2470,10 +2813,24 @@ async function sendAttendanceQr(phone, employee, action, selectedSede = null, lo
   if (!documento || !freshEmployee?.id) throw new Error('missing_employee_identity');
   if (!sedeCodigo) throw new Error(`attendance_missing_sede:${freshEmployee?.id || 'no_id'}:${documento || 'no_doc'}`);
 
+  if (!shift?.id) throw qrError('attendance_shift_missing', 409);
+  if (action === 'entry') {
+    await validateSupernumerarioEntrySite(freshEmployee, shift.sedeCodigo);
+    if (freshEmployee.isSupernumerario && !freshEmployee.marcacionMovil) await assertNoOpenMobileShift(freshEmployee.id);
+  }
+  const options = await attendanceSiteOptions(freshEmployee.id, shift.id);
+  if (!options.sites.some(site => site.codigo === sedeCodigo)) throw qrError('attendance_site_forbidden', 403);
+  if (options.mobile && action === 'entry') await assertNoOpenMobileShift(freshEmployee.id);
+  if (!(await isQrEnabledForSede(sedeCodigo))) throw qrError('qr_disabled', 409);
   const token = createQrToken();
-  const date = currentDate();
+  const date = shift.fechaOperativa;
+  const contractContext = await resolveBackendContractContext({
+    sedeCodigo: shift.sedeCodigo
+  });
   const { data, error } = await supabaseAdmin.from('attendance_qr_tokens').insert({
     token_hash: hashToken(token),
+    turno_id: shift.id,
+    fecha_operativa: date,
     action,
     fecha: date,
     employee_id: freshEmployee.id,
@@ -2481,11 +2838,13 @@ async function sendAttendanceQr(phone, employee, action, selectedSede = null, lo
     nombre: freshEmployee.nombre || null,
     sede_codigo: sedeCodigo,
     sede_nombre: sedeNombre || null,
+    ...contractContext,
     phone_number: contactPhone,
+    whatsapp_recipient: phone,
     request_latitude: typeof locationProof?.latitude === 'number' ? locationProof.latitude : null,
     request_longitude: typeof locationProof?.longitude === 'number' ? locationProof.longitude : null,
     request_distance_meters: Number.isFinite(Number(locationProof?.distanceMeters)) ? Number(locationProof.distanceMeters) : null,
-    location_verified_at: new Date().toISOString(),
+    location_verified_at: locationProof.verifiedAt,
     expires_at: qrExpiresAtIso()
   }).select('id,expires_at').single();
   if (error) throw error;
@@ -2596,6 +2955,11 @@ async function registerNovelty(phone, employee, novelty, selectedSede = null, in
   if (!sedeCodigo) {
     throw new Error(`attendance_missing_sede:${freshEmployee.id || 'no_id'}:${documento || 'no_doc'}`);
   }
+  const contractContext = await resolveBackendContractContext({
+    employee: freshEmployee,
+    sedeRow: selectedSede,
+    sedeCodigo
+  });
 
   if (novelty.tracksIncapacity && incapacity?.startDate && incapacity?.endDate) {
     const overlapping = await findOverlappingIncapacity(documento, incapacity.startDate, incapacity.endDate);
@@ -2640,6 +3004,7 @@ async function registerNovelty(phone, employee, novelty, selectedSede = null, in
     nombre: freshEmployee.nombre,
     sede_codigo: sedeCodigo,
     sede_nombre: sedeNombre,
+    ...contractContext,
     asistio: [NOVELTIES.WORKING.code, NOVELTIES.COMPENSATORY.code].includes(novelty.code),
     novedad: novelty.code,
     ...shiftRegistrationFields(shiftResult, 'entry', eventAt)
@@ -2670,6 +3035,7 @@ async function registerNovelty(phone, employee, novelty, selectedSede = null, in
       nombre: freshEmployee.nombre,
       sede_codigo: sedeCodigo,
       sede_nombre: sedeNombre,
+      ...contractContext,
       estado: 'reportado_whatsapp',
       turno_id: shiftResult?.shift?.id || null,
       fecha_operativa: shiftResult?.shift?.fechaOperativa || date
@@ -2688,6 +3054,7 @@ async function registerNovelty(phone, employee, novelty, selectedSede = null, in
       fecha_fin: incapacity.endDate,
       estado: 'activo',
       source: novelty.label,
+      ...contractContext,
       canal_registro: 'whatsapp',
       whatsapp_message_id: `${attendanceId}_${novelty.code}`,
       origen_turno_id: shiftResult?.shift?.id || null,
@@ -2876,12 +3243,6 @@ async function refreshEmployeeDailyStatusSnapshot(date) {
 async function refreshOperationalSnapshotsFromEmployeeDailyStatus(date) {
   const day = String(date || '').trim();
   if (!day) return null;
-  if (await isOperationDayClosed(day)) {
-    const metrics = await fetchDailyMetricsRow(day);
-    return metrics ? { fecha: day, skipped: 'closed' } : null;
-  }
-
-  await refreshEmployeeDailyStatusSnapshot(day);
 
   const { data, error } = await supabaseAdmin.rpc('refresh_operational_snapshots_from_employee_daily_status', { p_fecha: day });
   if (error) throw error;
@@ -2906,13 +3267,18 @@ async function refreshOperationalState(date) {
 async function recomputeDailyMetrics(date) {
   const day = String(date || '').trim();
   if (!day) return null;
-  if (await isOperationDayClosed(day)) return fetchDailyMetricsRow(day);
 
-  await refreshEmployeeDailyStatusSnapshot(day);
-  const { data, error } = await supabaseAdmin.rpc('recompute_daily_metrics_from_employee_daily_status', { p_fecha: day });
-  if (error) throw error;
+  const data = await refreshOperationalSnapshotsFromEmployeeDailyStatus(day);
   await normalizeZeroDemandDailyMetrics(day);
   return (await fetchDailyMetricsRow(day)) || unwrapRpcSingleRow(data);
+}
+
+async function recomputeDailyContractMetrics(date) {
+  const day = String(date || '').trim();
+  if (!day) return 0;
+  const { data, error } = await supabaseAdmin.rpc('recompute_daily_contract_metrics_from_employee_daily_status', { p_fecha: day });
+  if (error) throw error;
+  return Number(data || 0);
 }
 
 async function recomputeSedeStatusSnapshot(date) {
@@ -3209,7 +3575,26 @@ function toISODate(value) {
 async function computeDailyClosureSummary(date) {
   const day = String(date || '').trim();
   if (!day) {
-    return { planeados: 0, contratados: 0, asistencias: 0, faltan: 0, sobran: 0, ausentismos: 0, noContratados: 0 };
+    return { planeados: 0, contratados: 0, asistencias: 0, pagados: 0, faltan: 0, sobran: 0, ausentismos: 0, noContratados: 0 };
+  }
+
+  const { data: contractRows, error: contractError } = await supabaseAdmin
+    .from('daily_contract_metrics')
+    .select('planeados, contratados, asistencias, ausentismos, pagados, no_contratados, faltan, sobran')
+    .eq('fecha', day);
+  if (contractError) throw contractError;
+  if ((contractRows || []).length) {
+    return (contractRows || []).reduce((acc, row) => {
+      acc.planeados += Number(row?.planeados || 0);
+      acc.contratados += Number(row?.contratados || 0);
+      acc.asistencias += Number(row?.asistencias || 0);
+      acc.ausentismos += Number(row?.ausentismos || 0);
+      acc.pagados += Number(row?.pagados || 0);
+      acc.noContratados += Number(row?.no_contratados || 0);
+      acc.faltan += Number(row?.faltan || 0);
+      acc.sobran += Number(row?.sobran || 0);
+      return acc;
+    }, { planeados: 0, contratados: 0, asistencias: 0, pagados: 0, faltan: 0, sobran: 0, ausentismos: 0, noContratados: 0 });
   }
 
   const [
@@ -3259,6 +3644,7 @@ async function computeDailyClosureSummary(date) {
     planeados: 0,
     contratados: 0,
     asistencias: 0,
+    pagados: 0,
     faltan: 0,
     sobran: 0,
     ausentismos: 0,
@@ -3273,6 +3659,7 @@ async function computeDailyClosureSummary(date) {
   }
 
   summary.noContratados = Math.max(0, summary.planeados - summary.contratados);
+  summary.pagados = summary.asistencias;
   return summary;
 }
 
@@ -3316,6 +3703,10 @@ async function computeDailySedeClosureSnapshot(date) {
       zona_nombre: sede?.zona_nombre || null,
       dependencia_codigo: sede?.dependencia_codigo || null,
       dependencia_nombre: sede?.dependencia_nombre || null,
+      contrato_codigo: sede?.contrato_codigo || null,
+      contrato_nombre: sede?.contrato_nombre || null,
+      cliente_nombre_snapshot: sede?.cliente_nombre_snapshot || null,
+      cliente_nit_snapshot: sede?.cliente_nit_snapshot || null,
       planeados,
       contratados,
       registrados,
@@ -3330,6 +3721,7 @@ async function persistDailySedeClosureSnapshot(day) {
   if (!snapshot.length) return [];
   const { error } = await supabaseAdmin.from('daily_sede_closures').upsert(snapshot, { onConflict: 'id' });
   if (error) throw error;
+  await refreshOperationalSnapshotsFromEmployeeDailyStatus(day);
   return snapshot;
 }
 
@@ -3382,7 +3774,7 @@ export async function closeOperationDay(date) {
       targetType: 'daily_closure',
       targetId: day,
       action: 'cron_close_stage_operational_snapshots',
-      note: 'Se consolidaron employee_daily_status, sede_status y daily_metrics para ' + day + '.'
+      note: 'Se consolidaron employee_daily_status, sede_status, daily_contract_metrics, daily_metrics y daily_sede_closures para ' + day + '.'
     });
 
     const metrics = (await fetchDailyMetricsRow(day)) || (await recomputeAndFetchDailyMetrics(day));
@@ -3398,6 +3790,11 @@ export async function closeOperationDay(date) {
     const closureSummary = await computeDailyClosureSummary(day);
     const sedeClosureSnapshot = await computeDailySedeClosureSnapshot(day);
 
+    if (sedeClosureSnapshot.length) {
+      const { error: sedeClosureError } = await supabaseAdmin.from('daily_sede_closures').upsert(sedeClosureSnapshot, { onConflict: 'id' });
+      if (sedeClosureError) throw sedeClosureError;
+    }
+
     const { error: closureError } = await supabaseAdmin
       .from('daily_closures')
       .upsert({
@@ -3409,6 +3806,7 @@ export async function closeOperationDay(date) {
         contratados: Number(closureSummary?.contratados ?? metrics?.expected ?? 0),
         asistencias: Number(closureSummary?.asistencias ?? 0),
         ausentismos: Number(closureSummary?.ausentismos ?? metrics?.absenteeism ?? 0),
+        pagados: Number(closureSummary?.pagados ?? metrics?.paid_services ?? metrics?.paidServices ?? 0),
         faltan: Number(closureSummary?.faltan ?? 0),
         sobran: Number(closureSummary?.sobran ?? 0),
         no_contratados: Number(closureSummary?.noContratados ?? metrics?.no_contracted ?? metrics?.noContracted ?? 0),
@@ -3417,18 +3815,15 @@ export async function closeOperationDay(date) {
       }, { onConflict: 'id' });
     if (closureError) throw closureError;
 
-    if (sedeClosureSnapshot.length) {
-      const { error: sedeClosureError } = await supabaseAdmin.from('daily_sede_closures').upsert(sedeClosureSnapshot, { onConflict: 'id' });
-      if (sedeClosureError) throw sedeClosureError;
-    }
+    const closedSnapshots = await refreshOperationalSnapshotsFromEmployeeDailyStatus(day);
 
     await insertSystemAuditLog({
       actorEmail: 'cron@system',
       targetType: 'daily_closure',
       targetId: day,
       action: 'cron_close_stage_closure_saved',
-      after: metrics,
-      note: 'Se guardo daily_closures para ' + day + '.'
+      after: { metrics, snapshots: closedSnapshots },
+      note: 'Se guardo daily_sede_closures, daily_closures y metricas por contrato para ' + day + '.'
     });
 
     await runPostClosureTasks(day);
@@ -3479,6 +3874,13 @@ async function runPostClosureTasks(day) {
     .update({ closed: true })
     .eq('fecha', day);
   if (metricCloseError) throw metricCloseError;
+
+  const { error: contractMetricCloseError } = await supabaseAdmin
+    .from('daily_contract_metrics')
+    .update({ closed: true })
+    .eq('fecha', day);
+  if (contractMetricCloseError) throw contractMetricCloseError;
+
   await propagateIncapacitiesToNextDay(day);
 }
 
@@ -3569,6 +3971,10 @@ async function finalizePendingAbsenteeismForClosure(day) {
     if (existingDecision === 'ausentismo') continue;
 
     const recordId = buildDailyRecordId(day, row?.documento, row?.empleado_id);
+    const contractContext = await resolveBackendContractContext({
+      tokenRow: row,
+      sedeCodigo: row?.sede_codigo
+    });
     const { error: replacementError } = await supabaseAdmin.from('import_replacements').upsert({
       id: recordId,
       fecha_operacion: day,
@@ -3578,6 +3984,7 @@ async function finalizePendingAbsenteeismForClosure(day) {
       nombre: row?.nombre || null,
       sede_codigo: row?.sede_codigo || null,
       sede_nombre: row?.sede_nombre || null,
+      ...contractContext,
       novedad_codigo: metricAttendanceNovedadCode(row) || null,
       novedad_nombre: row?.novedad || null,
       decision: 'ausentismo',
@@ -3594,6 +4001,7 @@ async function finalizePendingAbsenteeismForClosure(day) {
       nombre: row?.nombre || null,
       sede_codigo: row?.sede_codigo || null,
       sede_nombre: row?.sede_nombre || null,
+      ...contractContext,
       estado: 'confirmado',
       created_by_uid: null,
       created_by_email: 'cron@system'
@@ -3702,7 +4110,7 @@ async function materializeClosedOperationalAbsenteeismForClosure(day) {
 
   const { data: statusRows, error } = await supabaseAdmin
     .from('employee_daily_status')
-    .select('employee_id, documento, nombre, sede_codigo, sede_nombre_snapshot, novedad_codigo, novedad_nombre, tipo_personal, servicio_programado, cuenta_pago_servicio')
+    .select('employee_id, documento, nombre, sede_codigo, sede_nombre_snapshot, contrato_codigo, contrato_nombre, cliente_nombre_snapshot, cliente_nit_snapshot, novedad_codigo, novedad_nombre, tipo_personal, servicio_programado, cuenta_pago_servicio')
     .eq('fecha', day)
     .eq('tipo_personal', 'empleado')
     .eq('servicio_programado', true)
@@ -3714,6 +4122,12 @@ async function materializeClosedOperationalAbsenteeismForClosure(day) {
     const recordId = buildDailyRecordId(day, row?.documento, row?.employee_id);
     const novedadCodigo = String(row?.novedad_codigo || '').trim() || '8';
     const novedadNombre = String(row?.novedad_nombre || '').trim() || 'AUSENCIA NO JUSTIFICADA';
+    const contractContext = contractContextPayloadFrom({
+      contrato_codigo: row?.contrato_codigo,
+      contrato_nombre: row?.contrato_nombre,
+      cliente_nombre_snapshot: row?.cliente_nombre_snapshot,
+      cliente_nit_snapshot: row?.cliente_nit_snapshot
+    });
 
     const { error: replacementError } = await supabaseAdmin.from('import_replacements').upsert({
       id: recordId,
@@ -3724,6 +4138,7 @@ async function materializeClosedOperationalAbsenteeismForClosure(day) {
       nombre: row?.nombre || null,
       sede_codigo: row?.sede_codigo || null,
       sede_nombre: row?.sede_nombre_snapshot || null,
+      ...contractContext,
       novedad_codigo: novedadCodigo,
       novedad_nombre: novedadNombre,
       decision: 'ausentismo',
@@ -3740,6 +4155,7 @@ async function materializeClosedOperationalAbsenteeismForClosure(day) {
       nombre: row?.nombre || null,
       sede_codigo: row?.sede_codigo || null,
       sede_nombre: row?.sede_nombre_snapshot || null,
+      ...contractContext,
       estado: 'confirmado',
       created_by_uid: null,
       created_by_email: 'cron@system'
@@ -3841,6 +4257,10 @@ async function propagateIncapacitiesToNextDay(day) {
 
     const noveltyCode = incapacitySourceToNoveltyCode(incap?.source);
     const attendanceId = buildDailyRecordId(nextDay, documento, employee.id);
+    const contractContext = await resolveBackendContractContext({
+      employee,
+      sedeCodigo: employee.sede_codigo
+    });
     const { error: attendanceError } = await supabaseAdmin.from('attendance').upsert({
       id: attendanceId,
       fecha: nextDay,
@@ -3849,6 +4269,7 @@ async function propagateIncapacitiesToNextDay(day) {
       nombre: employee.nombre || null,
       sede_codigo: employee.sede_codigo || null,
       sede_nombre: employee.sede_nombre || null,
+      ...contractContext,
       asistio: false,
       novedad: noveltyCode
     }, { onConflict: 'id' });
@@ -3862,6 +4283,7 @@ async function propagateIncapacitiesToNextDay(day) {
       nombre: employee.nombre || null,
       sede_codigo: employee.sede_codigo || null,
       sede_nombre: employee.sede_nombre || null,
+      ...contractContext,
       estado: 'programado_incapacidad',
       created_by_uid: null,
       created_by_email: 'cron@system'
@@ -3897,7 +4319,7 @@ async function hydrateEmployee(row) {
   const employee = { ...row };
   employee.telefono = normalizePhone(employee.telefono);
   await applyEmployeeAssignmentForDate(employee, currentDate());
-  employee.isSupernumerario = await isEmployeeSupernumerario(employee);
+  Object.assign(employee, await loadEmployeeAttendanceSettings(employee));
   return employee;
 }
 
@@ -3928,7 +4350,7 @@ async function applyEmployeeAssignmentForDate(employee, date) {
 
   const { data, error } = await supabaseAdmin
     .from('employee_cargo_history')
-    .select('id, employee_id, cargo_codigo, cargo_nombre, sede_codigo, sede_nombre, fecha_ingreso, fecha_retiro, created_at')
+    .select('id, employee_id, cargo_codigo, cargo_nombre, sede_codigo, sede_nombre, contrato_codigo, contrato_nombre, cliente_nombre_snapshot, cliente_nit_snapshot, fecha_ingreso, fecha_retiro, created_at')
     .eq('employee_id', employeeId)
     .order('fecha_ingreso', { ascending: false })
     .limit(50);
@@ -3940,24 +4362,27 @@ async function applyEmployeeAssignmentForDate(employee, date) {
   employee.cargo_nombre = assignment.cargo_nombre || employee.cargo_nombre || null;
   employee.sede_codigo = assignment.sede_codigo || employee.sede_codigo || null;
   employee.sede_nombre = assignment.sede_nombre || employee.sede_nombre || null;
+  employee.contrato_codigo = assignment.contrato_codigo || employee.contrato_codigo || null;
+  employee.contrato_nombre = assignment.contrato_nombre || employee.contrato_nombre || null;
+  employee.cliente_nombre_snapshot = assignment.cliente_nombre_snapshot || employee.cliente_nombre_snapshot || null;
+  employee.cliente_nit_snapshot = assignment.cliente_nit_snapshot || employee.cliente_nit_snapshot || null;
   return employee;
 }
 
-async function isEmployeeSupernumerario(employee) {
+async function loadEmployeeAttendanceSettings(employee) {
   const cargoCodigo = String(employee?.cargo_codigo || '').trim();
   const cargoNombre = String(employee?.cargo_nombre || '').trim();
-  if (!cargoCodigo && !cargoNombre) return false;
+  if (!cargoCodigo && !cargoNombre) return { isSupernumerario: false, marcacionMovil: false };
 
-  let query = supabaseAdmin.from('cargos').select('codigo,nombre,alineacion_crud');
+  let query = supabaseAdmin.from('cargos').select('codigo,nombre,alineacion_crud,marcacion_movil');
   if (cargoCodigo) query = query.eq('codigo', cargoCodigo);
   else query = query.eq('nombre', cargoNombre);
   const { data, error } = await query.maybeSingle();
   if (error) throw error;
 
   const alignment = String(data?.alineacion_crud || '').trim().toLowerCase();
-  if (alignment === 'supernumerario') return true;
   const haystack = `${cargoCodigo} ${cargoNombre} ${data?.nombre || ''}`.toLowerCase();
-  return haystack.includes('supernumerar');
+  return { isSupernumerario: alignment === 'supernumerario' || haystack.includes('supernumerar'), marcacionMovil: data?.marcacion_movil === true };
 }
 
 async function findActiveIncapacity(documento, date) {

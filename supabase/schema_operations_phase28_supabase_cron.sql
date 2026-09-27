@@ -7,8 +7,8 @@ create extension if not exists pg_net;
 
 do $$
 declare
-  backend_base_url text := 'https://capcol-whatsapp-backend.vercel.app';
-  cron_secret text := 'capcol_cron_2026_seguro';
+  backend_base_url text := 'https://TU_BACKEND.vercel.app';
+  cron_secret text := 'TU_CRON_SECRET';
   close_shifts_url text;
   close_daily_url text;
 begin
@@ -50,7 +50,7 @@ begin
 
   perform cron.schedule(
     'rocky_close_daily_operation_legacy',
-    '0 18 * * *',
+    '10 7 * * *', -- 02:10 America/Bogota; franja de baja actividad de marcaciones.
     format(
       $cron$
         select net.http_get(

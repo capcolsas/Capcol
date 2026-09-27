@@ -1,0 +1,53 @@
+.rotation-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.info-modal:has(.rotation-preview){width:min(1120px,calc(100vw - 32px));max-width:calc(100vw - 32px)}
+.info-modal:has(.rotation-editor){width:min(800px,calc(100vw - 32px));max-width:calc(100vw - 32px)}
+.rotation-heading h2{margin:0}
+.rotation-page{min-width:0}
+.rotation-page>p[role="status"]:empty{display:none}
+.rotation-page>.rotation-heading{margin-bottom:.75rem}
+.rotation-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.rotation-field{display:grid;gap:5px;font-size:13px;min-width:0}
+.rotation-editor h4{margin:18px 0 10px}
+.rotation-step{display:grid;grid-template-columns:70px minmax(0,1fr) 36px;align-items:center;gap:8px;margin-bottom:8px}
+.rotation-member{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid var(--color-border)}
+.rotation-member label{display:flex;align-items:center;gap:8px;overflow-wrap:anywhere;min-width:0}
+.rotation-member input[type=checkbox]{width:18px;height:18px;flex:0 0 18px}
+.rotation-calendar{font-size:12px}
+.rotation-calendar td{min-width:104px;vertical-align:top}
+.rotation-calendar strong,.rotation-calendar small{display:block;margin:2px 0;white-space:normal}
+.rotation-calendar th:first-child{min-width:150px}
+.rotation-week{margin:0 0 20px}
+.rotation-week__head{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin:0 0 8px}
+.rotation-week__head h4{margin:0}
+.rotation-nav{display:flex;align-items:center;gap:6px}
+.rotation-rest-days,.rotation-cell__time,.rotation-cell__muted,.rotation-cell--outside{color:var(--color-muted);font-weight:400}
+.rotation-cell__hours{font-weight:600}
+.rotation-coverage th,.rotation-coverage td{font-weight:600;background:var(--color-surface-alt)}
+.rotation-cell--rest{background:color-mix(in srgb,var(--color-primary) 8%,var(--color-surface))}
+.rotation-alert{color:#bc3f30}
+html[data-theme="dark"] .rotation-alert,html[data-theme="dark"] .rotation-total--extra strong{color:#f08a7c}
+.rotation-total{min-width:150px}
+.rotation-total progress{display:block;width:100%;height:6px;margin:4px 0;border:0;border-radius:4px;accent-color:var(--color-primary)}
+.rotation-total--extra progress{accent-color:#bc3f30}
+.rotation-total--extra strong{color:#bc3f30}
+.rotation-total--completo progress{accent-color:#257548}
+.rotation-toggle{display:flex;align-items:center;gap:8px}
+.rotation-toggle input[type=checkbox]{width:18px;height:18px;flex:0 0 18px}
+.rotation-unavailable{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr) minmax(0,1fr) 36px;align-items:end;gap:8px;margin-bottom:12px}
+@media(max-width:540px){.rotation-unavailable{grid-template-columns:minmax(0,1fr)}.rotation-unavailable .btn--icon{justify-self:end}}
+.rotation-preview,.rotation-preview>div{min-width:0}
+.rotation-preview .rotation-heading .input{width:160px}
+@media(max-width:540px){.rotation-fields{grid-template-columns:minmax(0,1fr)}.rotation-member{grid-template-columns:minmax(0,1fr)}.rotation-step{grid-template-columns:60px minmax(0,1fr) 36px}}
+.rotation-cell--draggable{cursor:grab}
+.rotation-cell--draggable:active{cursor:grabbing}
+.rotation-cell--drop{outline:2px dashed var(--color-primary);outline-offset:-3px;background:color-mix(in srgb,var(--color-primary) 12%,var(--color-surface))}
+.rotation-cell__actions{display:flex;gap:.25rem;justify-content:center;margin-top:.25rem}
+.rotation-coverage-table th,.rotation-coverage-table td{text-align:center}
+.rotation-coverage-table tbody th{text-align:left}
+.rotation-coverage-cell--ok{color:#1f7a4d;font-weight:600}
+.rotation-coverage-cell--falta{color:#bc3f30;font-weight:700;background:color-mix(in srgb,#bc3f30 10%,var(--color-surface))}
+.rotation-coverage-cell--sobra{color:#9a6a00;font-weight:600;background:color-mix(in srgb,#d9a400 12%,var(--color-surface))}
+.rotation-coverage-cell--sin{color:var(--color-text-muted,#6b7280)}
+html[data-theme="dark"] .rotation-coverage-cell--falta{color:#f08a7c}
+html[data-theme="dark"] .rotation-coverage-cell--ok{color:#6fcf97}
+html[data-theme="dark"] .rotation-coverage-cell--sobra{color:#f2c94c}

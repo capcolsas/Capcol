@@ -9,12 +9,15 @@ import {
   wazeDirectionsUrl
 } from '../utils/sedeLocation.js';
 import { can, PERMS } from '../permissions.js';
+import { subscribe } from '../state.js';
+import { contractMatches } from '../utils/contractScope.js';
 
 const DEFAULT_CENTER = [4.570868, -74.297333];
 const DEFAULT_OSM_EMBED_URL = 'https://www.openstreetmap.org/export/embed.html?bbox=-79.2%2C-4.5%2C-66.8%2C13.6&layer=mapnik&marker=4.570868%2C-74.297333';
 
-export const SedeLocationsAdmin = (mount, deps = {}) => {
-  const canEdit = can(PERMS.EDIT_SEDES);
+export const SedeLocationsAdmin = (mount, deps = {}, options = {}) => {
+  const canEdit = options.readOnly !== true && can(PERMS.EDIT_SEDES);
+  const matchesContract = options.matchesContract || contractMatches;
   const ui = el('section', { className: 'main-card sede-location-page' }, [
     el('h2', {}, ['Ubicacion de sedes']),
     el('div', { className: 'sede-location-toolbar form-row' }, [
@@ -25,17 +28,7 @@ export const SedeLocationsAdmin = (mount, deps = {}) => {
         el('option', { value: '' }, ['Todos']),
         el('option', { value: 'activo' }, ['Activos']),
         el('option', { value: 'inactivo' }, ['Inactivos'])
-      ])),
-      field('Ubicacion', el('select', { id: 'sedeLocationMode', className: 'select' }, [
-        el('option', { value: '' }, ['Todas']),
-        el('option', { value: 'located' }, ['Con ubicacion']),
-        el('option', { value: 'missing' }, ['Sin ubicacion'])
       ]))
-    ]),
-    el('div', { className: 'sede-location-stats mt-2' }, [
-      statTile('Ubicadas', '0', 'located'),
-      statTile('Sin ubicacion', '0', 'missing'),
-      statTile('Filtradas', '0', 'filtered')
     ]),
     el('section', { className: 'sede-location-map-panel mt-2' }, [
       el('div', { id: 'sedeLocationMap', className: 'sede-location-map', role: 'img', 'aria-label': 'Mapa de sedes' }, [
@@ -50,6 +43,7 @@ export const SedeLocationsAdmin = (mount, deps = {}) => {
           el('table', { className: 'table', id: 'tblSedeLocations' }, [
             el('thead', {}, [el('tr', {}, [
               el('th', {}, ['Sede']),
+              el('th', {}, ['Contrato']),
               el('th', {}, ['Zona']),
               el('th', {}, ['Dependencia']),
               el('th', {}, ['Ubicacion']),
@@ -71,6 +65,7 @@ export const SedeLocationsAdmin = (mount, deps = {}) => {
           el('table', { className: 'table', id: 'tblSedeLocationsMissing' }, [
             el('thead', {}, [el('tr', {}, [
               el('th', {}, ['Sede']),
+              el('th', {}, ['Contrato']),
               el('th', {}, ['Zona']),
               el('th', {}, ['Dependencia']),
               el('th', {}, ['Estado']),
@@ -98,7 +93,6 @@ export const SedeLocationsAdmin = (mount, deps = {}) => {
   const zoneSelect = qs('#sedeLocationZone', ui);
   const dependencySelect = qs('#sedeLocationDependency', ui);
   const statusSelect = qs('#sedeLocationStatus', ui);
-  const modeSelect = qs('#sedeLocationMode', ui);
   const mapNode = qs('#sedeLocationMap', ui);
   const mapMsg = qs('#sedeLocationMapMsg', ui);
   const locatedBody = qs('#tblSedeLocations tbody', ui);
@@ -106,7 +100,7 @@ export const SedeLocationsAdmin = (mount, deps = {}) => {
   const missingBody = qs('#tblSedeLocationsMissing tbody', ui);
   const missingCards = qs('#sedeLocationMissingCards', ui);
 
-  [searchInput, zoneSelect, dependencySelect, statusSelect, modeSelect].forEach((node) => {
+  [searchInput, zoneSelect, dependencySelect, statusSelect].forEach((node) => {
     node?.addEventListener('input', render);
     node?.addEventListener('change', render);
   });
@@ -128,12 +122,17 @@ export const SedeLocationsAdmin = (mount, deps = {}) => {
     dependencies = Array.isArray(rows) ? rows : [];
     syncFilterOptions();
   }) || (() => {});
+  const unSelectedContract = subscribe('selectedContractCode', () => {
+    syncFilterOptions();
+    render();
+  });
 
   return () => {
     disposed = true;
     unSedes?.();
     unZones?.();
     unDependencies?.();
+    unSelectedContract?.();
     if (map) {
       map.remove();
       map = null;
@@ -147,17 +146,14 @@ export const SedeLocationsAdmin = (mount, deps = {}) => {
     ]);
   }
 
-  function statTile(label, value, key) {
-    return el('div', { className: `sede-location-stat sede-location-stat--${key}` }, [
-      el('span', { className: 'sede-location-stat__label' }, [label]),
-      el('strong', { id: `sedeLocationStat${capitalize(key)}`, className: 'sede-location-stat__value' }, [value])
-    ]);
+  function syncFilterOptions() {
+    replaceOptions(zoneSelect, [{ value: '', label: 'Todas' }, ...catalogOptions(scopedCatalog(zones))]);
+    replaceOptions(dependencySelect, [{ value: '', label: 'Todas' }, ...catalogOptions(scopedCatalog(dependencies))]);
+    render();
   }
 
-  function syncFilterOptions() {
-    replaceOptions(zoneSelect, [{ value: '', label: 'Todas' }, ...catalogOptions(zones)]);
-    replaceOptions(dependencySelect, [{ value: '', label: 'Todas' }, ...catalogOptions(dependencies)]);
-    render();
+  function scopedCatalog(rows = []) {
+    return (rows || []).filter((row) => matchesContract(row));
   }
 
   function catalogOptions(rows = []) {
@@ -182,9 +178,6 @@ export const SedeLocationsAdmin = (mount, deps = {}) => {
     const rows = filteredSedes();
     const locatedRows = rows.filter((sede) => sedeCoordinates(sede));
     const missingRows = rows.filter((sede) => !sedeCoordinates(sede));
-    setStat('Located', locatedRows.length);
-    setStat('Missing', missingRows.length);
-    setStat('Filtered', rows.length);
     renderLocatedList(locatedRows);
     renderMissingList(missingRows);
     renderMapMarkers(locatedRows);
@@ -195,17 +188,14 @@ export const SedeLocationsAdmin = (mount, deps = {}) => {
     const zone = String(zoneSelect?.value || '').trim();
     const dependency = String(dependencySelect?.value || '').trim();
     const status = String(statusSelect?.value || '').trim();
-    const mode = String(modeSelect?.value || '').trim();
     return [...sedes]
+      .filter((sede) => matchesContract(sede))
       .filter((sede) => {
-        const hasLocation = Boolean(sedeCoordinates(sede));
-        if (mode === 'located' && !hasLocation) return false;
-        if (mode === 'missing' && hasLocation) return false;
         if (zone && String(sede.zonaCodigo || '').trim() !== zone) return false;
         if (dependency && String(sede.dependenciaCodigo || '').trim() !== dependency) return false;
         if (status && String(sede.estado || '').trim() !== status) return false;
         if (!term) return true;
-        const blob = [sede.codigo, sede.nombre, sede.zonaNombre, sede.zonaCodigo, sede.dependenciaNombre, sede.dependenciaCodigo].join(' ');
+        const blob = [sede.codigo, sede.nombre, sede.contratoCodigo, sede.contratoNombre, sede.clienteNombreSnapshot, sede.zonaNombre, sede.zonaCodigo, sede.dependenciaNombre, sede.dependenciaCodigo].join(' ');
         return normalize(blob).includes(term);
       })
       .sort((a, b) => String(a.nombre || a.codigo || '').localeCompare(String(b.nombre || b.codigo || '')));
@@ -213,7 +203,7 @@ export const SedeLocationsAdmin = (mount, deps = {}) => {
 
   function renderLocatedList(rows = []) {
     locatedBody.replaceChildren(...(rows.length ? rows.map((sede) => sedeLocationRow(sede)) : [
-      el('tr', {}, [el('td', { colSpan: 6, className: 'text-muted' }, ['Sin sedes ubicadas para estos filtros.'])])
+      el('tr', {}, [el('td', { colSpan: 7, className: 'text-muted' }, ['Sin sedes ubicadas para estos filtros.'])])
     ]));
     locatedCards.replaceChildren(...(rows.length ? rows.map((sede) => sedeLocationCard(sede)) : [
       el('p', { className: 'text-muted record-card__empty' }, ['Sin sedes ubicadas para estos filtros.'])
@@ -222,7 +212,7 @@ export const SedeLocationsAdmin = (mount, deps = {}) => {
 
   function renderMissingList(rows = []) {
     missingBody.replaceChildren(...(rows.length ? rows.map((sede) => missingSedeRow(sede)) : [
-      el('tr', {}, [el('td', { colSpan: 5, className: 'text-muted' }, ['Sin sedes pendientes.'])])
+      el('tr', {}, [el('td', { colSpan: 6, className: 'text-muted' }, ['Sin sedes pendientes.'])])
     ]));
     missingCards.replaceChildren(...(rows.length ? rows.map((sede) => missingSedeCard(sede)) : [
       el('p', { className: 'text-muted record-card__empty' }, ['Sin sedes pendientes.'])
@@ -233,6 +223,7 @@ export const SedeLocationsAdmin = (mount, deps = {}) => {
     const coords = sedeCoordinates(sede);
     return el('tr', {}, [
       el('td', {}, [sedeNameNode(sede)]),
+      el('td', {}, [contractLabel(sede)]),
       el('td', {}, [sede.zonaNombre || sede.zonaCodigo || '-']),
       el('td', {}, [sede.dependenciaNombre || sede.dependenciaCodigo || '-']),
       el('td', {}, [sedeLocationLabel(sede)]),
@@ -248,12 +239,13 @@ export const SedeLocationsAdmin = (mount, deps = {}) => {
       el('div', { className: 'record-card__header' }, [
         el('div', { className: 'record-card__identity' }, [
           el('strong', { className: 'record-card__title' }, [sede.nombre || '-']),
-          el('span', { className: 'record-card__subtitle' }, [`${sede.codigo || '-'} · ${sede.zonaNombre || sede.zonaCodigo || 'Sin zona'}`])
+          el('span', { className: 'record-card__subtitle' }, [`${sede.codigo || '-'} · ${contractLabel(sede)}`])
         ]),
         el('span', { className: `badge ${String(sede.estado || 'activo') === 'activo' ? 'badge--ok' : 'badge--off'}` }, [sede.estado || '-'])
       ]),
       el('dl', { className: 'record-card__meta' }, [
         ['Dependencia', sede.dependenciaNombre || sede.dependenciaCodigo || '-'],
+        ['Zona', sede.zonaNombre || sede.zonaCodigo || '-'],
         ['Ubicacion', sedeLocationLabel(sede)]
       ].map(([label, value]) => metaItem(label, value))),
       el('div', { className: 'record-card__actions' }, [
@@ -269,6 +261,7 @@ export const SedeLocationsAdmin = (mount, deps = {}) => {
   function missingSedeRow(sede) {
     return el('tr', {}, [
       el('td', {}, [sedeNameNode(sede)]),
+      el('td', {}, [contractLabel(sede)]),
       el('td', {}, [sede.zonaNombre || sede.zonaCodigo || '-']),
       el('td', {}, [sede.dependenciaNombre || sede.dependenciaCodigo || '-']),
       el('td', {}, [statusBadge(sede)]),
@@ -280,7 +273,7 @@ export const SedeLocationsAdmin = (mount, deps = {}) => {
     return el('article', { className: 'sede-location-missing' }, [
       el('div', {}, [
         el('strong', {}, [sede.nombre || '-']),
-        el('span', { className: 'text-muted' }, [`${sede.codigo || '-'} · ${sede.zonaNombre || sede.zonaCodigo || 'Sin zona'}`])
+        el('span', { className: 'text-muted' }, [`${sede.codigo || '-'} · ${contractLabel(sede)}`])
       ]),
       el('div', { className: 'sede-location-missing__actions row-actions' }, [
         disabledMapButton('Google Maps'),
@@ -288,6 +281,10 @@ export const SedeLocationsAdmin = (mount, deps = {}) => {
         editButton(sede)
       ])
     ]);
+  }
+
+  function contractLabel(sede = {}) {
+    return sede.contratoNombre || sede.contratoCodigo || sede.clienteNombreSnapshot || '-';
   }
 
   function missingSedeActions(sede) {
@@ -457,8 +454,8 @@ export const SedeLocationsAdmin = (mount, deps = {}) => {
       fields: [
         { id: 'codigo', label: 'Codigo', type: 'text', required: true, value: sede.codigo || '' },
         { id: 'nombre', label: 'Nombre', type: 'text', required: true, value: sede.nombre || '' },
-        { id: 'dependencia', label: 'Dependencia', type: 'datalist', required: true, placeholder: 'Selecciona o escribe dependencia', value: labelByCode(dependencies, sede.dependenciaCodigo || ''), options:catalogDatalistOptions(dependencies) },
-        { id: 'zona', label: 'Zona', type: 'datalist', required: true, placeholder: 'Selecciona o escribe zona', value: labelByCode(zones, sede.zonaCodigo || ''), options:catalogDatalistOptions(zones) },
+        { id: 'dependencia', label: 'Dependencia', type: 'datalist', required: true, placeholder: 'Selecciona o escribe dependencia', value: labelByCode(scopedCatalog(dependencies), sede.dependenciaCodigo || ''), options:catalogDatalistOptions(scopedCatalog(dependencies)) },
+        { id: 'zona', label: 'Zona', type: 'datalist', required: true, placeholder: 'Selecciona o escribe zona', value: labelByCode(scopedCatalog(zones), sede.zonaCodigo || ''), options:catalogDatalistOptions(scopedCatalog(zones)) },
         { id: 'numeroOperarios', label: 'Nro de operarios', type: 'number', required: true, min: '0', step: '1', value: String(sede.numeroOperarios ?? '') },
         {
           id: 'jornada',
@@ -483,21 +480,21 @@ export const SedeLocationsAdmin = (mount, deps = {}) => {
         },
         { id: 'qrLatitude', label: 'Latitud sede', type: 'number', step: '0.000001', value: sede.qrLatitude ?? '', placeholder: 'Ej: 6.244203' },
         { id: 'qrLongitude', label: 'Longitud sede', type: 'number', step: '0.000001', value: sede.qrLongitude ?? '', placeholder: 'Ej: -75.581212' },
-        { id: 'qrRadiusMeters', label: 'Radio validacion QR (m)', type: 'number', min: '1', step: '1', value: String(sede.qrRadiusMeters || 500) },
+        { id: 'qrRadiusMeters', label: 'Radio de marcacion (m)', type: 'number', min: '1', step: '1', value: String(sede.qrRadiusMeters || 200) },
         { id: 'detail', label: 'Detalle de la modificacion', type: 'textarea', required: true, placeholder: 'Describe brevemente el cambio realizado' }
       ]
     });
     if (!modal.confirmed) return;
     const newCode = String(modal.values.codigo || '').trim();
     const newName = String(modal.values.nombre || '').trim();
-    const newDepCode = resolveCode(dependencies, modal.values.dependencia);
-    const newZoneCode = resolveCode(zones, modal.values.zona);
+    const newDepCode = resolveCode(scopedCatalog(dependencies), modal.values.dependencia);
+    const newZoneCode = resolveCode(scopedCatalog(zones), modal.values.zona);
     const newOpsRaw = String(modal.values.numeroOperarios || '').trim();
     const newJornada = String(modal.values.jornada || 'lun_vie').trim() || 'lun_vie';
     const newQrEnabled = String(modal.values.qrEnabled || 'false') === 'true';
     const newQrLatitude = parseOptionalNumber(modal.values.qrLatitude);
     const newQrLongitude = parseOptionalNumber(modal.values.qrLongitude);
-    const newQrRadiusMeters = parsePositiveInteger(modal.values.qrRadiusMeters, 500);
+    const newQrRadiusMeters = parsePositiveInteger(modal.values.qrRadiusMeters, 200);
     if (!newCode || !newName) return alert('Completa codigo y nombre.');
     if (!newDepCode || !newZoneCode) return alert('Selecciona dependencia y zona.');
     const newOps = Number(newOpsRaw);
@@ -509,8 +506,8 @@ export const SedeLocationsAdmin = (mount, deps = {}) => {
         const duplicate = await deps.findSedeByCode?.(newCode);
         if (duplicate && duplicate.id !== sede.id) return alert('Ya existe una sede con ese codigo.');
       }
-      const newDep = dependencies.find((row) => row.codigo === newDepCode);
-      const newZone = zones.find((row) => row.codigo === newZoneCode);
+      const newDep = scopedCatalog(dependencies).find((row) => row.codigo === newDepCode);
+      const newZone = scopedCatalog(zones).find((row) => row.codigo === newZoneCode);
       await deps.updateSede?.(sede.id, {
         codigo: newCode,
         nombre: newName,
@@ -598,11 +595,6 @@ export const SedeLocationsAdmin = (mount, deps = {}) => {
     return Number.isFinite(n) && Number.isInteger(n) && n > 0 ? n : fallback;
   }
 
-  function setStat(key, value) {
-    const node = qs(`#sedeLocationStat${key}`, ui);
-    if (node) node.textContent = String(value || 0);
-  }
-
   function normalize(value) {
     return String(value || '')
       .normalize('NFD')
@@ -611,8 +603,4 @@ export const SedeLocationsAdmin = (mount, deps = {}) => {
       .toLowerCase();
   }
 
-  function capitalize(value) {
-    const text = String(value || '');
-    return text ? text.slice(0, 1).toUpperCase() + text.slice(1) : '';
-  }
 };

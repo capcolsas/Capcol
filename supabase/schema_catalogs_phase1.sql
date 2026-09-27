@@ -77,6 +77,34 @@ create table if not exists public.novedades (
   updated_at timestamptz not null default now()
 );
 
+insert into public.novedades (
+  codigo,
+  codigo_novedad,
+  nombre,
+  reemplazo,
+  nomina,
+  estado,
+  created_by_uid,
+  created_by_email
+)
+values
+  ('NOV0001', '1', 'Trabajando', 'no', 'si', 'activo', null, 'schema@system'),
+  ('NOV0002', '2', 'Accidente Laboral', 'si', 'si', 'activo', null, 'schema@system'),
+  ('NOV0003', '3', 'Enfermedad General', 'si', 'si', 'activo', null, 'schema@system'),
+  ('NOV0004', '4', 'Calamidad', 'si', 'si', 'activo', null, 'schema@system'),
+  ('NOV0005', '5', 'Licencia No Remunerada', 'si', 'no', 'activo', null, 'schema@system'),
+  ('NOV0006', '6', 'Licencia Remunerada', 'si', 'si', 'activo', null, 'schema@system'),
+  ('NOV0007', '7', 'Compensatorio', 'no', 'no', 'activo', null, 'schema@system'),
+  ('NOV0008', '8', 'Ausencia No Justificada', 'si', 'no', 'activo', null, 'schema@system'),
+  ('NOV0009', '9', 'Vacaciones', 'si', 'si', 'activo', null, 'schema@system')
+on conflict (codigo_novedad) do update
+set
+  nombre = excluded.nombre,
+  reemplazo = excluded.reemplazo,
+  nomina = excluded.nomina,
+  estado = excluded.estado,
+  updated_at = now();
+
 alter table public.zones enable row level security;
 alter table public.dependencies enable row level security;
 alter table public.sedes enable row level security;

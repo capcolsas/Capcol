@@ -67,14 +67,14 @@ function renderLogin(message = '') {
   const msg = el('p', { className: 'qr-tablet-message text-muted' }, [message || ' ']);
   const ui = el('section', { className: 'qr-tablet-card' }, [
     el('h2', {}, ['Lector QR Tablet']),
-    el('p', { className: 'text-muted mt-1' }, ['Ingresa con el mismo usuario y contrasena del panel Rocky. Esta pantalla solo habilita el lector QR.']),
+    el('p', { className: 'text-muted mt-1' }, ['Ingresa con el mismo usuario y contraseña del panel Rocky. Esta pantalla solo habilita el lector QR.']),
     el('form', { className: 'qr-tablet-login-form' }, [
       el('div', {}, [
         el('label', { className: 'label', htmlFor: 'qrTabletEmail' }, ['Correo']),
         el('input', { id: 'qrTabletEmail', className: 'input', type: 'email', autocomplete: 'username', placeholder: 'correo@dominio.com' })
       ]),
       el('div', {}, [
-        el('label', { className: 'label', htmlFor: 'qrTabletPassword' }, ['Contrasena']),
+        el('label', { className: 'label', htmlFor: 'qrTabletPassword' }, ['Contraseña']),
         el('input', { id: 'qrTabletPassword', className: 'input', type: 'password', autocomplete: 'current-password', placeholder: '********' })
       ]),
       el('button', { className: 'btn btn--primary', type: 'submit' }, ['Iniciar sesion']),

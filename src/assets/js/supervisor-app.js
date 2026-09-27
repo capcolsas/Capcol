@@ -1,9 +1,14 @@
 import { Login } from './components/Login.js';
+import { SedeLocationsAdmin } from './components/SedeLocationsAdmin.js';
+import { SiteVisits } from './components/SiteVisits.js';
+import { mountPortalFooter } from './components/PortalFooter.js';
 import { el, lucideInlineIcon, qs } from './utils/dom.js';
 import { installBrowserAlertReplacement } from './utils/notifications.js';
 import { ROLES } from './roles.js';
+import { contractCoverageCodes } from './utils/contractScope.js';
 
 installBrowserAlertReplacement();
+mountPortalFooter('supervisor-footer', 'Supervisor');
 
 const root = document.getElementById('supervisor-root');
 const SUPERVISOR_PAGE_SIZE_OPTIONS = [25, 50, 100];
@@ -12,6 +17,8 @@ let currentUser = null;
 let currentProfile = null;
 let currentRegistry = emptyRegistry(todayBogota());
 let activeTab = 'home';
+let siteLocationsView = null;
+let visitsView = null;
 let selectedDate = todayBogota();
 let searchText = '';
 let supernumerarioSearchText = '';
@@ -60,7 +67,9 @@ function emptyRegistry(fecha) {
       listSupervisorDailyRegistry: fb.listSupervisorDailyRegistry,
       listSupervisorAvailableSupernumerarios: fb.listSupervisorAvailableSupernumerarios,
       streamSupernumerarios: fb.streamSupernumerarios,
-      saveImportReplacements: fb.saveImportReplacements
+      saveImportReplacements: fb.saveImportReplacements,
+      loadVisits: fb.loadVisits, beginVisit: fb.beginVisit, uploadVisitPhoto: fb.uploadVisitPhoto,
+      submitVisit: fb.submitVisit, getVisitPhotoUrl: fb.getVisitPhotoUrl
     };
     deps.authState(handleAuthState);
   } catch (error) {
@@ -71,6 +80,8 @@ function emptyRegistry(fecha) {
 async function handleAuthState(user) {
   currentUser = user || null;
   if (!user) {
+    disposeSiteLocations();
+    disposeVisits();
     currentProfile = null;
     stopSupernumerariosStream();
     renderLogin();
@@ -198,13 +209,6 @@ async function loadRegistry() {
 function renderLogin() {
   const shell = el('section', { className: 'supervisor-login' }, [
     el('div', { className: 'supervisor-login__inner' }, [
-      el('div', { className: 'supervisor-login__brand' }, [
-        el('img', { src: 'src/assets/img/rocky-logo.png', alt: 'Rocky' }),
-        el('div', {}, [
-          el('h1', {}, ['Supervisores']),
-          el('p', {}, ['Registro diario por zona'])
-        ])
-      ]),
       el('div', { id: 'supervisor-login-mount' })
     ])
   ]);
@@ -237,6 +241,8 @@ function renderFatal(message) {
 
 function renderApp() {
   if (!currentUser || !currentProfile) return;
+  if (activeTab !== 'locations') disposeSiteLocations();
+  if (activeTab !== 'visits') disposeVisits();
   const rows = buildRegistryRows();
   const registeredRows = rows.filter((row) => row.status !== 'pendiente');
   const filteredRows = filterRows(registeredRows);
@@ -251,9 +257,8 @@ function renderApp() {
   const app = el('div', { className: 'supervisor-app' }, [
     el('header', { className: 'supervisor-topbar' }, [
       el('div', { className: 'supervisor-brand' }, [
-        el('img', { className: 'supervisor-brand__logo', src: 'src/assets/img/rocky-logo.png', alt: 'Rocky' }),
         el('div', { className: 'supervisor-brand__copy' }, [
-          el('span', { className: 'supervisor-brand__eyebrow' }, ['Rocky']),
+          el('span', { className: 'supervisor-brand__eyebrow' }, ['Supervisor']),
           el('strong', { className: 'supervisor-brand__name' }, [displayName()]),
           el('span', { className: 'supervisor-brand__zone', title: zoneLabel }, [zoneLabel])
         ])
@@ -263,8 +268,7 @@ function renderApp() {
           className: `btn supervisor-profile-btn${activeTab === 'profile' ? ' is-active' : ''}`,
           type: 'button',
           onclick: () => {
-            activeTab = 'profile';
-            renderApp();
+            navigateScreen('profile');
           }
         }, ['Perfil'])
       ])
@@ -284,8 +288,24 @@ function renderApp() {
       ]),
       panel('novelties', [
         hero(summary, 'novelties'),
-        sectionHead('Novedades y ausencias', `${noveltyRows.length} registros`),
+        sectionHead('Novedades', `${noveltyRows.length} registros`),
         ...pagedList('novelties', noveltyRows, 'No hay novedades registradas para esta fecha.')
+      ]),
+      panel('locations', [
+        el('section', { className: 'supervisor-hero' }, [
+          el('h1', { className: 'supervisor-title' }, ['Ubicación de sedes']),
+          el('p', { className: 'supervisor-subtitle' }, [supervisorScopeLabel()]),
+          el('button', { className: 'btn', type: 'button', onclick: loadRegistry, disabled: loading }, [loading ? 'Actualizando...' : 'Actualizar sedes']),
+          ...(currentRegistry.error ? [el('p', { role: 'alert' }, [`No se pudieron cargar las sedes: ${currentRegistry.error}`])] : [])
+        ]),
+        el('div', { id: 'supervisor-sites-mount' })
+      ]),
+      panel('visits', [
+        el('article', { className: 'supervisor-hero' }, [
+            el('h1', { className: 'supervisor-title' }, ['Registro de visitas']),
+            el('p', { className: 'supervisor-subtitle' }, ['Visita cada sede de tus zonas al menos una vez por ciclo.'])
+          ]),
+        el('div', { id: 'supervisor-visits-mount' })
       ]),
       panel('supernumerarios', [
         hero(summary, 'supernumerarios'),
@@ -296,10 +316,67 @@ function renderApp() {
       panel('profile', [
         profilePanel(summary)
       ])
-    ]),
+    ].filter((node) => node.dataset.panel === activeTab)),
     bottomNav(summary, { availableSupernumerarios })
   ]);
   root.replaceChildren(app);
+  if (activeTab === 'locations') mountSiteLocations();
+  if (activeTab === 'visits') {
+    const mount = qs('#supervisor-visits-mount', root);
+    if (!visitsView) {
+      const node = el('div', {});
+      mount.replaceChildren(node);
+      visitsView = { node, cleanup: SiteVisits(node, deps, { actorId: currentUser.uid }) };
+    } else mount.replaceChildren(visitsView.node);
+  }
+}
+
+function navigateScreen(key) {
+  if (activeTab === 'visits' && key !== activeTab && visitsView && !visitsView.cleanup.canLeave()) return;
+  activeTab = key;
+  renderApp();
+  const title = qs('.supervisor-panel.is-active h1', root);
+  title?.setAttribute('tabindex', '-1');
+  title?.focus({ preventScroll: true });
+  window.scrollTo({ top: 0, behavior: 'instant' });
+}
+
+function disposeVisits() {
+  visitsView?.cleanup();
+  visitsView = null;
+}
+
+function disposeSiteLocations() {
+  siteLocationsView?.cleanup();
+  siteLocationsView = null;
+}
+
+function mountSiteLocations() {
+  const mount = qs('#supervisor-sites-mount', root);
+  if (!siteLocationsView) {
+    const node = el('div', {});
+    mount.replaceChildren(node);
+    const listeners = {};
+    const snapshotStream = (key) => (callback) => { listeners[key] = callback; return () => { delete listeners[key]; }; };
+    const cleanup = SedeLocationsAdmin(node, {
+      streamSedes: snapshotStream('sedes'),
+      streamZones: snapshotStream('zones'),
+      streamDependencies: snapshotStream('dependencies')
+    }, { readOnly: true, matchesContract: () => true });
+    siteLocationsView = { node, cleanup, listeners, registry: null };
+  } else {
+    mount.replaceChildren(siteLocationsView.node);
+  }
+  if (siteLocationsView.registry !== currentRegistry) {
+    const sedes = currentRegistry.sedes || [];
+    const catalog = (prefix) => [...new Map(sedes.filter((sede) => sede[`${prefix}Codigo`]).map((sede) => [sede[`${prefix}Codigo`], {
+      codigo: sede[`${prefix}Codigo`], nombre: sede[`${prefix}Nombre`]
+    }])).values()];
+    siteLocationsView.listeners.sedes(sedes);
+    siteLocationsView.listeners.zones(catalog('zona'));
+    siteLocationsView.listeners.dependencies(catalog('dependencia'));
+    siteLocationsView.registry = currentRegistry;
+  }
 }
 
 function panel(name, children) {
@@ -336,8 +413,7 @@ function sectionTitle(section) {
   if (section === 'novelties') return 'Novedades';
   if (section === 'supernumerarios') return 'Supernumerarios';
   if (section === 'profile') return 'Perfil';
-  if (hasGlobalSupervisorAccess()) return 'Hoy en la operacion';
-  return 'Hoy en tu zona';
+  return 'Registros pendientes';
 }
 
 function sectionMessage(summary, section = 'home') {
@@ -643,11 +719,13 @@ function coverageLabel(row = {}) {
 function replacementOptionsForRow(row = {}) {
   const rowDoc = String(row.documento || '').trim();
   const currentId = String(row.replacementSupernumerarioId || '').trim();
+  const targetContract = String(row.contratoCodigo || '').trim();
   const used = usedSupernumerarioKeys(row);
   return (supernumerarios || []).filter((item) => {
     const id = String(item.id || '').trim();
     const doc = String(item.documento || '').trim();
     if (!id) return false;
+    if (!supernumerarioCanCoverContract(item, targetContract)) return false;
     if (doc && doc === rowDoc) return false;
     if (id === currentId) return true;
     return !used.ids.has(id) && (!doc || !used.docs.has(doc));
@@ -717,6 +795,10 @@ async function saveSupervisorReplacement(row = {}, selectedValue = '') {
     nombre: row.nombre || null,
     sedeCodigo: row.sedeCodigo || null,
     sedeNombre: row.sedeNombre || null,
+    contratoCodigo: row.contratoCodigo || null,
+    contratoNombre: row.contratoNombre || null,
+    clienteNombreSnapshot: row.clienteNombreSnapshot || null,
+    clienteNitSnapshot: row.clienteNitSnapshot || null,
     novedadCodigo: row.novedadCodigo || null,
     novedadNombre: row.novedad || row.estadoDia || null,
     decision: selected ? 'reemplazo' : 'ausentismo',
@@ -744,11 +826,35 @@ function replacementRowKey(row = {}) {
   return `${String(row.employeeId || '').trim()}|${String(row.documento || '').trim()}|${selectedDate}`;
 }
 
+function supernumerarioCanCoverContract(row = {}, contratoCodigo = '') {
+  const target = String(contratoCodigo || '').trim();
+  if (!target) return true;
+  if (String(row?.contratoCodigo || row?.contrato_codigo || '').trim() === target) return true;
+  const codes = contractCoverageCodes(row);
+  return codes.map((code) => String(code || '').trim()).includes(target);
+}
+
+function supernumerarioCoverageLabel(row = {}) {
+  const codes = contractCoverageCodes(row);
+  const primary = String(row?.contratoCodigo || row?.contrato_codigo || '').trim();
+  const effectiveCodes = codes.length ? codes : (primary ? [primary] : []);
+  if (!effectiveCodes.length) return '-';
+  const mode = effectiveCodes.length > 1 || (primary && effectiveCodes[0] !== primary) ? 'Compartido' : 'Dedicado';
+  if (effectiveCodes.length === 1) return `${mode}: ${row.contratoNombre || effectiveCodes[0]}`;
+  return `${mode}: ${effectiveCodes.length} contratos`;
+}
+
 function bottomNav(summary = {}, counts = {}) {
   const items = [
-    { key: 'home', label: 'Inicio', fullLabel: 'Inicio', badge: summary.pending, tone: 'warn', hideZero: true, badgeLabel: 'pendientes' },
-    { key: 'registry', label: 'Registros', fullLabel: 'Registros' },
-    { key: 'novelties', label: 'Novedades', fullLabel: 'Novedades', badge: summary.noveltyPending, tone: 'danger', hideZero: true, badgeLabel: 'novedades pendientes de gestionar' },
+    { key: 'home', label: 'Pendientes', fullLabel: 'Registros pendientes', badge: summary.pending, tone: 'warn', hideZero: true, badgeLabel: 'pendientes' },
+    { key: 'registry', label: 'Registros', fullLabel: 'Registros', badge: summary.noveltyPending, tone: 'danger', hideZero: true, badgeLabel: 'novedades pendientes de gestionar', children: [
+      { key: 'registry', label: 'Registro diario' },
+      { key: 'novelties', label: 'Novedades' }
+    ] },
+    { key: 'sites', label: 'Sedes', fullLabel: 'Sedes', children: [
+      { key: 'locations', label: 'Ubicación de sedes' },
+      { key: 'visits', label: 'Registro de visitas' }
+    ] },
     { key: 'supernumerarios', label: 'Supernum.', fullLabel: 'Supernumerarios', badge: counts.availableSupernumerarios, tone: counts.availableSupernumerarios > 0 ? 'ok' : 'danger', hideZero: false, badgeLabel: 'supernumerarios libres' }
   ];
   return el('nav', { className: 'supervisor-bottom-nav', 'aria-label': 'Navegacion supervisores' }, items.map((item) => navButton(item)));
@@ -760,20 +866,75 @@ function navButton(item = {}) {
   const showBadge = item.badge != null && (!item.hideZero || count > 0);
   const badgeText = count > 99 ? '99+' : String(count);
   const badgeLabel = showBadge ? `${count} ${item.badgeLabel || 'pendientes'}` : '';
-  return el('button', {
-    className: `supervisor-nav-btn${activeTab === key ? ' is-active' : ''}`,
+  const isActive = item.children ? item.children.some((child) => child.key === activeTab) : activeTab === key;
+  const button = el('button', {
+    className: `supervisor-nav-btn${isActive ? ' is-active' : ''}`,
     type: 'button',
+    'aria-current': !item.children && isActive ? 'page' : null,
+    'aria-expanded': item.children ? 'false' : null,
+    'aria-controls': item.children ? `supervisor-submenu-${key}` : null,
     title: showBadge ? `${item.fullLabel} - ${badgeLabel}` : item.fullLabel,
     'aria-label': showBadge ? `${item.fullLabel} - ${badgeLabel}` : item.fullLabel,
     onclick: () => {
-      activeTab = key;
-      renderApp();
+      if (!item.children) return navigateScreen(key);
+      const submenu = qs(`#supervisor-submenu-${key}`, root);
+      const opening = submenu.hidden;
+      closeNavigationMenus();
+      submenu.hidden = !opening;
+      button.setAttribute('aria-expanded', String(opening));
     }
   }, [
     el('span', { className: 'supervisor-nav-btn__label' }, [item.label || item.fullLabel || key]),
+    item.children ? navigationChevron() : null,
     showBadge ? el('span', { className: `supervisor-nav-badge supervisor-nav-badge--${item.tone || 'neutral'}` }, [badgeText]) : null
   ].filter(Boolean));
+  if (!item.children) return button;
+  return el('div', { className: 'supervisor-nav-group' }, [
+    button,
+    el('div', { id: `supervisor-submenu-${key}`, className: 'supervisor-submenu', hidden: true }, [
+      ...item.children.map((child) => el('button', {
+        type: 'button',
+        className: `supervisor-submenu__link${activeTab === child.key ? ' is-active' : ''}`,
+        'aria-current': activeTab === child.key ? 'page' : null,
+        onclick: () => navigateScreen(child.key)
+      }, [child.label]))
+    ])
+  ]);
 }
+
+function navigationChevron() {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('stroke', 'currentColor');
+  svg.setAttribute('stroke-width', '2.2');
+  svg.setAttribute('stroke-linecap', 'round');
+  svg.setAttribute('stroke-linejoin', 'round');
+  svg.setAttribute('focusable', 'false');
+  path.setAttribute('d', 'm7 14 5-5 5 5');
+  svg.append(path);
+  return el('span', { className: 'supervisor-nav-chevron', 'aria-hidden': 'true' }, [svg]);
+}
+
+function closeNavigationMenus(restoreFocus = false) {
+  root.querySelectorAll('.supervisor-nav-group').forEach((group) => {
+    const button = qs('.supervisor-nav-btn', group);
+    if (restoreFocus && button.getAttribute('aria-expanded') === 'true') button.focus();
+    button.setAttribute('aria-expanded', 'false');
+    qs('.supervisor-submenu', group).hidden = true;
+  });
+}
+
+document.addEventListener('click', (event) => {
+  if (!event.target.closest('.supervisor-nav-group')) closeNavigationMenus();
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') closeNavigationMenus(true);
+});
+document.addEventListener('focusin', (event) => {
+  if (!event.target.closest('.supervisor-nav-group')) closeNavigationMenus();
+});
 
 function profilePanel(summary) {
   const zones = supervisorZones();
@@ -927,6 +1088,7 @@ function filterSupernumerarioRows(rows = []) {
     row.documento,
     row.telefono,
     row.sedeNombre,
+    supernumerarioCoverageLabel(row),
     row.cobertura?.nombre,
     row.cobertura?.sedeNombre
   ].join(' ').toLowerCase().includes(term));
@@ -938,6 +1100,7 @@ function supernumerarioCard(row = {}) {
   const isIncapacity = coverage.tipo === 'incapacidad';
   const cardDetails = [
     detail('Estado dia', row.ocupado ? 'Ocupado' : 'Libre'),
+    detail('Cubre', supernumerarioCoverageLabel(row)),
     detail('Sede base', row.sedeNombre || row.sedeCodigo || '-'),
     row.ocupado && isIncapacity ? detail('Motivo', 'Incapacidad') : null,
     row.ocupado && isIncapacity ? detail('Periodo', incapacityPeriodLabel(coverage)) : null,
@@ -1050,6 +1213,10 @@ function normalizeRecord({ status = {}, employee = {}, attendance = {}, replacem
     telefono: employee.telefono || null,
     sedeCodigo: status.sedeCodigo || employee.sedeCodigo || attendance.sedeCodigo || replacement.sedeCodigo || null,
     sedeNombre: status.sedeNombreSnapshot || employee.sedeNombre || attendance.sedeNombre || replacement.sedeNombre || null,
+    contratoCodigo: status.contratoCodigo || employee.contratoCodigo || attendance.contratoCodigo || replacement.contratoCodigo || null,
+    contratoNombre: status.contratoNombre || employee.contratoNombre || attendance.contratoNombre || replacement.contratoNombre || null,
+    clienteNombreSnapshot: status.clienteNombreSnapshot || employee.clienteNombreSnapshot || attendance.clienteNombreSnapshot || replacement.clienteNombreSnapshot || null,
+    clienteNitSnapshot: status.clienteNitSnapshot || employee.clienteNitSnapshot || attendance.clienteNitSnapshot || replacement.clienteNitSnapshot || null,
     zonaCodigo: status.zonaCodigoSnapshot || employee.zonaCodigo || null,
     zonaNombre: status.zonaNombreSnapshot || employee.zonaNombre || null,
     estadoDia,

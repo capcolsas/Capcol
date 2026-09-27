@@ -8,7 +8,7 @@ import { certificateTemplateConfig } from './config.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const CERTIFICATE_TYPES = new Set(['basic', 'with_salary']);
+const CERTIFICATE_TYPES = new Set(['basic', 'with_salary', 'retired', 'with_functions', 'retired_with_functions']);
 
 export function normalizeCertificateType(value) {
   const type = String(value || 'basic').trim().toLowerCase();
@@ -17,7 +17,7 @@ export function normalizeCertificateType(value) {
 
 export function certificateFileName(employee = {}, type = 'basic') {
   const doc = safeFilePart(employee?.documento || 'empleado');
-  const suffix = type === 'with_salary' ? 'con-salario' : 'basico';
+  const suffix = type === 'retired_with_functions' ? 'retiro-con-funciones' : type === 'with_functions' ? 'con-funciones' : type === 'retired' ? 'retiro' : type === 'with_salary' ? 'con-salario' : 'basico';
   return `certificado-laboral-${suffix}-${doc}.pdf`;
 }
 
@@ -27,13 +27,33 @@ export async function buildEmployeeCertificatePdf({ employee, cargo, type, verif
   return buildCertificatePdfWithPdfKit({ employee, cargo, type: normalizedType, verificationCode, verificationUrl });
 }
 
-function validateCertificateData({ employee, cargo, type }) {
+export function validateCertificateData({ employee, cargo, type }) {
   if (!employee?.id) throw new Error('employee_not_found');
-  if (String(employee?.estado || '').trim().toLowerCase() !== 'activo') throw new Error('employee_inactive');
+  const expectedState = ['retired', 'retired_with_functions'].includes(type) ? 'inactivo' : 'activo';
+  if (String(employee.estado || '').trim().toLowerCase() !== expectedState) {
+    throw Object.assign(new Error('certificate_type_not_allowed'), { statusCode: 403 });
+  }
+  if (['retired', 'retired_with_functions'].includes(type)) {
+    const start = employmentDate(employee.fecha_ingreso);
+    const end = employmentDate(employee.fecha_retiro);
+    if (!start || !end || end < start) {
+      throw Object.assign(new Error('invalid_employment_dates'), { statusCode: 409 });
+    }
+  }
+  if (['with_functions', 'retired_with_functions'].includes(type) && !String(cargo?.funciones || '').trim()) {
+    throw Object.assign(new Error('missing_functions'), { statusCode: 409 });
+  }
   const salary = cargo?.salario == null ? null : Number(cargo.salario);
   if (type === 'with_salary' && (!Number.isFinite(salary) || salary < 0)) {
     throw new Error('missing_salary');
   }
+}
+
+function employmentDate(value) {
+  const day = String(value || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return '';
+  const parsed = new Date(`${day}T00:00:00Z`);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === day ? day : '';
 }
 
 async function buildCertificatePdfWithPdfKit({ employee, cargo, type, verificationCode = '', verificationUrl = '' }) {
@@ -70,8 +90,26 @@ async function buildCertificatePdfWithPdfKit({ employee, cargo, type, verificati
       ? { x: 0, width: pageWidth }
       : { x: left, width: contentWidth };
 
-    drawImageFit(doc, headerImage, headerBox.x, layout.header.top, headerBox.width, layout.header.height, cfg.header?.align || 'center', 'stretch');
-    drawImageFit(doc, footerImage, footerBox.x, pageHeight - layout.footer.bottomOffset, footerBox.width, layout.footer.height, 'center', 'stretch');
+    const drawPage = () => {
+      const { x, y } = doc;
+      doc.save();
+      drawImageFit(doc, headerImage, headerBox.x, layout.header.top, headerBox.width, layout.header.height, cfg.header?.align || 'center', 'stretch');
+      drawImageFit(doc, footerImage, footerBox.x, pageHeight - layout.footer.bottomOffset, footerBox.width, layout.footer.height, 'center', 'stretch');
+      const footerLines = Array.isArray(cfg.footer?.lines) ? cfg.footer.lines.filter(Boolean) : [];
+      if (footerLines.length) {
+        doc.font('Helvetica').fontSize(8).fillColor('#333333').text([
+          cfg.companyLegalName || '',
+          `[ NIT: ${cfg.companyNit || ''} ] ${cfg.companyRegimeText || ''}`,
+          ...footerLines
+        ].filter(Boolean).join('\n'), left, pageHeight - 96, { width: contentWidth, height: 80, align: 'center', lineGap: 1 });
+      }
+      doc.restore();
+      doc.font('Helvetica').fontSize(12).fillColor('#1f2933');
+      doc.x = x;
+      doc.y = y;
+    };
+    drawPage();
+    doc.on('pageAdded', drawPage);
 
     doc.y = doc.page.margins.top + 20;
     doc.font('Helvetica').fontSize(11).text(`${cfg.city || ''}, ${formatLongDate(new Date(), cfg)}`, {
@@ -88,7 +126,9 @@ async function buildCertificatePdfWithPdfKit({ employee, cargo, type, verificati
     doc.moveDown(2);
     doc.font('Helvetica').fontSize(12);
     doc.text(
-      `${cfg.companyLegalName || ''}, identificada con NIT ${cfg.companyNit || '-'}, CERTIFICA que ${employee.nombre || 'Empleado'}, identificado(a) con documento de identidad No. ${employee.documento || '-'}, se encuentra vinculado(a) laboralmente con nuestra compañía desde el ${formatLongDate(employee.fecha_ingreso, cfg)}, desempeñando el cargo de ${employee.cargo_nombre || cargo?.nombre || employee.cargo_codigo || '-'}, vinculado(a) mediante contrato OBRA O LABOR.`,
+      `${cfg.companyLegalName || ''}, identificada con NIT ${cfg.companyNit || '-'}, CERTIFICA que ${employee.nombre || 'Empleado'}, identificado(a) con documento de identidad No. ${employee.documento || '-'}, ${['retired', 'retired_with_functions'].includes(type)
+        ? `laboró en nuestra compañía desde el ${formatLongDate(`${employmentDate(employee.fecha_ingreso)}T12:00:00Z`, cfg)} hasta el ${formatLongDate(`${employmentDate(employee.fecha_retiro)}T12:00:00Z`, cfg)}`
+        : `se encuentra vinculado(a) laboralmente con nuestra compañía desde el ${formatLongDate(employee.fecha_ingreso, cfg)}`}, desempeñando el cargo de ${employee.cargo_nombre || cargo?.nombre || employee.cargo_codigo || '-'}, vinculado(a) mediante contrato OBRA O LABOR.`,
       { width: contentWidth, align: 'justify' }
     );
 
@@ -100,13 +140,23 @@ async function buildCertificatePdfWithPdfKit({ employee, cargo, type, verificati
       });
     }
 
+    if (['with_functions', 'retired_with_functions'].includes(type)) {
+      doc.moveDown(1);
+      doc.font('Helvetica-Bold').text('Funciones del cargo', { width: contentWidth });
+      doc.moveDown(0.5);
+      doc.font('Helvetica').fontSize(11).text(String(cargo.funciones).trim(), { width: contentWidth, align: 'left', lineGap: 3 });
+      doc.fontSize(12);
+    }
+
     doc.moveDown(1);
     doc.text('La presente certificación se expide a solicitud del interesado(a), para los fines que estime convenientes.', {
       width: contentWidth,
       align: 'justify'
     });
 
-    const signatureTop = Math.min(doc.y + 50, pageHeight - doc.page.margins.bottom - 105);
+    const signatureHeight = Math.max(layout.signature.height + 48, 112);
+    if (doc.y + 32 + signatureHeight > pageHeight - doc.page.margins.bottom) doc.addPage();
+    const signatureTop = doc.y + 32;
     drawImageFit(doc, signatureImage, left, signatureTop, layout.signature.width, layout.signature.height, 'left');
     doc.y = signatureTop + layout.signature.height + 8;
     doc.font('Helvetica-Bold').fontSize(11).text(cfg.signature?.signerName || '', { width: contentWidth });
@@ -120,21 +170,6 @@ async function buildCertificatePdfWithPdfKit({ employee, cargo, type, verificati
       doc.font('Helvetica').fontSize(7).fillColor('#333333');
       doc.text('Verificacion', qrX - 12, qrY + qrSize + 3, { width: qrSize + 24, align: 'center' });
       doc.text(verificationCode || '', qrX - 12, qrY + qrSize + 13, { width: qrSize + 24, align: 'center' });
-      doc.fillColor('#1f2933');
-    }
-
-    const footerLines = Array.isArray(cfg.footer?.lines) ? cfg.footer.lines.filter(Boolean) : [];
-    if (footerLines.length) {
-      doc.font('Helvetica').fontSize(8).fillColor('#333333');
-      doc.text([
-        cfg.companyLegalName || '',
-        `[ NIT: ${cfg.companyNit || ''} ] ${cfg.companyRegimeText || ''}`,
-        ...footerLines
-      ].filter(Boolean).join('\n'), left, pageHeight - 96, {
-        width: contentWidth,
-        align: 'center',
-        lineGap: 1
-      });
       doc.fillColor('#1f2933');
     }
 

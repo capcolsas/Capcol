@@ -10,7 +10,7 @@ export const HiringBySedeReport = (mount, deps = {}) => {
 
   const ui = el('section', { className: 'main-card' }, [
     el('h2', {}, ['Contratacion por Sedes']),
-    el('p', { className: 'text-muted' }, ['Dependencia, zona, sede, empleados planeados, contratados y diferencia.']),
+    el('p', { className: 'text-muted' }, ['Contrato, dependencia, zona, sede, empleados planeados, contratados y diferencia.']),
     el('div', { className: 'form-row mt-2' }, [
       el('button', { id: 'btnGenerateHiringReport', className: 'btn btn--primary', type: 'button' }, ['Generar reporte']),
       el('button', { id: 'btnExportHiringReport', className: 'btn', type: 'button', disabled: true, title: canExport ? '' : 'Modo consulta: no puedes exportar.' }, ['Exportar Excel']),
@@ -19,7 +19,11 @@ export const HiringBySedeReport = (mount, deps = {}) => {
     el('div', { className: 'form-row mt-2' }, [
       el('div', {}, [
         el('label', { className: 'label', for: 'hiringReportSearch' }, ['Buscar']),
-        el('input', { id: 'hiringReportSearch', className: 'input', placeholder: 'Dependencia, zona o sede...' })
+        el('input', { id: 'hiringReportSearch', className: 'input', placeholder: 'Contrato, dependencia, zona o sede...' })
+      ]),
+      el('div', {}, [
+        el('label', { className: 'label', for: 'hiringReportContractFilter' }, ['Contrato']),
+        el('select', { id: 'hiringReportContractFilter', className: 'input' }, [el('option', { value: '' }, ['Todos'])])
       ]),
       el('div', {}, [
         el('label', { className: 'label', for: 'hiringReportDependencyFilter' }, ['Dependencia']),
@@ -33,6 +37,7 @@ export const HiringBySedeReport = (mount, deps = {}) => {
     el('div', { className: 'table-wrap mt-2' }, [
       el('table', { className: 'table', id: 'hiringReportTable' }, [
         el('thead', {}, [el('tr', {}, [
+          el('th', { 'data-sort-hiring-report': 'contrato', style: 'cursor:pointer' }, ['Contrato']),
           el('th', { 'data-sort-hiring-report': 'dependencia', style: 'cursor:pointer' }, ['Dependencia']),
           el('th', { 'data-sort-hiring-report': 'zona', style: 'cursor:pointer' }, ['Zona']),
           el('th', { 'data-sort-hiring-report': 'sede', style: 'cursor:pointer' }, ['Nombre Sede']),
@@ -40,7 +45,7 @@ export const HiringBySedeReport = (mount, deps = {}) => {
           el('th', { 'data-sort-hiring-report': 'empleadosContratados', style: 'cursor:pointer' }, ['Empleados Contratados']),
           el('th', { 'data-sort-hiring-report': 'diferencia', style: 'cursor:pointer' }, ['Diferencia'])
         ])]),
-        el('tbody', { id: 'hiringReportTbody' }, [el('tr', {}, [el('td', { colSpan: 6, className: 'text-muted' }, ['Sin generar.'])])])
+        el('tbody', { id: 'hiringReportTbody' }, [el('tr', {}, [el('td', { colSpan: 7, className: 'text-muted' }, ['Sin generar.'])])])
       ])
     ]),
     el('p', { id: 'hiringReportTotal', className: 'text-muted mt-2' }, ['Genera el reporte para ver resultados.']),
@@ -50,6 +55,7 @@ export const HiringBySedeReport = (mount, deps = {}) => {
   qs('#btnGenerateHiringReport', ui)?.addEventListener('click', generateReport);
   qs('#btnExportHiringReport', ui)?.addEventListener('click', exportExcel);
   qs('#hiringReportSearch', ui)?.addEventListener('input', renderTable);
+  qs('#hiringReportContractFilter', ui)?.addEventListener('change', renderTable);
   qs('#hiringReportDependencyFilter', ui)?.addEventListener('change', renderTable);
   qs('#hiringReportSedeFilter', ui)?.addEventListener('change', renderTable);
   ui.querySelectorAll('#hiringReportTable th[data-sort-hiring-report]').forEach((th) => {
@@ -122,10 +128,14 @@ export const HiringBySedeReport = (mount, deps = {}) => {
       .filter((sede) => String(sede?.estado || 'activo').trim().toLowerCase() !== 'inactivo')
       .map((sede) => {
         const sedeCode = String(sede.codigo || '').trim();
+        const contratoCodigo = String(sede.contratoCodigo || '').trim();
+        const contrato = String(sede.contratoNombre || contratoCodigo || '-').trim() || '-';
         const planned = Number(sede.numeroOperarios ?? 0);
         const empleadosPlaneados = Number.isFinite(planned) && planned > 0 ? planned : 0;
         const empleadosContratados = Number(contractedBySede.get(sedeCode) || 0);
         return {
+          contrato,
+          contratoCodigo,
           dependencia: String(sede.dependenciaNombre || sede.dependenciaCodigo || '-').trim() || '-',
           zona: String(sede.zonaNombre || sede.zonaCodigo || '-').trim() || '-',
           sede: String(sede.nombre || sede.codigo || '-').trim() || '-',
@@ -145,13 +155,15 @@ export const HiringBySedeReport = (mount, deps = {}) => {
 
   function getFilteredRows() {
     const search = normalizeText(qs('#hiringReportSearch', ui)?.value || '');
+    const contract = String(qs('#hiringReportContractFilter', ui)?.value || '').trim();
     const dependency = String(qs('#hiringReportDependencyFilter', ui)?.value || '').trim();
     const sede = String(qs('#hiringReportSedeFilter', ui)?.value || '').trim();
     return (generatedRows || []).filter((row) => {
+      if (contract && row.contratoCodigo !== contract) return false;
       if (dependency && row.dependencia !== dependency) return false;
       if (sede && row.sede !== sede) return false;
       if (!search) return true;
-      return normalizeText(`${row.dependencia || ''} ${row.zona || ''} ${row.sede || ''}`).includes(search);
+      return normalizeText(`${row.contrato || ''} ${row.contratoCodigo || ''} ${row.dependencia || ''} ${row.zona || ''} ${row.sede || ''}`).includes(search);
     });
   }
 
@@ -159,12 +171,18 @@ export const HiringBySedeReport = (mount, deps = {}) => {
     const select = qs(selector, ui);
     if (!select) return;
     const previous = String(select.value || '').trim();
-    const options = Array.from(new Set(values.map((value) => String(value || '').trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b));
+    const byValue = new Map();
+    values.forEach((item) => {
+      const value = typeof item === 'object' ? String(item.value || '').trim() : String(item || '').trim();
+      const label = typeof item === 'object' ? String(item.label || value).trim() : value;
+      if (value && !byValue.has(value)) byValue.set(value, label || value);
+    });
+    const options = Array.from(byValue.entries()).sort((a, b) => a[1].localeCompare(b[1]));
     select.replaceChildren(
       el('option', { value: '' }, ['Todas']),
-      ...options.map((value) => el('option', { value, selected: value === previous }, [value]))
+      ...options.map(([value, label]) => el('option', { value, selected: value === previous }, [label]))
     );
-    select.value = options.includes(previous) ? previous : '';
+    select.value = byValue.has(previous) ? previous : '';
   }
 
   function sortRows(rows = [], key = '', dir = 1) {
@@ -182,8 +200,9 @@ export const HiringBySedeReport = (mount, deps = {}) => {
   }
 
   function renderRows(rows = []) {
-    if (!rows.length) return [el('tr', {}, [el('td', { colSpan: 6, className: 'text-muted' }, ['Sin sedes para los filtros actuales.'])])];
+    if (!rows.length) return [el('tr', {}, [el('td', { colSpan: 7, className: 'text-muted' }, ['Sin sedes para los filtros actuales.'])])];
     return rows.map((row) => el('tr', {}, [
+      el('td', {}, [row.contrato]),
       el('td', {}, [row.dependencia]),
       el('td', {}, [row.zona]),
       el('td', {}, [row.sede]),
@@ -238,6 +257,7 @@ export const HiringBySedeReport = (mount, deps = {}) => {
       }, { planeados: 0, contratados: 0, diferencia: 0 });
       const totalNode = qs('#hiringReportTotal', ui);
       if (totalNode) totalNode.textContent = `Sedes: ${generatedRows.length} | Planeados: ${totals.planeados} | Contratados: ${totals.contratados} | Diferencia: ${totals.diferencia}`;
+      syncSelectOptions('#hiringReportContractFilter', generatedRows.map((row) => ({ value: row.contratoCodigo, label: row.contratoCodigo ? `${row.contrato} (${row.contratoCodigo})` : row.contrato })).filter((row) => row.value));
       syncSelectOptions('#hiringReportDependencyFilter', generatedRows.map((row) => row.dependencia));
       syncSelectOptions('#hiringReportSedeFilter', generatedRows.map((row) => row.sede));
       renderTable();
@@ -265,6 +285,8 @@ export const HiringBySedeReport = (mount, deps = {}) => {
       }
       const mod = await import('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm');
       const ws = mod.utils.json_to_sheet(generatedRows.map((row) => ({
+        Contrato: row.contrato,
+        'Codigo Contrato': row.contratoCodigo,
         Dependencia: row.dependencia,
         Zona: row.zona,
         'Nombre Sede': row.sede,
@@ -272,7 +294,7 @@ export const HiringBySedeReport = (mount, deps = {}) => {
         'Empleados Contratados': row.empleadosContratados,
         Diferencia: row.diferencia
       })));
-      ws['!cols'] = [{ wch: 28 }, { wch: 24 }, { wch: 32 }, { wch: 20 }, { wch: 22 }, { wch: 14 }];
+      ws['!cols'] = [{ wch: 30 }, { wch: 18 }, { wch: 28 }, { wch: 24 }, { wch: 32 }, { wch: 20 }, { wch: 22 }, { wch: 14 }];
       const wb = mod.utils.book_new();
       mod.utils.book_append_sheet(wb, ws, 'Contratacion por sedes');
       const date = new Date().toISOString().slice(0, 10);

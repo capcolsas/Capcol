@@ -13,14 +13,9 @@ export const QrDevicesInfo = (mount, deps = {}) => {
   let sortDir = 1;
 
   const ui = el('section', { className: 'main-card' }, [
-    el('div', { className: 'wa-header__top' }, [
+    el('div', { className: 'contract-demo__header' }, [
       el('h2', {}, ['Tablets QR']),
       el('span', { id: 'qrDevicesStatus', className: 'badge badge--off' }, ['Cargando'])
-    ]),
-    el('section', { className: 'wa-stats wa-stats--nov mt-2' }, [
-      statCard('Tablets activas', 'qrDevicesActive', '0'),
-      statCard('Sedes atendidas', 'qrDevicesSites', '0'),
-      statCard('Sin actividad', 'qrDevicesIdle', '0')
     ]),
     el('div', { className: 'form-row mt-2' }, [
       el('div', {}, [
@@ -63,13 +58,6 @@ export const QrDevicesInfo = (mount, deps = {}) => {
   ]);
 
   const paginator = createTablePagination(ui, { id: 'qrDevices', after: '#qrDevicesCards', onChange: render });
-
-  function statCard(label, id, value) {
-    return el('article', { className: 'wa-stat card' }, [
-      el('small', { className: 'wa-stat__label' }, [label]),
-      el('strong', { id, className: 'wa-stat__value' }, [value])
-    ]);
-  }
 
   function th(key, label) {
     return el('th', { 'data-sort': key, style: 'cursor:pointer' }, [label]);
@@ -138,11 +126,6 @@ export const QrDevicesInfo = (mount, deps = {}) => {
 
   function renderStats() {
     const active = rows.filter((row) => effectiveStatus(row) === 'activo');
-    const siteCodes = new Set(active.flatMap((row) => (row.sedes || []).map((site) => String(site.sedeCodigo || '').trim()).filter(Boolean)));
-    const idle = active.filter((row) => !row.lastSeenAt).length;
-    qs('#qrDevicesActive', ui).textContent = String(active.length);
-    qs('#qrDevicesSites', ui).textContent = String(siteCodes.size);
-    qs('#qrDevicesIdle', ui).textContent = String(idle);
     const status = qs('#qrDevicesStatus', ui);
     status.className = `badge ${active.length ? 'badge--ok' : 'badge--off'}`;
     status.textContent = active.length ? 'Con tablets activas' : 'Sin tablets activas';
@@ -174,7 +157,6 @@ export const QrDevicesInfo = (mount, deps = {}) => {
       ])));
       cards.replaceChildren(...pageRows.map((row) => deviceCard(row)));
     }
-    qs('#qrDevicesMsg', ui).textContent = `Tablets filtradas: ${data.length}.`;
     renderStats();
     updateSortIndicators();
   }

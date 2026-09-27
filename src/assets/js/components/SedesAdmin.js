@@ -1,9 +1,11 @@
 import { el, qs, infoIcon, lucideInlineIcon, moreIcon } from '../utils/dom.js';
 import { showInfoModal } from '../utils/infoModal.js';
-import { showActionModal } from '../utils/actionModal.js';
+import { showActionModal, closeActionModal } from '../utils/actionModal.js';
 import { createTablePagination } from '../utils/pagination.js';
 import { hasValidSedeLocation, sedeCoordinates, sedeLocationLabel } from '../utils/sedeLocation.js';
 import { can, PERMS } from '../permissions.js';
+import { subscribe } from '../state.js';
+import { contractFilterCode, contractMatches } from '../utils/contractScope.js';
 export const SedesAdmin=(mount,deps={})=>{
   const canEdit=can(PERMS.EDIT_SEDES);
   const ui=el('section',{className:'main-card'},[
@@ -23,8 +25,8 @@ export const SedesAdmin=(mount,deps={})=>{
               el('th',{'data-sort':'zonaNombre',style:'cursor:pointer'},['Zona']),
               el('th',{'data-sort':'numeroOperarios',style:'cursor:pointer'},['Operarios']),
               el('th',{'data-sort':'jornada',style:'cursor:pointer'},['Jornada']),
-              el('th',{'data-sort':'qrEnabled',style:'cursor:pointer'},['QR']),
               el('th',{'data-sort':'estado',style:'cursor:pointer'},['Estado']),
+              el('th',{'data-sort':'qrEnabled',style:'cursor:pointer'},['QR']),
               el('th',{},['Acciones'])
             ]) ]),
             el('tbody',{})
@@ -36,7 +38,7 @@ export const SedesAdmin=(mount,deps={})=>{
     ])
   ]);
 
-  let depList=[]; let zoneList=[];
+  let contractList=[]; let depList=[]; let zoneList=[];
 
   function buildOptions(items, selected){
     const opts=[ el('option',{value:''},['Seleccione...']) ];
@@ -49,6 +51,9 @@ export const SedesAdmin=(mount,deps={})=>{
   function labelByCode(list, code){
     const it=list.find(x=>x.codigo===code);
     return it ? `${it.nombre||it.codigo} (${it.codigo||'-'})` : '';
+  }
+  function contractNameByCode(code){
+    return contractList.find(c=>c.codigo===code)?.nombre || '-';
   }
   function resolveCode(list, rawValue){
     const raw=String(rawValue||'').trim();
@@ -74,15 +79,22 @@ export const SedesAdmin=(mount,deps={})=>{
       .map((item)=> catalogLabelByCode(list, item.codigo))
       .filter((value, index, arr)=> value && arr.indexOf(value)===index);
   }
+  function catalogOptionsForContract(list, code=contractFilterCode()){
+    const contractCode=String(code||'').trim();
+    const items=contractCode ? list.filter((item)=>contractMatches(item,contractCode)) : list;
+    return catalogOptions(items);
+  }
   async function openCreateModal(){
+    const contractCode=contractFilterCode();
+    if(!contractCode){ alert('Selecciona un contrato en la barra lateral antes de crear una sede.'); return; }
     const modal=await showActionModal({
       title:'Crear sede',
       message:'Completa la informacion para crear una sede.',
       confirmText:'Crear sede',
       fields:[
         { id:'name', label:'Nombre', type:'text', required:true, placeholder:'Nombre de la sede' },
-        { id:'dep', label:'Dependencia', type:'datalist', required:true, placeholder:'Selecciona o escribe dependencia', options:catalogOptions(depList) },
-        { id:'zone', label:'Zona', type:'datalist', required:true, placeholder:'Selecciona o escribe zona', options:catalogOptions(zoneList) },
+        { id:'dep', label:'Dependencia', type:'datalist', required:true, placeholder:'Selecciona o escribe dependencia', options:catalogOptionsForContract(depList,contractCode) },
+        { id:'zone', label:'Zona', type:'datalist', required:true, placeholder:'Selecciona o escribe zona', options:catalogOptionsForContract(zoneList,contractCode) },
         { id:'ops', label:'Nro de operarios', type:'number', required:true, min:'0', step:'1', value:'0' },
         {
           id:'jornada',
@@ -107,33 +119,42 @@ export const SedesAdmin=(mount,deps={})=>{
         },
         { id:'qrLatitude', label:'Latitud sede', type:'number', step:'0.000001', placeholder:'Ej: 6.244203' },
         { id:'qrLongitude', label:'Longitud sede', type:'number', step:'0.000001', placeholder:'Ej: -75.581212' },
-        { id:'qrRadiusMeters', label:'Radio validacion QR (m)', type:'number', min:'1', step:'1', value:'500' }
+        { id:'qrRadiusMeters', label:'Radio de marcacion (m)', type:'number', min:'1', step:'1', value:'200' }
       ]
     });
     if(!modal.confirmed) return;
+    if(contractFilterCode()!==contractCode){ alert('El contrato activo cambio. Abre nuevamente el formulario para crear la sede.'); return; }
     const name=String(modal.values.name||'').trim();
     const depCode=resolveCode(depList, modal.values.dep);
     const zoneCode=resolveCode(zoneList, modal.values.zone);
     const opsRaw=String(modal.values.ops||'').trim();
     const jornada=String(modal.values.jornada||'lun_vie').trim() || 'lun_vie';
     if(!name){ alert('Escribe el nombre de la sede.'); return; }
+    if(!contractCode){ alert('Selecciona un contrato valido.'); return; }
     if(!depCode){ alert('Selecciona una dependencia valida.'); return; }
     if(!zoneCode){ alert('Selecciona una zona valida.'); return; }
+    const contract=contractList.find(c=>c.codigo===contractCode);
+    const dep=depList.find(d=>d.codigo===depCode);
+    const zone=zoneList.find(z=>z.codigo===zoneCode);
+    if(dep && dep.contratoCodigo && dep.contratoCodigo!==contractCode){ alert('La dependencia seleccionada pertenece a otro contrato.'); return; }
+    if(zone && zone.contratoCodigo && zone.contratoCodigo!==contractCode){ alert('La zona seleccionada pertenece a otro contrato.'); return; }
     const ops=Number(opsRaw);
     if(!Number.isFinite(ops) || ops<0 || !Number.isInteger(ops)){ alert('Ingresa un numero entero de operarios valido.'); return; }
     const qrEnabled=String(modal.values.qrEnabled||'false')==='true';
     const qrLatitude=parseOptionalNumber(modal.values.qrLatitude);
     const qrLongitude=parseOptionalNumber(modal.values.qrLongitude);
-    const qrRadiusMeters=parsePositiveInteger(modal.values.qrRadiusMeters,500);
+    const qrRadiusMeters=parsePositiveInteger(modal.values.qrRadiusMeters,200);
     if((qrLatitude!==null || qrLongitude!==null) && !hasValidSedeLocation(qrLatitude, qrLongitude)){ alert('Registra una ubicacion valida de la sede.'); return; }
     if(qrEnabled && !hasValidSedeLocation(qrLatitude, qrLongitude)){ alert('Para activar QR debes registrar una ubicacion valida de la sede.'); return; }
     try{
       const code=await deps.getNextSedeCode?.();
-      const dep=depList.find(d=>d.codigo===depCode);
-      const zone=zoneList.find(z=>z.codigo===zoneCode);
       const id=await deps.createSede?.({
         codigo:code,
         nombre:name,
+        contratoCodigo:contractCode,
+        contratoNombre:contract?.nombre||null,
+        clienteNombreSnapshot:contract?.clienteNombre||null,
+        clienteNitSnapshot:contract?.clienteNit||null,
         dependenciaCodigo:depCode,
         dependenciaNombre:dep?.nombre||null,
         zonaCodigo:zoneCode,
@@ -145,7 +166,7 @@ export const SedesAdmin=(mount,deps={})=>{
         qrLongitude,
         qrRadiusMeters
       });
-      await deps.addAuditLog?.({ targetType:'sede', targetId:id, action:'create_sede', after:{ codigo:code, nombre:name, estado:'activo', dependenciaCodigo:depCode, zonaCodigo:zoneCode, numeroOperarios:ops, jornada, qrEnabled, qrLatitude, qrLongitude, qrRadiusMeters } });
+      await deps.addAuditLog?.({ targetType:'sede', targetId:id, action:'create_sede', after:{ codigo:code, nombre:name, estado:'activo', contratoCodigo:contractCode, dependenciaCodigo:depCode, zonaCodigo:zoneCode, numeroOperarios:ops, jornada, qrEnabled, qrLatitude, qrLongitude, qrRadiusMeters } });
       alert('Sede creada OK');
     }catch(e){ alert('Error: '+(e?.message||e)); }
   }
@@ -164,7 +185,7 @@ export const SedesAdmin=(mount,deps={})=>{
   const filterStatus=()=> qs('#selStatus',ui).value;
   const depNameByCode=(code)=> depList.find(d=>d.codigo===code)?.nombre || '-';
   const zoneNameByCode=(code)=> zoneList.find(z=>z.codigo===code)?.nombre || '-';
-  function toDate(ts){ try{ const d=ts?.toDate? ts.toDate(): (ts? new Date(ts): null); return d? d.getTime():0; }catch{ return 0; } }
+  function toDate(ts){ try{ const d=ts? new Date(ts): null; return d? d.getTime():0; }catch{ return 0; } }
   function parseOptionalNumber(value){
     const raw=String(value||'').trim();
     if(!raw) return null;
@@ -176,6 +197,7 @@ export const SedesAdmin=(mount,deps={})=>{
     return Number.isFinite(n) && Number.isInteger(n) && n>0 ? n : fallback;
   }
   function sortValue(s,key){
+    if(key==='contratoNombre') return (s.contratoNombre||contractNameByCode(s.contratoCodigo)||'').toLowerCase();
     if(key==='dependenciaNombre') return (s.dependenciaNombre||depNameByCode(s.dependenciaCodigo)||'').toLowerCase();
     if(key==='zonaNombre') return (s.zonaNombre||zoneNameByCode(s.zonaCodigo)||'').toLowerCase();
     if(key==='numeroOperarios') return Number(s.numeroOperarios||0);
@@ -213,16 +235,16 @@ export const SedesAdmin=(mount,deps={})=>{
     });
   }
   function render(){
-    const term=search(); const st=filterStatus();
+    const term=search(); const st=filterStatus(); const contractCode=contractFilterCode();
+    const create=qs('#btnOpenCreate',ui); if(create) create.disabled=!contractCode;
     const data=snapshot.filter(s=>{
-      const text=[s.codigo,s.nombre,s.dependenciaNombre,depNameByCode(s.dependenciaCodigo),s.zonaNombre,zoneNameByCode(s.zonaCodigo)].join(' ').toLowerCase();
-      return (!term || text.includes(term)) && (!st || s.estado===st);
+      const text=[s.codigo,s.nombre,s.contratoCodigo,s.contratoNombre,contractNameByCode(s.contratoCodigo),s.clienteNombreSnapshot,s.dependenciaNombre,depNameByCode(s.dependenciaCodigo),s.zonaNombre,zoneNameByCode(s.zonaCodigo)].join(' ').toLowerCase();
+      return (!term || text.includes(term)) && (!st || s.estado===st) && Boolean(contractCode) && contractMatches(s, contractCode);
     });
     const sorted=sortData(data);
     const pageRows=paginator.slice(sorted);
     tbody.replaceChildren(...pageRows.map(s=> row(s)));
     cards.replaceChildren(...(pageRows.length ? pageRows.map(s=> sedeCard(s)) : [el('p',{className:'text-muted record-card__empty'},['Sin sedes para mostrar.'])]));
-    const msg=qs('#msg',ui); if(msg) msg.textContent=`Total registros filtrados: ${data.length}`;
     updateSortIndicators();
   }
   function row(s){
@@ -236,7 +258,7 @@ export const SedesAdmin=(mount,deps={})=>{
     const tdQr=el('td',{},[ qrBadge(s.qrEnabled) ]);
     const tdEstado=el('td',{},[ statusBadge(s.estado) ]);
     const tdAcc=el('td',{},[ actionsCell(s) ]);
-    tr.append(tdCodigo,tdNombre,tdDep,tdZone,tdOps,tdJornada,tdQr,tdEstado,tdAcc);
+    tr.append(tdCodigo,tdNombre,tdDep,tdZone,tdOps,tdJornada,tdEstado,tdQr,tdAcc);
     return tr;
   }
   function sedeCard(s){
@@ -244,6 +266,7 @@ export const SedesAdmin=(mount,deps={})=>{
       title:s.nombre||'-',
       subtitle:`Codigo: ${s.codigo||'-'}`,
       meta:[
+        ['Contrato',s.contratoNombre||contractNameByCode(s.contratoCodigo)],
         ['Dependencia',s.dependenciaNombre||depNameByCode(s.dependenciaCodigo)],
         ['Zona',s.zonaNombre||zoneNameByCode(s.zonaCodigo)],
         ['Operarios',String(s.numeroOperarios ?? '-')],
@@ -279,7 +302,7 @@ export const SedesAdmin=(mount,deps={})=>{
   function hasSedeLocation(s){
     return Boolean(sedeCoordinates(s));
   }
-  function formatDate(ts){ try{ const d=ts?.toDate? ts.toDate(): (ts? new Date(ts): null); return d? new Date(d).toLocaleString(): '-'; }catch{ return '-'; } }
+  function formatDate(ts){ try{ const d=ts? new Date(ts): null; return d? new Date(d).toLocaleString(): '-'; }catch{ return '-'; } }
   function auditInfoData(s){
     const hasMod = Boolean(s.lastModifiedAt || s.lastModifiedByEmail || s.lastModifiedByUid);
     return {
@@ -306,12 +329,18 @@ export const SedesAdmin=(mount,deps={})=>{
         ['Operarios',String(s.numeroOperarios ?? '-')],
         ['Jornada',labelJornada(s.jornada)]
       ]),
+      detailSection('Contrato y cliente',[
+        ['Contrato',s.contratoNombre||contractNameByCode(s.contratoCodigo)],
+        ['Codigo contrato',s.contratoCodigo],
+        ['Cliente',s.clienteNombreSnapshot],
+        ['NIT cliente',s.clienteNitSnapshot]
+      ]),
       detailSection('Datos especificos',[
         ['QR',qrBadge(s.qrEnabled)],
         ['Ubicacion sede',sedeLocationLabel(s)],
         ['Latitud',coords ? coords.latitude.toFixed(6) : '-'],
         ['Longitud',coords ? coords.longitude.toFixed(6) : '-'],
-        ['Radio validacion QR',`${parsePositiveInteger(s.qrRadiusMeters,500)} m`]
+        ['Radio de marcacion',`${parsePositiveInteger(s.qrRadiusMeters,200)} m`]
       ]),
       detailSection('Auditoria',[
         ['Evento',audit.action],
@@ -412,6 +441,8 @@ export const SedesAdmin=(mount,deps={})=>{
     try{ await deps.setSedeStatus?.(s.id,target); await deps.addAuditLog?.({ targetType:'sede', targetId:s.id, action: target==='activo'?'activate_sede':'deactivate_sede', before:{estado:s.estado}, after:{estado:target}, note: modal.values.detail||null }); }catch(e){ alert('Error: '+(e?.message||e)); }
   }
   async function openEditSedeModal(s){
+    const contractCode=contractFilterCode();
+    if(!contractCode || s.contratoCodigo!==contractCode) return;
     const modal=await showActionModal({
       title:'Editar sede',
       message:`Sede: ${s.nombre||'-'}`,
@@ -419,8 +450,8 @@ export const SedesAdmin=(mount,deps={})=>{
       fields:[
         { id:'codigo', label:'Codigo', type:'text', required:true, value:s.codigo||'' },
         { id:'nombre', label:'Nombre', type:'text', required:true, value:s.nombre||'' },
-        { id:'dependencia', label:'Dependencia', type:'datalist', required:true, placeholder:'Selecciona o escribe dependencia', value:labelByCode(depList,s.dependenciaCodigo||''), options:catalogOptions(depList) },
-        { id:'zona', label:'Zona', type:'datalist', required:true, placeholder:'Selecciona o escribe zona', value:labelByCode(zoneList,s.zonaCodigo||''), options:catalogOptions(zoneList) },
+        { id:'dependencia', label:'Dependencia', type:'datalist', required:true, placeholder:'Selecciona o escribe dependencia', value:labelByCode(depList,s.dependenciaCodigo||''), options:catalogOptionsForContract(depList,s.contratoCodigo||contractFilterCode()) },
+        { id:'zona', label:'Zona', type:'datalist', required:true, placeholder:'Selecciona o escribe zona', value:labelByCode(zoneList,s.zonaCodigo||''), options:catalogOptionsForContract(zoneList,s.contratoCodigo||contractFilterCode()) },
         { id:'numeroOperarios', label:'Nro de operarios', type:'number', required:true, min:'0', step:'1', value:String(s.numeroOperarios ?? '') },
         {
           id:'jornada',
@@ -445,13 +476,15 @@ export const SedesAdmin=(mount,deps={})=>{
         },
         { id:'qrLatitude', label:'Latitud sede', type:'number', step:'0.000001', value:s.qrLatitude ?? '', placeholder:'Ej: 6.244203' },
         { id:'qrLongitude', label:'Longitud sede', type:'number', step:'0.000001', value:s.qrLongitude ?? '', placeholder:'Ej: -75.581212' },
-        { id:'qrRadiusMeters', label:'Radio validacion QR (m)', type:'number', min:'1', step:'1', value:String(s.qrRadiusMeters || 500) },
+        { id:'qrRadiusMeters', label:'Radio de marcacion (m)', type:'number', min:'1', step:'1', value:String(s.qrRadiusMeters || 200) },
         { id:'detail', label:'Detalle de la modificacion', type:'textarea', required:true, placeholder:'Describe brevemente el cambio realizado' }
       ]
     });
     if(!modal.confirmed) return;
     const newCode=String(modal.values.codigo||'').trim();
     const newName=String(modal.values.nombre||'').trim();
+    if(contractFilterCode()!==contractCode) return;
+    const newContractCode=contractCode;
     const newDepCode=resolveCode(depList, modal.values.dependencia);
     const newZoneCode=resolveCode(zoneList, modal.values.zona);
     const newOpsRaw=String(modal.values.numeroOperarios||'').trim();
@@ -459,20 +492,28 @@ export const SedesAdmin=(mount,deps={})=>{
     const newQrEnabled=String(modal.values.qrEnabled||'false')==='true';
     const newQrLatitude=parseOptionalNumber(modal.values.qrLatitude);
     const newQrLongitude=parseOptionalNumber(modal.values.qrLongitude);
-    const newQrRadiusMeters=parsePositiveInteger(modal.values.qrRadiusMeters,500);
+    const newQrRadiusMeters=parsePositiveInteger(modal.values.qrRadiusMeters,200);
     if(!newCode||!newName) return alert('Completa codigo y nombre.');
+    if(!newContractCode) return alert('Selecciona un contrato valido.');
     if(!newDepCode||!newZoneCode) return alert('Selecciona dependencia y zona.');
+    const newContract=contractList.find(c=>c.codigo===newContractCode);
+    const newDep=depList.find(d=>d.codigo===newDepCode);
+    const newZone=zoneList.find(z=>z.codigo===newZoneCode);
+    if(newDep && newDep.contratoCodigo && newDep.contratoCodigo!==newContractCode) return alert('La dependencia seleccionada pertenece a otro contrato.');
+    if(newZone && newZone.contratoCodigo && newZone.contratoCodigo!==newContractCode) return alert('La zona seleccionada pertenece a otro contrato.');
     const newOps=Number(newOpsRaw);
     if(!Number.isFinite(newOps) || newOps<0 || !Number.isInteger(newOps)) return alert('Ingresa un numero entero de operarios valido.');
     if((newQrLatitude!==null || newQrLongitude!==null) && !hasValidSedeLocation(newQrLatitude, newQrLongitude)) return alert('Registra una ubicacion valida de la sede.');
     if(newQrEnabled && !hasValidSedeLocation(newQrLatitude, newQrLongitude)) return alert('Para activar QR debes registrar una ubicacion valida de la sede.');
     try{
       if(newCode!==s.codigo){ const dup=await deps.findSedeByCode?.(newCode); if(dup && dup.id!==s.id) return alert('Ya existe una sede con ese codigo.'); }
-      const newDep=depList.find(d=>d.codigo===newDepCode);
-      const newZone=zoneList.find(z=>z.codigo===newZoneCode);
       await deps.updateSede?.(s.id,{
         codigo:newCode,
         nombre:newName,
+        contratoCodigo:newContractCode,
+        contratoNombre:newContract?.nombre||null,
+        clienteNombreSnapshot:newContract?.clienteNombre||null,
+        clienteNitSnapshot:newContract?.clienteNit||null,
         dependenciaCodigo:newDepCode,
         dependenciaNombre:newDep?.nombre||null,
         zonaCodigo:newZoneCode,
@@ -484,7 +525,7 @@ export const SedesAdmin=(mount,deps={})=>{
         qrLongitude:newQrLongitude,
         qrRadiusMeters:newQrRadiusMeters
       });
-      await deps.addAuditLog?.({ targetType:'sede', targetId:s.id, action:'update_sede', before:{ codigo:s.codigo, nombre:s.nombre, dependenciaCodigo:s.dependenciaCodigo, zonaCodigo:s.zonaCodigo, numeroOperarios:s.numeroOperarios, jornada:s.jornada||'lun_vie', qrEnabled:s.qrEnabled===true, qrLatitude:s.qrLatitude, qrLongitude:s.qrLongitude, qrRadiusMeters:s.qrRadiusMeters }, after:{ codigo:newCode, nombre:newName, dependenciaCodigo:newDepCode, zonaCodigo:newZoneCode, numeroOperarios:newOps, jornada:newJornada, qrEnabled:newQrEnabled, qrLatitude:newQrLatitude, qrLongitude:newQrLongitude, qrRadiusMeters:newQrRadiusMeters }, note: modal.values.detail||null });
+      await deps.addAuditLog?.({ targetType:'sede', targetId:s.id, action:'update_sede', before:{ codigo:s.codigo, nombre:s.nombre, contratoCodigo:s.contratoCodigo, dependenciaCodigo:s.dependenciaCodigo, zonaCodigo:s.zonaCodigo, numeroOperarios:s.numeroOperarios, jornada:s.jornada||'lun_vie', qrEnabled:s.qrEnabled===true, qrLatitude:s.qrLatitude, qrLongitude:s.qrLongitude, qrRadiusMeters:s.qrRadiusMeters }, after:{ codigo:newCode, nombre:newName, contratoCodigo:newContractCode, dependenciaCodigo:newDepCode, zonaCodigo:newZoneCode, numeroOperarios:newOps, jornada:newJornada, qrEnabled:newQrEnabled, qrLatitude:newQrLatitude, qrLongitude:newQrLongitude, qrRadiusMeters:newQrRadiusMeters }, note: modal.values.detail||null });
     }catch(e){ alert('Error: '+(e?.message||e)); }
   }
   function actionsCell(s){
@@ -511,12 +552,15 @@ export const SedesAdmin=(mount,deps={})=>{
   initSorting();
   mount.replaceChildren(ui);
   let un=()=>{};
+  let unContracts=()=>{};
   try{
+    unContracts=deps.streamContracts?.((arr)=>{ contractList=(arr||[]).filter(c=>c.estado!=='inactivo'); paginator.reset(); render(); }) || (()=>{});
     unDeps=deps.streamDependencies?.((arr)=>{ depList=(arr||[]).filter(d=>d.estado!=='inactivo'); render(); }) || (()=>{});
     unZones=deps.streamZones?.((arr)=>{ zoneList=(arr||[]).filter(z=>z.estado!=='inactivo'); render(); }) || (()=>{});
     un=deps.streamSedes?.((arr)=>{ snapshot=arr||[]; render(); }) || (()=>{});
   }catch(e){
     const msg=qs('#msg',ui); if(msg) msg.textContent='Error cargando sedes: '+(e?.message||e);
   }
-  return ()=>{ un?.(); unDeps?.(); unZones?.(); };
+  const unSelectedContract=subscribe('selectedContractCode',()=>{ closeActionModal(); paginator.reset(); render(); });
+  return ()=>{ closeActionModal(); un?.(); unContracts?.(); unDeps?.(); unZones?.(); unSelectedContract?.(); };
 };

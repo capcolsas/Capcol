@@ -1,8 +1,8 @@
 .supervisor-body{
   min-height:100vh;
   min-height:100dvh;
-  background:#eef4f8;
-  color:#142d3f
+  background:var(--color-bg);
+  color:var(--color-fg)
 }
 .supervisor-body::before,
 .supervisor-body::after{display:none}
@@ -12,7 +12,7 @@
   min-height:100dvh;
   display:flex;
   flex-direction:column;
-  background:#eef4f8
+  background:var(--color-bg)
 }
 .supervisor-topbar{
   position:sticky;
@@ -23,9 +23,9 @@
   justify-content:space-between;
   gap:.75rem;
   padding:calc(.72rem + env(safe-area-inset-top)) .9rem .72rem;
-  background:#ffffff;
-  border-bottom:1px solid #d7e1ea;
-  box-shadow:0 2px 10px rgba(19,48,74,.06)
+  background:var(--color-surface);
+  border-bottom:1px solid var(--color-border);
+  box-shadow:none
 }
 .supervisor-brand{display:flex;align-items:center;gap:.65rem;min-width:0}
 .supervisor-brand__logo{
@@ -33,15 +33,15 @@
   height:38px;
   object-fit:contain;
   border-radius:8px;
-  background:#fff;
-  border:1px solid #e1e8ef;
+  background:var(--color-surface);
+  border:1px solid var(--color-border);
   padding:.22rem
 }
 .supervisor-brand__copy{display:grid;gap:.05rem;min-width:0}
 .supervisor-brand__eyebrow{
   font-size:.68rem;
   line-height:1;
-  color:#5f7486;
+  color:var(--color-muted);
   text-transform:uppercase;
   letter-spacing:.08em
 }
@@ -49,7 +49,7 @@
   font-size:1rem;
   line-height:1.15;
   font-weight:800;
-  color:#12314a;
+  color:var(--color-fg);
   overflow:hidden;
   text-overflow:ellipsis;
   white-space:nowrap
@@ -57,7 +57,7 @@
 .supervisor-brand__zone{
   display:block;
   max-width:54vw;
-  color:#607789;
+  color:var(--color-muted);
   font-size:.68rem;
   line-height:1.15;
   overflow:hidden;
@@ -77,18 +77,18 @@
   min-height:34px;
   padding:.4rem .62rem;
   border-radius:8px;
-  border:1px solid #c9d7e4;
-  background:#f7fafc;
-  color:#31566e;
+  border:1px solid var(--color-border-strong);
+  background:var(--color-surface-alt);
+  color:var(--color-fg);
   font-size:.78rem;
   font-weight:800;
   line-height:1.1;
   box-shadow:none
 }
 .supervisor-profile-btn.is-active{
-  background:#e9f3fc;
-  color:#0b63bc;
-  border-color:#bad5ee
+  background:var(--color-primary-soft);
+  color:var(--color-primary-600);
+  border-color:var(--color-primary)
 }
 .supervisor-main{
   flex:1;
@@ -104,9 +104,9 @@
   gap:.75rem;
   padding:1rem;
   border-radius:8px;
-  background:#ffffff;
-  border:1px solid #dce6ef;
-  box-shadow:0 6px 20px rgba(18,49,74,.07)
+  background:var(--color-surface);
+  border:1px solid var(--color-border);
+  box-shadow:none
 }
 .supervisor-hero__top{
   display:flex;
@@ -114,18 +114,18 @@
   justify-content:space-between;
   gap:.65rem
 }
-.supervisor-title{margin:0;font-size:1.32rem;line-height:1.12;color:#102d42}
-.supervisor-subtitle{margin:.25rem 0 0;color:#5d7283;font-size:.9rem;line-height:1.35}
+.supervisor-title{margin:0;font-size:1.32rem;line-height:1.12;color:var(--color-fg)}
+.supervisor-subtitle{margin:.25rem 0 0;color:var(--color-muted);font-size:.9rem;line-height:1.35}
 .supervisor-subtitle--ok{color:#187a46;font-weight:700}
 .supervisor-subtitle--warn{color:#b7791f;font-weight:700}
 .supervisor-subtitle--danger{color:#c43d34;font-weight:700}
-.supervisor-subtitle--neutral{color:#5d7283}
+.supervisor-subtitle--neutral{color:var(--color-muted)}
 .supervisor-date{
   display:grid;
   gap:.22rem;
   min-width:132px
 }
-.supervisor-date label{font-size:.74rem;color:#64798a}
+.supervisor-date label{font-size:.74rem;color:var(--color-muted)}
 .supervisor-date input{
   min-height:42px;
   max-width:none;
@@ -137,7 +137,7 @@
   align-items:center;
   justify-content:space-between;
   gap:.75rem;
-  color:#63798a;
+  color:var(--color-muted);
   font-size:.82rem
 }
 .supervisor-refresh{
@@ -157,31 +157,31 @@
   min-height:96px;
   padding:.82rem;
   border-radius:8px;
-  border:1px solid #dbe5ee;
-  background:#ffffff;
-  box-shadow:0 4px 14px rgba(18,49,74,.055)
+  border:1px solid var(--color-border);
+  background:var(--color-surface);
+  box-shadow:none
 }
-.supervisor-kpi__label{font-size:.78rem;color:#607789}
-.supervisor-kpi__value{font-size:2rem;line-height:1;font-weight:800;color:#12314a}
+.supervisor-kpi__label{font-size:.78rem;color:var(--color-muted)}
+.supervisor-kpi__value{font-size:2rem;line-height:1;font-weight:800;color:var(--color-fg)}
 .supervisor-kpi--ok .supervisor-kpi__value{color:#187a46}
 .supervisor-kpi--warn .supervisor-kpi__value{color:#b7791f}
 .supervisor-kpi--danger .supervisor-kpi__value{color:#c43d34}
-.supervisor-kpi--info .supervisor-kpi__value{color:#0b63bc}
+.supervisor-kpi--info .supervisor-kpi__value{color:var(--color-primary-600)}
 .supervisor-toolbar{
   display:grid;
   grid-template-columns:1fr;
   gap:.55rem;
   padding:.75rem;
   border-radius:8px;
-  background:#ffffff;
-  border:1px solid #dce6ef
+  background:var(--color-surface);
+  border:1px solid var(--color-border)
 }
 .supervisor-toolbar .input,
 .supervisor-toolbar .select{
   max-width:none;
   min-height:44px;
   border-radius:8px;
-  background:#fff
+  background:var(--color-surface)
 }
 .supervisor-filter-row{
   display:grid;
@@ -199,16 +199,16 @@
   font-size:1.02rem;
   line-height:1.15
 }
-.supervisor-count{font-size:.82rem;color:#607789}
+.supervisor-count{font-size:.82rem;color:var(--color-muted)}
 .supervisor-list{display:grid;gap:.62rem}
 .supervisor-card{
   display:grid;
   gap:.62rem;
   padding:.82rem;
   border-radius:8px;
-  border:1px solid #dce6ef;
-  background:#ffffff;
-  box-shadow:0 4px 14px rgba(18,49,74,.055)
+  border:1px solid var(--color-border);
+  background:var(--color-surface);
+  box-shadow:none
 }
 .supervisor-card__main{
   display:grid;
@@ -220,11 +220,11 @@
   margin:0;
   font-size:1rem;
   line-height:1.22;
-  color:#102d42
+  color:var(--color-fg)
 }
 .supervisor-card__meta{
   margin:.22rem 0 0;
-  color:#607789;
+  color:var(--color-muted);
   font-size:.84rem;
   line-height:1.35
 }
@@ -243,7 +243,7 @@
 .supervisor-status--pendiente{color:#946200;background:#f59e0b14;border-color:#f59e0b36}
 .supervisor-status--novedad{color:#8a3d00;background:#f9731614;border-color:#f9731636}
 .supervisor-status--ausente{color:#c43d34;background:#c43d3412;border-color:#c43d3430}
-.supervisor-status--neutral{color:#526a7c;background:#eef3f7;border-color:#d7e1ea}
+.supervisor-status--neutral{color:var(--color-muted);background:var(--color-surface-alt);border-color:var(--color-border)}
 .supervisor-status--libre{color:#187a46;background:#187a4612;border-color:#187a4630}
 .supervisor-status--ocupado{color:#8a3d00;background:#f9731614;border-color:#f9731636}
 .supervisor-card__details{
@@ -254,20 +254,20 @@
 .supervisor-detail{
   padding:.48rem .55rem;
   border-radius:8px;
-  background:#f7fafc;
-  border:1px solid #e1e9f0;
+  background:var(--color-surface-alt);
+  border:1px solid var(--color-border);
   min-width:0
 }
 .supervisor-detail span{
   display:block;
-  color:#687e90;
+  color:var(--color-muted);
   font-size:.7rem;
   line-height:1.1
 }
 .supervisor-detail strong{
   display:block;
   margin-top:.15rem;
-  color:#173750;
+  color:var(--color-fg);
   font-size:.84rem;
   line-height:1.2;
   overflow-wrap:anywhere
@@ -294,11 +294,11 @@
   gap:.38rem;
   padding:.55rem;
   border-radius:8px;
-  border:1px solid #d7e3ec;
-  background:#f9fbfd
+  border:1px solid var(--color-border);
+  background:var(--color-surface-alt)
 }
 .supervisor-replacement label{
-  color:#526a7c;
+  color:var(--color-muted);
   font-size:.74rem;
   font-weight:700
 }
@@ -311,7 +311,7 @@
   min-height:44px;
   max-width:none;
   border-radius:8px;
-  background:#fff
+  background:var(--color-surface)
 }
 .supervisor-replacement-save{
   min-height:44px;
@@ -322,7 +322,7 @@
   margin:0;
   font-size:.78rem;
   line-height:1.3;
-  color:#526a7c
+  color:var(--color-muted)
 }
 .supervisor-replacement-msg.is-ok{color:#187a46}
 .supervisor-replacement-msg.is-error{color:#c43d34}
@@ -339,11 +339,11 @@
   gap:.55rem;
   padding:.72rem;
   border-radius:8px;
-  border:1px solid #dce6ef;
-  background:#fff
+  border:1px solid var(--color-border);
+  background:var(--color-surface)
 }
 .supervisor-pagination__summary{
-  color:#607789;
+  color:var(--color-muted);
   font-size:.82rem
 }
 .supervisor-pagination__controls{
@@ -368,16 +368,16 @@
 }
 .supervisor-pagination__page{
   min-width:92px;
-  color:#607789;
+  color:var(--color-muted);
   font-size:.82rem;
   text-align:center
 }
 .supervisor-empty{
   padding:1rem;
   border-radius:8px;
-  border:1px dashed #c9d7e4;
-  background:#ffffff;
-  color:#607789;
+  border:1px dashed var(--color-border-strong);
+  background:var(--color-surface);
+  color:var(--color-muted);
   line-height:1.45
 }
 .supervisor-bottom-nav{
@@ -390,9 +390,9 @@
   grid-template-columns:repeat(4,1fr);
   gap:.25rem;
   padding:.45rem .55rem calc(.45rem + env(safe-area-inset-bottom));
-  background:#ffffff;
-  border-top:1px solid #d7e1ea;
-  box-shadow:0 -8px 22px rgba(18,49,74,.1)
+  background:var(--color-surface);
+  border-top:1px solid var(--color-border);
+  box-shadow:none
 }
 .supervisor-nav-btn{
   position:relative;
@@ -403,7 +403,7 @@
   border:0;
   border-radius:8px;
   background:transparent;
-  color:#607789;
+  color:var(--color-muted);
   font:inherit;
   font-size:.78rem;
   font-weight:700;
@@ -427,19 +427,19 @@
   height:1.22rem;
   padding:0 .34rem;
   border-radius:999px;
-  color:#fff;
+  color:var(--color-surface);
   font-size:.62rem;
   font-weight:900;
   line-height:1;
-  box-shadow:0 8px 16px rgba(18,49,74,.16)
+  box-shadow:none
 }
 .supervisor-nav-badge--warn{background:#f59e0b}
 .supervisor-nav-badge--danger{background:#dc2626}
 .supervisor-nav-badge--ok{background:#16a34a}
-.supervisor-nav-badge--neutral{background:#607789}
+.supervisor-nav-badge--neutral{background:var(--color-muted)}
 .supervisor-nav-btn.is-active{
-  background:#e9f3fc;
-  color:#0b63bc
+  background:var(--color-primary-soft);
+  color:var(--color-primary-600)
 }
 .supervisor-login{
   min-height:100vh;
@@ -447,7 +447,7 @@
   display:grid;
   align-items:center;
   padding:1rem;
-  background:#eef4f8
+  background:var(--color-bg)
 }
 .supervisor-login__inner{
   width:min(100%,430px);
@@ -466,8 +466,8 @@
   height:74px;
   object-fit:contain;
   border-radius:8px;
-  background:#fff;
-  border:1px solid #dce6ef;
+  background:var(--color-surface);
+  border:1px solid var(--color-border);
   padding:.4rem
 }
 .supervisor-login__brand h1{
@@ -475,10 +475,30 @@
   font-size:1.45rem;
   line-height:1.1
 }
-.supervisor-login__brand p{margin:0;color:#607789}
+.supervisor-nav-group{position:relative;min-width:0}
+.supervisor-nav-group>.supervisor-nav-btn{width:100%;gap:.35rem}
+.supervisor-nav-chevron{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;flex:0 0 22px;border-radius:50%;background:var(--color-surface-alt);color:currentColor}
+.supervisor-nav-chevron svg{display:block;width:20px;height:20px;transition:transform .2s ease}
+.supervisor-nav-btn[aria-expanded="true"] .supervisor-nav-chevron{background:var(--color-primary-soft);color:var(--color-primary-600)}
+.supervisor-nav-btn[aria-expanded="true"] .supervisor-nav-chevron svg{transform:rotate(180deg)}
+@media (prefers-reduced-motion:reduce){.supervisor-nav-chevron svg{transition:none}}
+.supervisor-submenu{position:absolute;bottom:calc(100% + 14px);left:0;width:min(280px,72vw);padding:.5rem;border:1px solid var(--color-border);border-radius:12px;background:var(--color-surface);box-shadow:0 8px 28px #0002}
+#supervisor-submenu-sites{left:auto;right:0}
+.supervisor-submenu[hidden]{display:none}
+.supervisor-submenu__link{display:block;width:100%;padding:.85rem .75rem;min-height:48px;border:0;border-radius:6px;background:transparent;color:var(--color-fg);font:inherit;font-size:.9rem;text-align:left;cursor:pointer}
+.supervisor-submenu__link:hover,.supervisor-submenu__link.is-active{background:var(--color-primary-soft);color:var(--color-primary-600)}
+.supervisor-submenu__link:focus-visible,.supervisor-nav-btn:focus-visible{outline:2px solid var(--color-primary-600);outline-offset:2px}
+.supervisor-visits-placeholder{display:grid;gap:.75rem;justify-items:start}
+.supervisor-visits-placeholder h2{margin:0;font-size:1.2rem}
+#supervisor-sites-mount{min-width:0}
+#supervisor-sites-mount .sede-location-page{margin:0;width:100%;min-width:0}
+#supervisor-sites-mount .sede-location-toolbar{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr));gap:.75rem}
+#supervisor-sites-mount .sede-location-toolbar>div{min-width:0}
+#supervisor-sites-mount :is(.input,.select){width:100%}
+.supervisor-login__brand p{margin:0;color:var(--color-muted)}
 .supervisor-login .main-card{
   border-radius:8px;
-  box-shadow:0 8px 24px rgba(18,49,74,.08)
+  box-shadow:none
 }
 .supervisor-login .btn,
 .supervisor-login .input{
@@ -498,11 +518,11 @@
   gap:.75rem;
   padding:1rem;
   border-radius:8px;
-  border:1px solid #dce6ef;
-  background:#fff
+  border:1px solid var(--color-border);
+  background:var(--color-surface)
 }
 .supervisor-denied__card h1{margin:0;font-size:1.2rem}
-.supervisor-denied__card p{margin:0;color:#607789;line-height:1.45}
+.supervisor-denied__card p{margin:0;color:var(--color-muted);line-height:1.45}
 @media (min-width:680px){
   .supervisor-main{padding-top:1rem}
   .supervisor-toolbar{grid-template-columns:1.2fr 1fr}
@@ -519,4 +539,36 @@
   .supervisor-pagination__size,
   .supervisor-pagination__page{grid-column:1 / -1}
   .supervisor-pagination__page{text-align:left}
+}
+
+
+/* Shared professional portal layout. Keep room for the fixed operational navigation. */
+html[data-ui="professional"] .supervisor-body {display:flex;flex-direction:column;min-height:100dvh;color:var(--color-fg)}
+html[data-ui="professional"] .supervisor-company-header {width:min(calc(100% - 32px),1120px);margin:0 auto}
+html[data-ui="professional"] .supervisor-root {flex:1;min-height:0}
+html[data-ui="professional"] :is(.supervisor-app,.supervisor-login,.supervisor-denied) {min-height:0;background:var(--color-bg)}
+html[data-ui="professional"] .supervisor-login {padding:24px 16px 40px;align-items:start}
+html[data-ui="professional"] .supervisor-login__inner {width:min(100%,480px)}
+html[data-ui="professional"] .supervisor-login .login-card {margin:8px auto 0;width:100%;padding:28px}
+html[data-ui="professional"] .supervisor-topbar {position:static;width:min(calc(100% - 32px),1120px);margin:0 auto;padding:20px 0;background:transparent;box-shadow:none}
+html[data-ui="professional"] .supervisor-main {max-width:1152px;padding:24px 16px}
+html[data-ui="professional"] .supervisor-brand__name {font-size:18px;font-weight:600;white-space:normal;overflow-wrap:anywhere}
+html[data-ui="professional"] .supervisor-brand__eyebrow {font-size:12px;text-transform:none;letter-spacing:0}
+html[data-ui="professional"] .supervisor-brand__zone {font-size:12px}
+html[data-ui="professional"] :is(.supervisor-hero,.supervisor-card,.supervisor-kpi,.supervisor-toolbar) {padding:20px;box-shadow:none}
+html[data-ui="professional"] .supervisor-panel.is-active {gap:20px}
+html[data-ui="professional"] .supervisor-title {font-weight:600;font-size:22px}
+html[data-ui="professional"] .supervisor-kpi__value {font-weight:600;font-variant-numeric:tabular-nums}
+html[data-ui="professional"] .supervisor-status {border-radius:4px}
+html[data-ui="professional"] .supervisor-body .btn {min-height:44px}
+html[data-ui="professional"] .supervisor-bottom-nav {background:var(--color-surface);border-color:var(--color-border);box-shadow:none}
+html[data-ui="professional"] .supervisor-nav-btn {color:var(--color-muted);font-weight:500}
+html[data-ui="professional"] .supervisor-nav-btn.is-active {background:var(--color-primary-soft);color:var(--color-primary-600)}
+html[data-ui="professional"][data-theme="dark"] .supervisor-body :is(.supervisor-status--presente,.supervisor-status--libre,.supervisor-subtitle--ok,.supervisor-kpi--ok .supervisor-kpi__value,.supervisor-detail--ok span,.supervisor-detail--ok strong) {color:var(--color-accent)}
+html[data-ui="professional"][data-theme="dark"] .supervisor-body :is(.supervisor-status--pendiente,.supervisor-status--novedad,.supervisor-status--ocupado,.supervisor-subtitle--warn,.supervisor-kpi--warn .supervisor-kpi__value) {color:#f5c76b}
+html[data-ui="professional"][data-theme="dark"] .supervisor-body :is(.supervisor-status--ausente,.supervisor-subtitle--danger,.supervisor-kpi--danger .supervisor-kpi__value,.supervisor-detail--danger span,.supervisor-detail--danger strong) {color:#ff9d96}
+@media (max-width:420px) {
+  html[data-ui="professional"] :is(.supervisor-hero,.supervisor-card,.supervisor-kpi,.supervisor-toolbar) {padding:16px}
+  html[data-ui="professional"] .supervisor-card__main {grid-template-columns:minmax(0,1fr)}
+  html[data-ui="professional"] .supervisor-status {justify-self:start}
 }

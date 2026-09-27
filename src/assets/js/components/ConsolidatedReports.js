@@ -1,5 +1,6 @@
 import { el, qs } from '../utils/dom.js';
 import { can, PERMS } from '../permissions.js';
+import { contractFilterCode } from '../utils/contractScope.js';
 
 export const ConsolidatedReports = (mount, deps = {}) => {
   const canExport = can(PERMS.EXPORT_REPORTS_SERVICES_CONSOLIDATED);
@@ -42,6 +43,7 @@ export const ConsolidatedReports = (mount, deps = {}) => {
   let selectedAbsenteeismDate = todayBogota();
   let selectedServicesWithoutFsDateFrom = `${todayBogota().slice(0, 7)}-01`;
   let selectedServicesWithoutFsDateTo = todayBogota();
+  let selectedServicesWithoutFsContract = '';
   let selectedNoveltyDateFrom = `${todayBogota().slice(0, 7)}-01`;
   let selectedNoveltyDateTo = todayBogota();
   let selectedAttendanceWithoutFsDateFrom = `${todayBogota().slice(0, 7)}-01`;
@@ -65,7 +67,6 @@ export const ConsolidatedReports = (mount, deps = {}) => {
     if (!value) return '';
     try {
       if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
-      if (typeof value?.toDate === 'function') return value.toDate().toISOString().slice(0, 10);
       const d = new Date(value);
       if (Number.isNaN(d.getTime())) return '';
       return d.toISOString().slice(0, 10);
@@ -76,7 +77,7 @@ export const ConsolidatedReports = (mount, deps = {}) => {
 
   function formatHour(value) {
     try {
-      const d = value?.toDate ? value.toDate() : value ? new Date(value) : null;
+      const d = value ? new Date(value) : null;
       if (!d || Number.isNaN(d.getTime())) return '-';
       return d.toLocaleTimeString('es-CO', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
     } catch {
@@ -1295,6 +1296,8 @@ export const ConsolidatedReports = (mount, deps = {}) => {
           const serviceDoc = dynamicServiceDoc || 'NOCON';
 
           const row = {
+            contrato: String(sede?.contratoNombre || sede?.contratoCodigo || '-').trim() || '-',
+            contratoCodigo: String(sede?.contratoCodigo || '').trim(),
             dependencia: String(sede?.dependenciaNombre || sede?.dependenciaCodigo || '-').trim() || '-',
             zona: String(sede?.zonaNombre || sede?.zonaCodigo || '-').trim() || '-',
             sede: String(sede?.nombre || sedeCode || '-').trim() || '-',
@@ -1745,9 +1748,54 @@ export const ConsolidatedReports = (mount, deps = {}) => {
     ]));
   }
 
+  function getFilteredServicesWithoutFsRows() {
+    const contract = effectiveServicesContractFilter();
+    return (generatedServicesWithoutFsRows || []).filter((row) => !contract || row.contratoCodigo === contract);
+  }
+
+  function effectiveServicesContractFilter() {
+    return String(qs('#servicesWithoutFsContractFilter', ui)?.value || selectedServicesWithoutFsContract || contractFilterCode() || '').trim();
+  }
+
+  function syncServicesWithoutFsContractOptions(rows = []) {
+    const select = qs('#servicesWithoutFsContractFilter', ui);
+    if (!select) return;
+    const previous = String(select.value || selectedServicesWithoutFsContract || '').trim();
+    const globalContract = contractFilterCode();
+    const byCode = new Map();
+    (rows || []).forEach((row) => {
+      const code = String(row?.contratoCodigo || '').trim();
+      if (globalContract && code !== globalContract) return;
+      if (!code || byCode.has(code)) return;
+      const label = String(row?.contratoNombre || code).trim() || code;
+      byCode.set(code, label);
+    });
+    const options = Array.from(byCode.entries()).sort((a, b) => a[1].localeCompare(b[1]));
+    select.replaceChildren(
+      el('option', { value: '' }, ['Todos']),
+      ...options.map(([code, label]) => el('option', { value: code, selected: code === previous }, [`${label} (${code})`]))
+    );
+    select.value = byCode.has(previous) ? previous : '';
+    selectedServicesWithoutFsContract = select.value;
+  }
+
+  function renderServicesWithoutFsTable() {
+    const rows = getFilteredServicesWithoutFsRows();
+    const tbody = qs('#servicesWithoutFsTbody', ui);
+    if (tbody) tbody.replaceChildren(...renderServicesWithoutFsRows(rows, generatedServicesWithoutFsDays));
+    const totalAttendance = rows.reduce((acc, row) => acc + Number(row.asistencias || 0), 0);
+    const totalNode = qs('#servicesWithoutFsTotal', ui);
+    if (totalNode) {
+      totalNode.textContent = `Periodo: ${selectedServicesWithoutFsDateFrom} a ${selectedServicesWithoutFsDateTo} | Servicios: ${rows.length} de ${generatedServicesWithoutFsRows.length} | Dias: ${generatedServicesWithoutFsDays.length} | Asistencias: ${totalAttendance}`;
+    }
+    const btnExport = qs('#btnExportServicesWithoutFs', ui);
+    if (btnExport) btnExport.disabled = !canExport || rows.length === 0;
+  }
+
   function renderServicesWithoutFsRows(rows = [], days = []) {
-    if (!rows.length) return [el('tr', {}, [el('td', { colSpan: 5 + days.length, className: 'text-muted' }, ['Sin servicios planeados para el rango seleccionado.'])])];
+    if (!rows.length) return [el('tr', {}, [el('td', { colSpan: 6 + days.length, className: 'text-muted' }, ['Sin servicios planeados para el rango seleccionado.'])])];
     return rows.map((r) => el('tr', {}, [
+      el('td', { style: 'white-space:nowrap;' }, [r.contrato]),
       el('td', { style: 'white-space:nowrap;' }, [r.dependencia]),
       el('td', { style: 'white-space:nowrap;' }, [r.zona]),
       el('td', { style: 'white-space:nowrap;' }, [r.sede]),
@@ -1813,9 +1861,10 @@ export const ConsolidatedReports = (mount, deps = {}) => {
         btnGenerate.textContent = 'Generando...';
       }
       const contextFrom = shiftIsoDate(dateFrom, -31) || dateFrom;
+      const contratoCodigo = contractFilterCode();
       const [rawEmployees, statusRows, rawCargos] = await Promise.all([
         streamOnce((ok, fail) => deps.streamEmployees?.(ok, fail)),
-        deps.listEmployeeDailyStatusRange?.(contextFrom, dateTo) || [],
+        deps.listEmployeeDailyStatusRange?.(contextFrom, dateTo, { contratoCodigo }) || [],
         streamOnce((ok, fail) => deps.streamCargos?.(ok, fail))
       ]);
       const normalized = normalizeAttendanceWithoutFsRows(dateFrom, dateTo, rawEmployees, statusRows, rawCargos);
@@ -1860,6 +1909,7 @@ export const ConsolidatedReports = (mount, deps = {}) => {
     running = true;
     selectedServicesWithoutFsDateFrom = dateFrom;
     selectedServicesWithoutFsDateTo = dateTo;
+    selectedServicesWithoutFsContract = String(qs('#servicesWithoutFsContractFilter', ui)?.value || '').trim();
     const btnGenerate = qs('#btnGenerateServicesWithoutFs', ui);
     const btnExport = qs('#btnExportServicesWithoutFs', ui);
     try {
@@ -1868,18 +1918,21 @@ export const ConsolidatedReports = (mount, deps = {}) => {
         btnGenerate.textContent = 'Generando...';
       }
       const contextFrom = shiftIsoDate(dateFrom, -31) || dateFrom;
+      const contratoCodigo = effectiveServicesContractFilter();
       const [statusRows, rawSedes, rawHistory, replacementRows] = await Promise.all([
-        labelReportLoad('employee_daily_status', deps.listEmployeeDailyStatusRange?.(contextFrom, dateTo) || []),
+        labelReportLoad('employee_daily_status', deps.listEmployeeDailyStatusRange?.(contextFrom, dateTo, { contratoCodigo }) || []),
         labelReportLoad('sedes', streamOnce((ok, fail) => deps.streamSedes?.(ok, fail))),
         labelReportLoad('employee_cargo_history', deps.streamEmployeeCargoHistoryAll ? streamOnce((ok) => deps.streamEmployeeCargoHistoryAll?.(ok, 50000)) : []),
-        labelReportLoad('import_replacements', deps.listImportReplacementsRange?.(contextFrom, dateTo) || [])
+        labelReportLoad('import_replacements', deps.listImportReplacementsRange?.(contextFrom, dateTo, { contratoCodigo }) || [])
       ]);
+      syncServicesWithoutFsContractOptions(rawSedes);
       const normalized = normalizeServicesWithoutFsRows(dateFrom, dateTo, statusRows, rawSedes, rawHistory, replacementRows);
       generatedServicesWithoutFsRows = normalized.rows;
       generatedServicesWithoutFsDays = normalized.days;
       const headRow = qs('#servicesWithoutFsHeadRow', ui);
       if (headRow) {
         headRow.replaceChildren(
+          el('th', {}, ['Contrato']),
           el('th', {}, ['Dependencia']),
           el('th', {}, ['Zona']),
           el('th', {}, ['Sede']),
@@ -1888,11 +1941,7 @@ export const ConsolidatedReports = (mount, deps = {}) => {
           el('th', {}, ['Asistencias'])
         );
       }
-      const tbody = qs('#servicesWithoutFsTbody', ui);
-      if (tbody) tbody.replaceChildren(...renderServicesWithoutFsRows(normalized.rows, normalized.days));
-      const totalAttendance = normalized.rows.reduce((acc, row) => acc + Number(row.asistencias || 0), 0);
-      const totalNode = qs('#servicesWithoutFsTotal', ui);
-      if (totalNode) totalNode.textContent = `Periodo: ${dateFrom} a ${dateTo} | Servicios: ${normalized.rows.length} | Dias: ${normalized.days.length} | Asistencias: ${totalAttendance}`;
+      renderServicesWithoutFsTable();
       if (btnExport) btnExport.disabled = !canExport || normalized.rows.length === 0;
       setMessage(`Consolidado de servicios generado para ${dateFrom} a ${dateTo}. Servicios: ${normalized.rows.length}`);
     } catch (e) {
@@ -1925,9 +1974,10 @@ export const ConsolidatedReports = (mount, deps = {}) => {
       }
       const isClosed = await deps.isOperationDayClosed?.(date);
       if (!isClosed) throw new Error('Solo se pueden generar reportes historicos de dias cerrados.');
+      const contratoCodigo = contractFilterCode();
       const [statusRows, attendanceRows] = await Promise.all([
-        deps.listEmployeeDailyStatusRange?.(date, date) || [],
-        deps.listAttendanceRange?.(date, date) || []
+        deps.listEmployeeDailyStatusRange?.(date, date, { contratoCodigo }) || [],
+        deps.listAttendanceRange?.(date, date, { contratoCodigo }) || []
       ]);
       generatedDailyRows = normalizeDailyRegistryRows(date, statusRows, attendanceRows);
       const totalNode = qs('#dailyTotal', ui);
@@ -2008,9 +2058,10 @@ export const ConsolidatedReports = (mount, deps = {}) => {
         btnGenerate.disabled = true;
         btnGenerate.textContent = 'Generando...';
       }
+      const contratoCodigo = contractFilterCode();
       const [statusRows, replacementRows] = await Promise.all([
-        deps.listEmployeeDailyStatusRange?.(dateFrom, dateTo) || [],
-        deps.listImportReplacementsRange?.(dateFrom, dateTo) || []
+        deps.listEmployeeDailyStatusRange?.(dateFrom, dateTo, { contratoCodigo }) || [],
+        deps.listImportReplacementsRange?.(dateFrom, dateTo, { contratoCodigo }) || []
       ]);
       generatedNoveltyRows = normalizeNoveltyConsolidatedRows(statusRows, replacementRows);
       const peopleCount = new Set(generatedNoveltyRows.map((row) => `${row.cedula}|${row.nombre}`)).size;
@@ -2048,9 +2099,10 @@ export const ConsolidatedReports = (mount, deps = {}) => {
       }
       const dayClosed = await deps.isOperationDayClosed?.(date);
       if (!dayClosed) throw new Error('La fecha seleccionada no esta cerrada.');
+      const contratoCodigo = contractFilterCode();
       const [statusRows, sedeClosureRows] = await Promise.all([
-        deps.listEmployeeDailyStatusRange?.(date, date) || [],
-        deps.listDailySedeClosuresRange?.(date, date) || []
+        deps.listEmployeeDailyStatusRange?.(date, date, { contratoCodigo }) || [],
+        deps.listDailySedeClosuresRange?.(date, date, { contratoCodigo }) || []
       ]);
       generatedAbsenteeismRows = normalizeAbsenteeismRows(date, statusRows, sedeClosureRows);
       const totals = generatedAbsenteeismRows.reduce(
@@ -2157,7 +2209,8 @@ export const ConsolidatedReports = (mount, deps = {}) => {
 
   async function exportServicesWithoutFsExcel() {
     try {
-      if (!generatedServicesWithoutFsRows.length) throw new Error('Primero genera el reporte.');
+      const rows = getFilteredServicesWithoutFsRows();
+      if (!rows.length) throw new Error('Primero genera el reporte o ajusta los filtros.');
       if (!canExport) throw new Error('No tienes permiso para exportar este reporte.');
       const btn = qs('#btnExportServicesWithoutFs', ui);
       if (btn) {
@@ -2165,8 +2218,10 @@ export const ConsolidatedReports = (mount, deps = {}) => {
         btn.textContent = 'Generando...';
       }
       const mod = await import('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm');
-      const exportRows = generatedServicesWithoutFsRows.map((row) => {
+      const exportRows = rows.map((row) => {
         const item = {
+          Contrato: row.contrato,
+          'Codigo Contrato': row.contratoCodigo,
           Dependencia: row.dependencia,
           Zona: row.zona,
           Sede: row.sede,
@@ -2180,6 +2235,8 @@ export const ConsolidatedReports = (mount, deps = {}) => {
       });
       const ws = mod.utils.json_to_sheet(exportRows);
       ws['!cols'] = [
+        { wch: 30 },
+        { wch: 18 },
         { wch: 24 },
         { wch: 18 },
         { wch: 28 },
@@ -2190,7 +2247,7 @@ export const ConsolidatedReports = (mount, deps = {}) => {
       const wb = mod.utils.book_new();
       mod.utils.book_append_sheet(wb, ws, 'Consolidado Servicios');
       mod.writeFile(wb, `consolidado_servicios_${selectedServicesWithoutFsDateFrom}_a_${selectedServicesWithoutFsDateTo}.xlsx`);
-      setMessage(`Excel generado correctamente. Servicios: ${generatedServicesWithoutFsRows.length}`);
+      setMessage(`Excel generado correctamente. Servicios: ${rows.length}`);
     } catch (e) {
       setMessage(`Error al generar Excel del consolidado de servicios: ${e?.message || e}`);
     } finally {
@@ -2443,6 +2500,7 @@ export const ConsolidatedReports = (mount, deps = {}) => {
         el('div', {}, [el('h3', { style: 'margin:0;' }, ['Reporte: Consolidado Servicios'])]),
         el('div', {}, [el('label', { className: 'label' }, ['Desde']), el('input', { id: 'servicesWithoutFsDateFrom', className: 'input', type: 'date', value: selectedServicesWithoutFsDateFrom, max: todayBogota(), style: 'max-width:180px' })]),
         el('div', {}, [el('label', { className: 'label' }, ['Hasta']), el('input', { id: 'servicesWithoutFsDateTo', className: 'input', type: 'date', value: selectedServicesWithoutFsDateTo, max: todayBogota(), style: 'max-width:180px' })]),
+        el('div', {}, [el('label', { className: 'label' }, ['Contrato']), el('select', { id: 'servicesWithoutFsContractFilter', className: 'input', style: 'max-width:260px' }, [el('option', { value: '' }, ['Todos'])])]),
         el('button', { id: 'btnGenerateServicesWithoutFs', className: 'btn', type: 'button' }, ['Generar reporte']),
         el('button', { id: 'btnExportServicesWithoutFs', className: 'btn btn--primary', type: 'button', disabled: true, title: canExport ? '' : 'Modo consulta: no puedes exportar.' }, ['Generar Excel'])
       ]),
@@ -2450,17 +2508,23 @@ export const ConsolidatedReports = (mount, deps = {}) => {
       el('div', { className: 'table-wrap mt-2' }, [
         el('table', { className: 'table' }, [
           el('thead', {}, [el('tr', { id: 'servicesWithoutFsHeadRow' }, [
+            el('th', {}, ['Contrato']),
             el('th', {}, ['Dependencia']),
             el('th', {}, ['Zona']),
             el('th', {}, ['Sede']),
             el('th', {}, ['Servicio planeado']),
             el('th', {}, ['Asistencias'])
           ])]),
-          el('tbody', { id: 'servicesWithoutFsTbody' }, [el('tr', {}, [el('td', { colSpan: 5, className: 'text-muted' }, ['Sin generar.'])])])
+          el('tbody', { id: 'servicesWithoutFsTbody' }, [el('tr', {}, [el('td', { colSpan: 6, className: 'text-muted' }, ['Sin generar.'])])])
         ])
       ])
     ]);
     qs('#reportContent', ui).replaceChildren(content);
+    qs('#servicesWithoutFsContractFilter', ui).value = selectedServicesWithoutFsContract;
+    qs('#servicesWithoutFsContractFilter', ui)?.addEventListener('change', () => {
+      selectedServicesWithoutFsContract = String(qs('#servicesWithoutFsContractFilter', ui)?.value || '').trim();
+      renderServicesWithoutFsTable();
+    });
     qs('#btnGenerateServicesWithoutFs', ui)?.addEventListener('click', generateServicesWithoutFsReport);
     qs('#btnExportServicesWithoutFs', ui)?.addEventListener('click', exportServicesWithoutFsExcel);
   }
@@ -2655,7 +2719,7 @@ export const ConsolidatedReports = (mount, deps = {}) => {
       renderAbsenteeismPanel();
       setMessage(' ');
       return;
-    }
+    }
     qs('#reportContent', ui).replaceChildren(el('p', { className: 'text-muted' }, ['Selecciona una tarjeta para abrir el reporte.']));
   }
 

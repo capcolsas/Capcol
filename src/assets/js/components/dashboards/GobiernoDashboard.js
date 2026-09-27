@@ -1,6 +1,7 @@
+import { metricTile, actionTile } from './DashboardUI.js';
 import { PERMS } from '../../permissions.js';
 import { ROLE_LABELS } from '../../roles.js';
-import { navigate } from '../../router.js';
+
 import { el } from '../../utils/dom.js';
 import { isActive, visibleActions } from './ModuleDashboardUtils.js';
 
@@ -19,7 +20,7 @@ const METRICS = [
 export const GobiernoDashboard = (mount, deps = {}) => {
   const today = todayBogota();
   const actions = visibleActions(ACTIONS);
-  const metricsNode = el('div', { className: 'module-dashboard__metrics' },
+  const metricsNode = el('div', { className: 'contract-demo__kpis summary-dashboard__kpis' },
     METRICS.map((metric) => metricTile(metric.label, '...', metric.tone))
   );
   const chartMount = el('div', { className: 'gov-role-chart__body' }, [
@@ -30,10 +31,9 @@ export const GobiernoDashboard = (mount, deps = {}) => {
   ]);
   const actionNodes = actions.map((action) => actionTile(action));
 
-  const ui = el('section', { className: 'main-card module-dashboard module-dashboard--gobierno' }, [
-    el('div', { className: 'module-dashboard__header' }, [
+  const ui = el('section', { className: 'main-card module-dashboard contract-dashboard-demo summary-dashboard module-dashboard--gobierno' }, [
+    el('div', { className: 'contract-demo__header' }, [
       el('div', {}, [
-        el('p', { className: 'module-dashboard__eyebrow' }, ['Dashboard de modulo']),
         el('h2', {}, ['Gobierno'])
       ]),
       el('span', { className: 'badge' }, [`Corte: ${today}`])
@@ -108,21 +108,9 @@ export const GobiernoDashboard = (mount, deps = {}) => {
   };
 };
 
-function actionTile(action = {}) {
-  const btn = el('button', { className: 'module-dashboard__action', type: 'button' }, [
-    el('span', { className: 'module-dashboard__action-label' }, [action.label || '-']),
-    el('span', { className: 'module-dashboard__action-detail' }, [action.detail || 'Abrir modulo'])
-  ]);
-  btn.addEventListener('click', () => navigate(action.route || '/'));
-  return btn;
-}
 
-function metricTile(label, value, tone = 'blue') {
-  return el('div', { className: `metric-tile metric-tile--${tone}` }, [
-    el('span', { className: 'metric-tile__label' }, [label]),
-    el('strong', { className: 'metric-tile__value' }, [String(value ?? '-')])
-  ]);
-}
+
+
 
 function renderUserMetrics(container, users = []) {
   const tiles = Array.from(container.querySelectorAll('.metric-tile__value'));

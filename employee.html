@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="es" data-theme="light">
+<html lang="es" data-theme="light" data-ui="professional">
 <head>
   <meta charset="UTF-8" />
   <title>Portal Empleados | RockyDEMO</title>
@@ -10,33 +10,30 @@
   <link rel="stylesheet" href="src/assets/css/components.css" />
   <link rel="stylesheet" href="src/assets/css/layout.css" />
   <link rel="stylesheet" href="src/assets/css/utils.css" />
-  <link rel="stylesheet" href="src/assets/css/employee.css?v=20260715-incapacity-title" />
+  <link rel="stylesheet" href="src/assets/css/professional.css" />
+  <link rel="stylesheet" href="src/assets/css/employee.css?v=20260909-footer-width" />
+  <link rel="stylesheet" href="src/assets/css/portal-footer.css?v=20260909" />
 </head>
-<body>
+<body class="employee-page">
   <main class="employee-shell">
     <div class="employee-shell__inner">
       <header class="employee-hero">
         <div class="employee-hero__brand">
-          <div class="employee-hero__logos" aria-label="Logos Rocky y cliente">
+          <div class="employee-hero__logos" aria-label="Rocky y Capcol S.A.S.">
             <img class="employee-hero__logo employee-hero__logo--rocky" src="src/assets/img/rocky-logo.png" alt="Rocky" />
-            <img class="employee-hero__logo employee-hero__logo--client" src="src/assets/img/tercero.png" alt="Cliente" />
+            <img class="employee-hero__logo employee-hero__logo--client" src="src/assets/img/tercero.png" alt="Capcol S.A.S." />
+            <div class="employee-company-copy">
+              <span class="employee-company-name">CAPCOL S.A.S.</span>
+              <span class="employee-company-nit">NIT 900.939.656-7</span>
+            </div>
           </div>
           <a class="employee-hero__tag" href="https://www.capcol.com.co/access.html">Centro de accesos</a>
-        </div>
-        <div class="employee-hero__content">
-          <p class="employee-hero__eyebrow">RockyDEMO</p>
-          <h1 class="employee-hero__title">Portal de empleados</h1>
-          <p class="employee-hero__copy">Ingresa con tu documento y los ultimos 4 digitos del celular registrado para acceder.</p>
-          <div class="employee-hero__badges" aria-label="Caracteristicas del portal">
-            <span>Acceso verificado</span>
-            <span>Carga rapida</span>
-            <span>Datos protegidos</span>
-          </div>
         </div>
       </header>
       <section id="employee-root"></section>
     </div>
   </main>
-  <script type="module" src="src/assets/js/employee-app.js?v=20260715-certificates-enabled"></script>
+  <footer id="employee-footer" class="footer portal-footer"></footer>
+  <script type="module" src="src/assets/js/employee-app.js?v=20260910-functions"></script>
 </body>
 </html>

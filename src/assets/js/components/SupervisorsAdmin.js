@@ -1,5 +1,5 @@
 import { el, qs, infoIcon, editIcon } from '../utils/dom.js';
-import { showInfoModal } from '../utils/infoModal.js';
+import { showCatalogDetail } from '../utils/catalogDetail.js';
 import { showActionModal } from '../utils/actionModal.js';
 import { createTablePagination } from '../utils/pagination.js';
 import { can, PERMS } from '../permissions.js';
@@ -16,7 +16,6 @@ export const SupervisorsAdmin=(mount,deps={})=>{
         el('div',{className:'table-wrap responsive-table-view'},[
           el('table',{className:'table',id:'tbl'},[
             el('thead',{},[ el('tr',{},[
-              el('th',{'data-sort':'codigo',style:'cursor:pointer'},['Codigo']),
               el('th',{'data-sort':'documento',style:'cursor:pointer'},['Documento']),
               el('th',{'data-sort':'nombre',style:'cursor:pointer'},['Nombre']),
               el('th',{'data-sort':'zonaNombre',style:'cursor:pointer'},['Zona']),
@@ -29,8 +28,7 @@ export const SupervisorsAdmin=(mount,deps={})=>{
           ])
         ]),
         el('div',{id:'supervisorCards',className:'record-card-list'},[])
-      ]),
-      el('p',{id:'msg',className:'text-muted mt-2'},[' '])
+      ])
     ])
   ]);
 
@@ -61,7 +59,7 @@ export const SupervisorsAdmin=(mount,deps={})=>{
 
   const search=()=> qs('#txtSearch',ui).value.trim().toLowerCase();
   const filterStatus=()=> qs('#selStatus',ui).value;
-  function toDate(ts){ try{ const d=ts?.toDate? ts.toDate(): (ts? new Date(ts): null); return d? d.getTime():0; }catch{ return 0; } }
+  function toDate(ts){ try{ const d=ts? new Date(ts): null; return d? d.getTime():0; }catch{ return 0; } }
   function sortVal(s,key){ if(key==='zonaNombre') return (s.zonaNombre||zoneNameByCode(s.zonaCodigo)||'').toLowerCase(); if(key==='fechaIngreso'||key==='fechaRetiro') return toDate(s[key]); return String(s[key]??'').toLowerCase(); }
   function sortData(data){ if(!sortKey) return data; const out=[...data]; out.sort((a,b)=>{ const va=sortVal(a,sortKey); const vb=sortVal(b,sortKey); if(va===vb) return 0; return va>vb?sortDir:-sortDir; }); return out; }
   function updateSortIndicators(){ ui.querySelectorAll('th[data-sort]').forEach((th)=>{ const base=th.dataset.baseLabel||th.textContent.replace(/\s[\^v▲▼]$/,''); th.dataset.baseLabel=base; const key=th.getAttribute('data-sort'); th.textContent=(sortKey===key)?`${base} ${sortDir===1?'▲':'▼'}`:base; }); }
@@ -77,12 +75,10 @@ export const SupervisorsAdmin=(mount,deps={})=>{
     const pageRows=paginator.slice(sorted);
     tbody.replaceChildren(...pageRows.map(s=> row(s)));
     cards.replaceChildren(...(pageRows.length?pageRows.map(s=> supervisorCard(s)):[el('p',{className:'text-muted record-card__empty'},['Sin supervisores para mostrar.'])]));
-    const msg=qs('#msg',ui); if(msg) msg.textContent=`Total registros filtrados: ${data.length}`;
     updateSortIndicators();
   }
   function row(s){
     const tr=el('tr',{'data-id':s.id});
-    const tdCodigo=el('td',{},[s.codigo||'-']);
     const linked=isLinkedByDoc(s.documento);
     const tdDoc=el('td',{}, linked ? [s.documento||'-',' ',el('span',{className:'badge'},['Vinculado'])] : [s.documento||'-']);
     const tdNombre=el('td',{},[s.nombre||'-']);
@@ -91,29 +87,32 @@ export const SupervisorsAdmin=(mount,deps={})=>{
     const tdIngreso=el('td',{},[ formatDate(s.fechaIngreso) ]);
     const tdRetiro=el('td',{},[ formatDate(s.fechaRetiro) ]);
     const tdAcc=el('td',{},[ actionsCell(s) ]);
-    tr.append(tdCodigo,tdDoc,tdNombre,tdZona,tdEstado,tdIngreso,tdRetiro,tdAcc);
+    tr.append(tdDoc,tdNombre,tdZona,tdEstado,tdIngreso,tdRetiro,tdAcc);
     return tr;
   }
   function statusBadge(st){ return el('span',{className:'badge '+(st==='activo'?'badge--ok':'badge--off')},[st||'-']); }
   function formatDate(ts){
     try{
-      const d=ts?.toDate? ts.toDate(): (ts? new Date(ts): null);
+      const d=ts? new Date(ts): null;
       return d? new Date(d).toLocaleDateString(): '-';
     }catch{ return '-'; }
   }
-  function formatDateTime(ts){
-    try{
-      const d=ts?.toDate? ts.toDate(): (ts? new Date(ts): null);
-      return d? new Date(d).toLocaleString(): '-';
-    }catch{ return '-'; }
-  }
-  function auditInfoData(s){
-    const hasMod = Boolean(s.lastModifiedAt || s.lastModifiedByEmail || s.lastModifiedByUid);
-    return {
-      action: hasMod ? 'Ultima modificacion' : 'Creacion',
-      user: hasMod ? (s.lastModifiedByEmail||s.lastModifiedByUid||'-') : (s.createdByEmail||s.createdByUid||'-'),
-      date: hasMod ? formatDateTime(s.lastModifiedAt) : formatDateTime(s.createdAt)
-    };
+  function openSupervisorInfoModal(s={}){
+    showCatalogDetail(`Informacion del supervisor - ${s.nombre||'-'}`,s,[
+      ['Datos generales',[
+        ['Codigo',s.codigo], ['Documento',s.documento], ['Nombre',s.nombre],
+        ['Estado',statusBadge(s.estado)]
+      ]],
+      ['Asignacion',[
+        ['Cargo',s.cargoNombre||s.cargoCodigo], ['Codigo cargo',s.cargoCodigo],
+        ['Zona',s.zonaNombre||zoneNameByCode(s.zonaCodigo)], ['Codigo zona',s.zonaCodigo],
+        ['Ingreso',formatDate(s.fechaIngreso)], ['Retiro',formatDate(s.fechaRetiro)]
+      ]],
+      ['Contrato y cliente',[
+        ['Contrato',s.contratoNombre||s.contratoCodigo], ['Codigo contrato',s.contratoCodigo],
+        ['Cliente',s.clienteNombreSnapshot], ['NIT cliente',s.clienteNitSnapshot]
+      ]]
+    ]);
   }
   function actionsCell(s){
     const box=el('div',{className:'row-actions'},[]);
@@ -123,7 +122,7 @@ export const SupervisorsAdmin=(mount,deps={})=>{
       box.append(btnEditZone);
     }
     const btnInfo=el('button',{className:'btn btn--icon',title:'Ver informacion','aria-label':'Ver informacion'},[infoIcon()]);
-    btnInfo.addEventListener('click',()=>{ const info=auditInfoData(s); showInfoModal('Informacion del registro',[`Evento: ${info.action}`,`Usuario: ${info.user}`,`Fecha: ${info.date}`]); });
+    btnInfo.addEventListener('click',()=>openSupervisorInfoModal(s));
     box.append(btnInfo); return box;
   }
   function supervisorCard(s){

@@ -2,6 +2,16 @@
 
 Esta carpeta contiene la configuracion y los assets privados usados para generar certificados laborales en PDF.
 
+## Certificados para retirados
+
+Antes de desplegar este cambio, aplicar `supabase/schema_operations_phase56_retired_certificates.sql` sobre la base que ya contiene la auditoria de certificados. La migracion agrega `retired` a los tipos permitidos y conserva los registros y permisos existentes. Desplegar despues el backend y el portal (`employee.html` y `employee-app.js`).
+
+Los empleados con estado `inactivo` ingresan con el mismo documento y los cuatro ultimos digitos del celular. Solo pueden consultar su sesion, cerrarla y descargar su certificado `retired`; las rutas de incapacidades siguen exigiendo estado `activo` en cada solicitud. El servidor determina el propietario del certificado a partir de la sesion. El OTP queda pendiente para otra etapa.
+
+La plantilla `retired` dice “laboró” e incluye ingreso y retiro, sin salario. Las fechas faltantes o inconsistentes bloquean la emision y requieren correccion por Recursos Humanos. Se utiliza el historial de cargos del empleado para incluir traslados del periodo, tomando el ultimo `rehire_employee` como limite cuando existe. Los historiales antiguos sin marca de reingreso requieren revisar sus fechas antes de certificar. Los activos conservan `basic` y `with_salary`.
+
+Validacion local sin conectarse a Supabase: `node --experimental-vm-modules tests/retired-certificates.mjs` desde la raiz. Cubre permisos de rutas, propietario, cambios de estado, sesiones, contenido del PDF, pantalla y migracion SQL.
+
 ## Guia de diseno
 
 - Formato: carta.

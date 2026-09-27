@@ -17,7 +17,7 @@ function mapErrorMessage(error) {
     case 'invalid_last4':
       return 'Ingresa los ultimos 4 digitos del celular.';
     case 'employee_not_found':
-      return 'No encontramos un empleado activo con ese documento.';
+      return 'No encontramos un empleado habilitado con ese documento.';
     case 'employee_phone_missing':
       return 'El empleado no tiene celular valido registrado. Contacta al administrador.';
     case 'employee_credentials_mismatch':
@@ -102,6 +102,7 @@ function getSessionTokenFromRequest(req) {
 function buildEmployeeSessionPayload(sessionRow, employeeRow = null) {
   const employee = employeeRow || {};
   return {
+    estado: String(employee.estado || '').trim().toLowerCase(),
     sessionId: sessionRow.id,
     employeeId: sessionRow.employee_id,
     documento: sessionRow.documento_snapshot || employee.documento || null,
@@ -323,7 +324,16 @@ function incapacityOverlapsRange(row = {}, dateFrom = '', dateTo = '') {
   return true;
 }
 
-export async function getActiveEmployeePortalContext(req, { ip, userAgent } = {}) {
+export async function getActiveEmployeePortalContext(req, options = {}) {
+  const context = await getEmployeePortalContext(req, options);
+  if (String(context.employee.estado || '').trim().toLowerCase() !== 'activo') {
+    throw Object.assign(new Error('employee_inactive'), { statusCode: 403 });
+  }
+  return context;
+}
+
+// Only session display and certificate routes may use this broader context.
+export async function getEmployeePortalContext(req, { ip, userAgent } = {}) {
   const token = getSessionTokenFromRequest(req);
   if (!token) {
     const error = new Error('missing_session');
@@ -355,7 +365,7 @@ export async function getActiveEmployeePortalContext(req, { ip, userAgent } = {}
   }
 
   const employee = await getEmployeeById(session.employee_id);
-  if (!employee || String(employee.estado || '').trim().toLowerCase() !== 'activo') {
+  if (!employee || !['activo', 'inactivo'].includes(String(employee.estado || '').trim().toLowerCase())) {
     await revokeEmployeePortalSession(session.id);
     await createEmployeePortalAudit({
       employee_id: session.employee_id,
@@ -372,7 +382,8 @@ export async function getActiveEmployeePortalContext(req, { ip, userAgent } = {}
   }
 
   const documento = session.documento_snapshot || employee.documento;
-  const privilegedProfile = await getMainPortalOnlyProfileByDocument(documento);
+  const privilegedProfile = String(employee.estado || '').trim().toLowerCase() === 'activo'
+    ? await getMainPortalOnlyProfileByDocument(documento) : null;
   if (privilegedProfile) {
     await revokeEmployeePortalSession(session.id);
     await createEmployeePortalAudit({
@@ -433,7 +444,7 @@ export function registerEmployeePortalRoutes(app) {
       }
 
       const employee = await getEmployeeByDocument(documento);
-      if (!employee || String(employee.estado || '').trim().toLowerCase() !== 'activo') {
+      if (!employee || !['activo', 'inactivo'].includes(String(employee.estado || '').trim().toLowerCase())) {
         await createEmployeePortalAudit({
           employee_id: null,
           session_id: null,
@@ -479,7 +490,8 @@ export function registerEmployeePortalRoutes(app) {
         throw error;
       }
 
-      const privilegedProfile = await getMainPortalOnlyProfileByDocument(documento);
+      const privilegedProfile = String(employee.estado || '').trim().toLowerCase() === 'activo'
+        ? await getMainPortalOnlyProfileByDocument(documento) : null;
       if (privilegedProfile) {
         await createEmployeePortalAudit({
           employee_id: employee.id,
@@ -538,74 +550,7 @@ export function registerEmployeePortalRoutes(app) {
     const userAgent = getUserAgent(req);
 
     try {
-      const token = getSessionTokenFromRequest(req);
-      if (!token) {
-        const error = new Error('missing_session');
-        error.statusCode = 401;
-        throw error;
-      }
-
-      const session = await getEmployeePortalSessionByHash(hashToken(token));
-      if (!session || session.revoked_at) {
-        const error = new Error('session_not_found');
-        error.statusCode = 401;
-        throw error;
-      }
-
-      if (new Date(session.expires_at).getTime() <= Date.now()) {
-        await revokeEmployeePortalSession(session.id);
-        await createEmployeePortalAudit({
-          employee_id: session.employee_id,
-          session_id: session.id,
-          documento: session.documento_snapshot,
-          action: 'employee_portal_session_expired',
-          detail: {},
-          ip,
-          user_agent: userAgent
-        });
-        const error = new Error('session_expired');
-        error.statusCode = 401;
-        throw error;
-      }
-
-      const employee = await getEmployeeById(session.employee_id);
-      if (!employee || String(employee.estado || '').trim().toLowerCase() !== 'activo') {
-        await revokeEmployeePortalSession(session.id);
-        await createEmployeePortalAudit({
-          employee_id: session.employee_id,
-          session_id: session.id,
-          documento: session.documento_snapshot,
-          action: 'employee_portal_session_revoked_employee_inactive',
-          detail: {},
-          ip,
-          user_agent: userAgent
-        });
-        const error = new Error('employee_inactive');
-        error.statusCode = 403;
-        throw error;
-      }
-
-      const privilegedProfile = await getMainPortalOnlyProfileByDocument(session.documento_snapshot || employee.documento);
-      if (privilegedProfile) {
-        await revokeEmployeePortalSession(session.id);
-        await createEmployeePortalAudit({
-          employee_id: session.employee_id,
-          session_id: session.id,
-          documento: session.documento_snapshot || employee.documento,
-          action: 'employee_portal_session_redirect_main',
-          detail: {
-            role: privilegedProfile.role || null,
-            email: privilegedProfile.email || null
-          },
-          ip,
-          user_agent: userAgent
-        });
-        const error = new Error('use_main_portal');
-        error.statusCode = 403;
-        throw error;
-      }
-
-      await touchEmployeePortalSession(session.id);
+      const { session, employee } = await getEmployeePortalContext(req, { ip, userAgent });
       sendPortalJson(res, 200, {
         ok: true,
         session: buildEmployeeSessionPayload(session, employee)

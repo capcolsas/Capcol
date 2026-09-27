@@ -8,6 +8,7 @@ export const Absenteeism = (mount, deps = {}) => {
     el('h2', {}, ['Ausentismo y pago por dependencia']),
     el('div', { className: 'form-row mt-2' }, [
       el('div', {}, [el('label', { className: 'label' }, ['Fecha']), el('input', { id: 'opDate', className: 'input', type: 'date' })]),
+      el('div', {}, [el('label', { className: 'label' }, ['Contrato']), el('select', { id: 'contractFilter', className: 'input', style: 'max-width:260px' }, [el('option', { value: '' }, ['Todos'])])]),
       el('button', { id: 'btnRun', className: 'btn btn--primary', type: 'button' }, ['Consultar fecha']),
       el('button', { id: 'btnExportSummary', className: 'btn', type: 'button', disabled: !canExport, title: canExport ? '' : 'Modo consulta: no puedes exportar.' }, ['Exportar resumen Excel']),
       el('button', { id: 'btnExportSede', className: 'btn', type: 'button', disabled: !canExport, title: canExport ? '' : 'Modo consulta: no puedes exportar.' }, ['Exportar sedes Excel']),
@@ -20,6 +21,7 @@ export const Absenteeism = (mount, deps = {}) => {
         el('div', { className: 'table-wrap responsive-table-view' }, [
           el('table', { className: 'table', id: 'tblDependency' }, [
             el('thead', {}, [el('tr', {}, [
+              el('th', { 'data-sort-dep': 'contratoNombre', style: 'cursor:pointer' }, ['Contrato']),
               el('th', { 'data-sort-dep': 'dependenciaNombre', style: 'cursor:pointer' }, ['Dependencia']),
               el('th', { 'data-sort-dep': 'planeados', style: 'cursor:pointer' }, ['Planeados']),
               el('th', { 'data-sort-dep': 'contratados', style: 'cursor:pointer' }, ['Contratados']),
@@ -42,6 +44,7 @@ export const Absenteeism = (mount, deps = {}) => {
         el('div', { className: 'table-wrap responsive-table-view' }, [
           el('table', { className: 'table', id: 'tblTotals' }, [
             el('thead', {}, [el('tr', {}, [
+              el('th', { 'data-sort-sede': 'contratoNombre', style: 'cursor:pointer' }, ['Contrato']),
               el('th', { 'data-sort-sede': 'sedeNombre', style: 'cursor:pointer' }, ['Sede']),
               el('th', { 'data-sort-sede': 'planeados', style: 'cursor:pointer' }, ['Planeados']),
               el('th', { 'data-sort-sede': 'contratados', style: 'cursor:pointer' }, ['Contratados']),
@@ -65,6 +68,7 @@ export const Absenteeism = (mount, deps = {}) => {
           el('table', { className: 'table', id: 'tblDetail' }, [
             el('thead', {}, [el('tr', {}, [
               el('th', { 'data-sort-detail': 'fecha', style: 'cursor:pointer' }, ['Fecha']),
+              el('th', { 'data-sort-detail': 'contrato', style: 'cursor:pointer' }, ['Contrato']),
               el('th', { 'data-sort-detail': 'sede', style: 'cursor:pointer' }, ['Sede']),
               el('th', { 'data-sort-detail': 'documento', style: 'cursor:pointer' }, ['Documento']),
               el('th', { 'data-sort-detail': 'nombre', style: 'cursor:pointer' }, ['Nombre']),
@@ -101,6 +105,11 @@ export const Absenteeism = (mount, deps = {}) => {
   let sedeSortDir = 1;
   let detailSortKey = 'fecha';
   let detailSortDir = -1;
+  let contractOptionsReady = false;
+  const unContracts = deps.streamContracts?.((rows) => {
+    syncContractOptions(rows || []);
+    contractOptionsReady = true;
+  }) || (() => {});
 
   qs('#btnRun', ui).addEventListener('click', run);
   qs('#btnExportSummary', ui).addEventListener('click', () => exportSummaryExcel());
@@ -169,10 +178,12 @@ export const Absenteeism = (mount, deps = {}) => {
 
     msg.textContent = 'Consultando...';
     try {
+      const contratoCodigo = String(qs('#contractFilter', ui)?.value || '').trim();
       const [statusRows, sedeClosures] = await Promise.all([
-        deps.listEmployeeDailyStatusRange?.(date, date) || [],
-        deps.listDailySedeClosuresRange?.(date, date) || []
+        deps.listEmployeeDailyStatusRange?.(date, date, { contratoCodigo }) || [],
+        deps.listDailySedeClosuresRange?.(date, date, { contratoCodigo }) || []
       ]);
+      if (!contractOptionsReady) syncContractOptions([...(statusRows || []), ...(sedeClosures || [])]);
 
       const baseRows = (Array.isArray(statusRows) ? statusRows : []).filter((row) => String(row?.tipoPersonal || '').trim() === 'empleado');
       const sedeClosuresByCode = new Map((Array.isArray(sedeClosures) ? sedeClosures : []).map((row) => [String(row?.sedeCodigo || '').trim(), row]));
@@ -199,6 +210,8 @@ export const Absenteeism = (mount, deps = {}) => {
         if (!depMap.has(row.dependenciaKey)) {
           depMap.set(row.dependenciaKey, {
             dependenciaKey: row.dependenciaKey,
+            contratoCodigo: row.contratoCodigo,
+            contratoNombre: row.contratoNombre,
             dependenciaCodigo: row.dependenciaCodigo,
             dependenciaNombre: row.dependenciaNombre,
             planeados: 0,
@@ -246,14 +259,18 @@ export const Absenteeism = (mount, deps = {}) => {
     const totalPagar = Math.max(0, planeados - noContratado - ausentismoTotal);
     const dependenciaCodigo = String(sedeSnapshot?.dependenciaCodigo || firstRow?.dependenciaCodigoSnapshot || '').trim();
     const dependenciaNombre = String(sedeSnapshot?.dependenciaNombre || firstRow?.dependenciaNombreSnapshot || 'Sin dependencia').trim() || 'Sin dependencia';
+    const contratoCodigo = String(sedeSnapshot?.contratoCodigo || firstRow?.contratoCodigo || '').trim();
+    const contratoNombre = String(sedeSnapshot?.contratoNombre || firstRow?.contratoNombre || 'Sin contrato').trim() || 'Sin contrato';
 
     return {
       fecha: date,
       sedeCodigo: sedeCode,
       sedeNombre: String(sedeSnapshot?.sedeNombre || firstRow?.sedeNombreSnapshot || sedeCode || '-').trim() || '-',
+      contratoCodigo,
+      contratoNombre,
       dependenciaCodigo,
       dependenciaNombre,
-      dependenciaKey: dependenciaCodigo || 'NO_DEP:' + dependenciaNombre,
+      dependenciaKey: `${contratoCodigo || 'NO_CON'}|${dependenciaCodigo || 'NO_DEP:' + dependenciaNombre}`,
       planeados,
       contratados,
       noContratado,
@@ -275,6 +292,7 @@ export const Absenteeism = (mount, deps = {}) => {
       const btn = el('button', { className: 'btn btn--icon', type: 'button', title: 'Ver detalle', 'aria-label': 'Ver detalle' }, [viewIcon()]);
       btn.addEventListener('click', () => renderDetail(row.dependenciaKey, row.dependenciaNombre, date));
       tr.append(
+        el('td', {}, [row.contratoNombre || '-']),
         el('td', {}, [row.dependenciaNombre || '-']),
         el('td', {}, [String(row.planeados)]),
         el('td', {}, [String(row.contratados)]),
@@ -311,6 +329,7 @@ export const Absenteeism = (mount, deps = {}) => {
       const btn = el('button', { className: 'btn btn--icon', type: 'button', title: 'Ver detalle', 'aria-label': 'Ver detalle' }, [viewIcon()]);
       btn.addEventListener('click', () => renderSedeDetail(row.sedeCodigo, row.sedeNombre));
       tr.append(
+        el('td', {}, [row.contratoNombre || '-']),
         el('td', {}, [row.sedeNombre || '-']),
         el('td', {}, [String(row.planeados)]),
         el('td', {}, [String(row.contratados)]),
@@ -368,6 +387,8 @@ export const Absenteeism = (mount, deps = {}) => {
 
     const detailRows = rows.map((row) => ({
       fecha: summary.fecha,
+      contrato: summary.contratoNombre,
+      contratoCodigo: summary.contratoCodigo,
       sede: summary.sedeNombre,
       documento: row?.documento || '-',
       nombre: row?.nombre || '-',
@@ -377,6 +398,8 @@ export const Absenteeism = (mount, deps = {}) => {
     for (let index = 0; index < Number(summary.noContratado || 0); index += 1) {
       detailRows.push({
         fecha: summary.fecha,
+        contrato: summary.contratoNombre,
+        contratoCodigo: summary.contratoCodigo,
         sede: summary.sedeNombre,
         documento: '-',
         nombre: 'No contratado ' + (index + 1),
@@ -393,6 +416,7 @@ export const Absenteeism = (mount, deps = {}) => {
     const pageRows = detailPaginator.slice(rows);
     tbody.replaceChildren(...pageRows.map((row) => el('tr', {}, [
       el('td', {}, [row.fecha || '-']),
+      el('td', {}, [row.contrato || '-']),
       el('td', {}, [row.sede || '-']),
       el('td', {}, [row.documento || '-']),
       el('td', {}, [row.nombre || '-']),
@@ -410,6 +434,7 @@ export const Absenteeism = (mount, deps = {}) => {
       subtitle: 'Dependencia',
       meta: [
         ['Planeados', String(row.planeados)],
+        ['Contrato', row.contratoNombre || '-'],
         ['Contratados', String(row.contratados)],
         ['No contratado', String(row.noContratado)],
         ['Novedad sin reemplazo', String(row.novSinReemplazo)],
@@ -428,6 +453,7 @@ export const Absenteeism = (mount, deps = {}) => {
       subtitle: row.dependenciaNombre || 'Sede',
       meta: [
         ['Planeados', String(row.planeados)],
+        ['Contrato', row.contratoNombre || '-'],
         ['Contratados', String(row.contratados)],
         ['No contratado', String(row.noContratado)],
         ['Novedad sin reemplazo', String(row.novSinReemplazo)],
@@ -444,10 +470,30 @@ export const Absenteeism = (mount, deps = {}) => {
       subtitle: `${row.fecha || '-'} - ${row.documento || '-'}`,
       badge: el('span', { className: 'badge' }, ['Detalle']),
       meta: [
+        ['Contrato', row.contrato || '-'],
         ['Sede', row.sede || '-'],
         ['Estado', row.estado || '-']
       ]
     });
+  }
+
+  function syncContractOptions(rows = []) {
+    const select = qs('#contractFilter', ui);
+    if (!select) return;
+    const previous = String(select.value || '').trim();
+    const byCode = new Map();
+    (rows || []).forEach((row) => {
+      const code = String(row?.codigo || row?.contratoCodigo || '').trim();
+      if (!code || byCode.has(code)) return;
+      const label = String(row?.nombre || row?.contratoNombre || code).trim() || code;
+      byCode.set(code, label);
+    });
+    const options = Array.from(byCode.entries()).sort((a, b) => a[1].localeCompare(b[1]));
+    select.replaceChildren(
+      el('option', { value: '' }, ['Todos']),
+      ...options.map(([code, label]) => el('option', { value: code, selected: code === previous }, [`${label} (${code})`]))
+    );
+    select.value = byCode.has(previous) ? previous : '';
   }
 
   function summaryCard({ title, subtitle, meta = [], actions = null, badge = null }) {
@@ -539,6 +585,8 @@ export const Absenteeism = (mount, deps = {}) => {
       const mod = await import('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm');
       const wb = mod.utils.book_new();
       const depData = dependencyRows.map((row) => ({
+        Contrato: row.contratoNombre,
+        CodigoContrato: row.contratoCodigo,
         Dependencia: row.dependenciaNombre,
         Planeados: row.planeados,
         Contratados: row.contratados,
@@ -548,6 +596,8 @@ export const Absenteeism = (mount, deps = {}) => {
         TotalPagar: row.totalPagar
       }));
       const totalsData = totalsRows.map((row) => ({
+        Contrato: row.contratoNombre,
+        CodigoContrato: row.contratoCodigo,
         Sede: row.sedeNombre,
         Planeados: row.planeados,
         Contratados: row.contratados,
@@ -580,6 +630,8 @@ export const Absenteeism = (mount, deps = {}) => {
       const wb = mod.utils.book_new();
       const data = detailRowsCache.map((row) => ({
         Fecha: row.fecha,
+        Contrato: row.contrato,
+        CodigoContrato: row.contratoCodigo,
         Sede: row.sede,
         Documento: row.documento,
         Nombre: row.nombre,
@@ -607,6 +659,8 @@ export const Absenteeism = (mount, deps = {}) => {
       const mod = await import('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm');
       const wb = mod.utils.book_new();
       const data = totalsRows.map((row) => ({
+        Contrato: row.contratoNombre,
+        CodigoContrato: row.contratoCodigo,
         Sede: row.sedeNombre,
         Planeados: row.planeados,
         Contratados: row.contratados,
@@ -673,7 +727,7 @@ export const Absenteeism = (mount, deps = {}) => {
   mount.replaceChildren(ui);
   enableSectionToggles(ui);
   run();
-  return ui;
+  return () => unContracts?.();
 };
 
 

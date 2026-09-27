@@ -1,6 +1,11 @@
+import { markingSitesLabel, markingTimingDetail, markingPhoneDetail } from '../utils/attendanceTracking.js';
+import { markingMethodLabel, markingDateTime, mergeAttendanceTracking, phoneInconsistencyDetail, carryOverMarkings } from '../utils/attendanceTracking.js';
 import { el, qs, enableSectionToggles, infoIcon, editIcon, cancelIcon, lucideInlineIcon } from '../utils/dom.js';
 import { showInfoModal } from '../utils/infoModal.js';
+import { detailSection } from '../utils/catalogDetail.js';
 import { can, PERMS } from '../permissions.js';
+import { subscribe } from '../state.js';
+import { canCoverContract, contractFilterCode } from '../utils/contractScope.js';
 
 const colombiaHolidayCache = new Map();
 
@@ -8,6 +13,9 @@ export const WhatsAppLive = (mount, deps = {}) => {
   const canManageOperation = can(PERMS.MANAGE_OPERATION_REGISTRY);
   const today = todayBogota();
   const closureDay = today;
+  const previousDate = new Date(`${today}T12:00:00Z`);
+  previousDate.setUTCDate(previousDate.getUTCDate() - 1);
+  const previousDay = previousDate.toISOString().slice(0, 10);
   const ui = el('div', {}, [
     el('section', { className: 'main-card' }, [
       el('section', { className: 'wa-header' }, [
@@ -22,7 +30,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
           el('div', { className: 'wa-filters wa-filters--wide' }, [
             el('div', { className: 'wa-field wa-field--search' }, [
               el('label', { className: 'label' }, ['Buscar']),
-              el('input', { id: 'waSearch', className: 'input wa-input', placeholder: 'Cedula, nombre, novedad o reemplazo...' })
+              el('input', { id: 'waSearch', className: 'input wa-input', placeholder: 'Cedula, nombre, turno, novedad o reemplazo...' })
             ]),
             el('div', { className: 'wa-field' }, [
               el('label', { className: 'label' }, ['Filtro']),
@@ -65,23 +73,15 @@ export const WhatsAppLive = (mount, deps = {}) => {
       ]),
       el('div', { className: 'responsive-records mt-2' }, [
         el('div', { className: 'table-wrap responsive-table-view' }, [
-          el('table', { className: 'table wa-live-table' }, [
-            el('colgroup', {}, [
-              el('col', { style: 'width:90px' }),
-              el('col', { style: 'width:72px' }),
-              el('col', { style: 'width:106px' }),
-              el('col', { style: 'width:200px' }),
-              el('col', { style: 'width:220px' }),
-              el('col', { style: 'width:64px' }),
-              el('col', { style: 'width:220px' }),
-              el('col', { style: 'width:70px' })
-            ]),
+          el('table', { className: 'table wa-live-table wa-attendance-tracking-table' }, [
+            el('colgroup', {}, [160, 160, 105, 180, 180, 170, 55, 220, 60].map(width => el('col', { style: `width:${width}px;` }))),
             el('thead', {}, [
               el('tr', {}, [
-                el('th', { 'data-sort': 'fecha', style: 'cursor:pointer' }, ['Fecha']),
-                el('th', { 'data-sort': 'hora', style: 'cursor:pointer' }, ['Hora']),
+                el('th', { 'data-sort': 'entryAt', style: 'cursor:pointer' }, ['Fecha y hora de ingreso']),
+                el('th', { 'data-sort': 'exitAt', style: 'cursor:pointer' }, ['Fecha y hora de salida']),
                 el('th', { 'data-sort': 'documento', style: 'cursor:pointer' }, ['Cedula']),
                 el('th', { 'data-sort': 'nombre', style: 'cursor:pointer' }, ['Nombre']),
+                el('th', { 'data-sort': 'turno', style: 'cursor:pointer' }, ['Turno / Sede']),
                 el('th', { 'data-sort': 'novedad', style: 'cursor:pointer' }, ['Novedad']),
                 el('th', { 'data-sort': 'dias', style: 'cursor:pointer' }, ['Dias']),
                 el('th', { 'data-sort': 'reemplazo', style: 'cursor:pointer' }, ['Reemplazo'])
@@ -113,11 +113,9 @@ export const WhatsAppLive = (mount, deps = {}) => {
         ])
       ]),
       el('div', { className: 'mt-2', style: 'display:flex;justify-content:space-between;gap:.5rem;align-items:center;flex-wrap:wrap;' }, [
-        el('div', { id: 'waModeHint', className: 'text-muted', style: 'font-size:.86rem;' }, ['Vista completa del día']),
-        el('div', { style: 'display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;' }, [
-          el('button', { id: 'btnManualRefresh', className: 'btn', type: 'button' }, ['Actualizar'])
-        ])
+        el('div', { id: 'waModeHint', className: 'text-muted', style: 'font-size:.86rem;' }, ['Conectando en vivo...'])
       ]),
+      el('p', { id: 'waTrackingMsg', className: 'text-danger', role: 'status' }, []),
       el('p', { id: 'waMsg', className: 'text-muted mt-2' }, ['Conectando...'])
     ]),
     el('section', { className: 'main-card section-block mt-2' }, [
@@ -166,7 +164,6 @@ export const WhatsAppLive = (mount, deps = {}) => {
   const btnPrevPage = qs('#waPrevPage', ui);
   const btnNextPage = qs('#waNextPage', ui);
   const modeHint = qs('#waModeHint', ui);
-  const btnManualRefresh = qs('#btnManualRefresh', ui);
   const pendingBody = qs('#waPendingBody', ui);
   const pendingCards = qs('#waPendingCards', ui);
   const pendingSummary = qs('#waPendingSummary', ui);
@@ -176,6 +173,10 @@ export const WhatsAppLive = (mount, deps = {}) => {
   const statNoveltyTotal = qs('#statNoveltyTotal', ui);
   const statNoveltyHandled = qs('#statNoveltyHandled', ui);
   const statNoveltyPending = qs('#statNoveltyPending', ui);
+  const unSelectedContract = subscribe('selectedContractCode', () => {
+    resetPagination();
+    render();
+  });
 
   let attendance = [];
   let replacements = [];
@@ -189,6 +190,11 @@ export const WhatsAppLive = (mount, deps = {}) => {
   let employeeDailyStatusRows = [];
 
   let unAttendance = null;
+  let unTracking = null;
+  let trackingRows = [];
+  let trackingPending = null;
+  let trackingError = '';
+  let trackingGeneration = 0;
   let unReplacements = null;
   let unSupernumerarios = null;
   let unNovedades = null;
@@ -196,7 +202,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
   let unSedes = null;
   let unIncapacitados = null;
   let unDailyMetrics = null;
-  let sortKey = 'hora';
+  let sortKey = 'entryAt';
   let sortDir = -1;
   let pendingSortKey = 'zona';
   let pendingSortDir = 1;
@@ -489,11 +495,12 @@ export const WhatsAppLive = (mount, deps = {}) => {
 
   function optionsForRow(row) {
     const rowDate = String(row?.fecha || '').trim() || today;
-    const active = (supernumerarios || []).filter((s) => isPersonActiveForDate(s, rowDate, { allowMissingIngreso: true }));
-    const sameSede = active.filter((s) => String(s.sedeCodigo || '').trim() === String(row.sedeCodigo || '').trim());
-    const list = sameSede.length ? sameSede : active;
+    const targetContract = contractFilterCode() || rowContractCode(row);
+    const active = (supernumerarios || [])
+      .filter((s) => canCoverContract(s, targetContract))
+      .filter((s) => isPersonActiveForDate(s, rowDate, { allowMissingIngreso: true }));
     const used = usedReplacementDocsForDate(row.fecha, row.empleadoId);
-    return list
+    return active
       .map((s) => ({
         id: s.id,
         documento: String(s.documento || '').trim() || '',
@@ -543,9 +550,10 @@ export const WhatsAppLive = (mount, deps = {}) => {
     lastLegacyBackfillAt = now;
     msg.textContent = 'Sincronizando respaldo para completar registros del día...';
     try {
+      const contratoCodigo = contractFilterCode();
       const [att, repl] = await Promise.all([
-        deps.listAttendanceRange(today, today),
-        deps.listImportReplacementsRange(today, today)
+        deps.listAttendanceRange(today, today, { contratoCodigo }),
+        deps.listImportReplacementsRange(today, today, { contratoCodigo })
       ]);
       attendance = att || [];
       replacements = repl || [];
@@ -561,11 +569,19 @@ export const WhatsAppLive = (mount, deps = {}) => {
     if (!deps.listAttendanceRange && !deps.listImportReplacementsRange && !deps.listEmployeeDailyStatusRange) return;
     if (!silent) msg.textContent = 'Actualizando registro diario...';
     try {
-      const [att, repl, statusRows] = await Promise.all([
-        deps.listAttendanceRange?.(today, today) || [],
-        deps.listImportReplacementsRange?.(today, today) || [],
-        deps.listEmployeeDailyStatusRange?.(today, today) || []
+      const contratoCodigo = contractFilterCode();
+      const [att, repl, statusRows, currentTracking, previousTracking] = await Promise.all([
+        deps.listAttendanceRange?.(today, today, { contratoCodigo }) || [],
+        deps.listImportReplacementsRange?.(today, today, { contratoCodigo }) || [],
+        deps.listEmployeeDailyStatusRange?.(today, today, { contratoCodigo }) || [],
+        deps.listDailyQrRecords?.(today, { contratoCodigo }) || null,
+        deps.listDailyQrRecords?.(previousDay, { contratoCodigo }) || null
       ]);
+      if (currentTracking) {
+        trackingRows = [...(currentTracking.rows || []), ...carryOverMarkings(previousTracking?.rows || [], today)];
+        trackingPending = currentTracking.pendingRows || [];
+        trackingError = '';
+      }
       attendance = att || [];
       replacements = repl || [];
       employeeDailyStatusRows = statusRows || [];
@@ -585,7 +601,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
   function updateModeHint() {
     if (!modeHint) return;
     if (fallbackMode) {
-      modeHint.textContent = 'Modo respaldo manual';
+      modeHint.textContent = 'Conexion en vivo interrumpida';
       return;
     }
     if (attendanceSubscribed && replacementsSubscribed) {
@@ -603,7 +619,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
     if (fallbackRefreshPromise) return fallbackRefreshPromise;
     fallbackRefreshPromise = refreshCurrentDaySnapshot({ silent: false })
       .then(() => {
-        msg.textContent = `Actualizacion en vivo no disponible${source ? ` (${source})` : ''}. Usa "Actualizar" para sincronizar la vista.`;
+        msg.textContent = `Actualizacion en vivo no disponible${source ? ` (${source})` : ''}. Se muestra la ultima informacion disponible.`;
       })
       .catch((err) => {
         msg.textContent = `Error en modo respaldo: ${err?.message || error?.message || error || err}`;
@@ -618,7 +634,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
     const term = String(searchInput.value || '').trim().toLowerCase();
     const selectedType = String(noveltyFilter?.value || 'all').trim();
     const replMap = replacementMap();
-    let out = rows.filter((r) => String(r.fecha || '').trim() === today);
+    let out = scopedRows(rows).filter((r) => String(r.fecha || '').trim() === today);
 
     out = out.filter((r) => {
       if (selectedType === 'all') return true;
@@ -651,6 +667,12 @@ export const WhatsAppLive = (mount, deps = {}) => {
         r.novedad || '',
         r.sedeNombre || '',
         r.sedeCodigo || '',
+        r.tracking?.turnoNombre || '',
+        markingSitesLabel(r),
+        markingMethodLabel(r.tracking?.entryMethod),
+        markingMethodLabel(r.tracking?.exitMethod),
+        r.tracking?.entryPhone || '',
+        r.tracking?.exitPhone || '',
         repl.supernumerarioNombre || '',
         repl.supernumerarioDocumento || '',
         repl.decision || ''
@@ -690,6 +712,26 @@ export const WhatsAppLive = (mount, deps = {}) => {
     }) || null;
   }
 
+  function rowContractCode(row = {}) {
+    const direct = String(row?.contratoCodigo || row?.contrato_codigo || '').trim();
+    if (direct) return direct;
+    const status = employeeDailyStatusForRow(row);
+    const statusCode = String(status?.contratoCodigo || status?.contrato_codigo || '').trim();
+    if (statusCode) return statusCode;
+    const employee = findEmployeeForRow(row);
+    const employeeCode = String(employee?.contratoCodigo || employee?.contrato_codigo || '').trim();
+    if (employeeCode) return employeeCode;
+    const sedeCodigo = String(row?.sedeCodigo || row?.sede_codigo || employee?.sedeCodigo || '').trim();
+    const sede = (sedes || []).find((item) => String(item?.codigo || '').trim() === sedeCodigo) || null;
+    return String(sede?.contratoCodigo || sede?.contrato_codigo || '').trim();
+  }
+
+  function scopedRows(rows = []) {
+    const code = contractFilterCode();
+    if (!code) return rows || [];
+    return (rows || []).filter((row) => rowContractCode(row) === code);
+  }
+
   function rowHasScheduledService(row) {
     const status = employeeDailyStatusForRow(row);
     if (status) return status.servicioProgramado === true;
@@ -708,6 +750,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
       nombre: String(row?.nombre || emp?.nombre || '-').trim() || '-',
       telefono: String(row?.telefono || emp?.telefono || '-').trim() || '-',
       sede: sedeNombre,
+      contrato: String(row?.contratoNombre || emp?.contratoNombre || sede?.contratoNombre || rowContractCode(row) || '-').trim() || '-',
       dependencia: String(sede?.dependenciaNombre || '-').trim() || '-',
       zona: String(sede?.zonaNombre || '-').trim() || '-'
     };
@@ -716,17 +759,56 @@ export const WhatsAppLive = (mount, deps = {}) => {
   function infoButtonForRow(row) {
     const isSuper = row?.isSupernumerario === true || String(row?.tipoPersonal || '').trim() === 'supernumerario';
     const target = isSuper ? 'supernumerario' : 'empleado';
-    const btn = el('button', { className: 'btn btn--icon', type: 'button', title: `Ver informacion del ${target}`, 'aria-label': `Ver informacion del ${target}` }, [infoIcon()]);
+    const btn = el('button', { className: 'btn btn--icon', type: 'button', title: 'Ver detalle del registro', 'aria-label': `Ver detalle del registro de ${row.nombre || target}` }, [infoIcon()]);
     btn.addEventListener('click', () => {
       const info = employeeInfoSnapshot(row);
-      showInfoModal(`Informacion del ${target}`, [
-        `Cedula: ${info.documento}`,
-        `Nombre: ${info.nombre}`,
-        `Telefono: ${info.telefono}`,
-        `Sede: ${info.sede}`,
-        `Dependencia: ${info.dependencia}`,
-        `Zona: ${info.zona}`
-      ]);
+      const tracking = row.tracking || {};
+      const registeredPhone = row.tracking && Object.hasOwn(tracking, 'employeePhone')
+        ? tracking.employeePhone || 'Sin Identificar' : info.telefono;
+      const novelty = row.novedadCodigo || row.novedadNombre || row.novedad;
+      const state = tracking.exitAt ? 'Ingreso y salida registrados'
+        : tracking.entryAt ? 'Ingreso registrado · salida pendiente'
+        : novelty ? 'Novedad reportada' : 'Pendiente de registro';
+      const sections = [
+        detailSection('Persona', [
+          ['Nombre', info.nombre], ['Cédula', info.documento],
+          ['Tipo de personal', isSuper ? 'Supernumerario' : 'Empleado'], ['Celular registrado', registeredPhone]
+        ]),
+        detailSection('Asignación del registro', [
+          ['Contrato', info.contrato], ['Sede del turno', info.sede],
+          ['Dependencia', info.dependencia], ['Zona', info.zona]
+        ]),
+        detailSection('Turno y estado', [
+          ['Fecha operativa', row.fechaOperativa || tracking.fechaOperativa || row.fecha || today],
+          ['Turno', tracking.turnoNombre || row.turnoNombre || (row.turnoId ? 'Turno asignado' : 'Sin turno identificado')],
+          ['Inicio programado', markingDateTime(tracking.turnoInicio || row.turnoInicio)],
+          ['Fin programado', markingDateTime(tracking.turnoFin || row.turnoFin)],
+          ['Estado del registro', state],
+          ['Novedad', novelty ? displayNovedad(row) || row.novedadNombre || row.novedad : 'Sin novedad reportada']
+        ])
+      ];
+      for (const [action, label] of [['entry', 'Ingreso'], ['exit', 'Salida']]) {
+        const at = tracking[`${action}At`];
+        const detail = at ? markingTimingDetail(tracking, action) : null;
+        const distance = tracking[`${action}DistanceMeters`];
+        const items = [
+          ['Fecha y hora (Bogotá)', at ? markingDateTime(at) : 'Sin registro'],
+          ['Método de marcación', at ? markingMethodLabel(tracking[`${action}Method`]) : 'No aplica'],
+          ['Sede de marcación', tracking[`${action}SiteName`] || tracking[`${action}SiteCode`]],
+          ['Celular utilizado', tracking[`${action}Phone`] || 'Sin Identificar'],
+          ['Control de celular', el('span', { className: tracking[`${action}PhoneDifferent`] ? 'text-danger' : '' },
+            [markingPhoneDetail(tracking, action)])],
+          ['Distancia a la sede', distance != null && distance !== '' && Number.isFinite(Number(distance)) ? `${Number(distance)} m` : 'Sin Identificar'],
+          ['Alerta de horario', detail ? el('span', { className: `marking-time marking-time--${detail.level}` },
+            [`${detail.label} · ${detail.level === 'control' ? 'Atención del turno' : 'Solo explicación'}`]) : at ? 'Sin alerta registrada' : 'No aplica']
+        ];
+        if (detail || tracking[`${action}Reason`]) items.push(['Motivo del empleado', el('span', { style: 'white-space:pre-wrap;overflow-wrap:anywhere;' },
+          [tracking[`${action}Reason`] || detail.reason])]);
+        sections.push(detailSection(label, items));
+      }
+      const phoneDetail = phoneInconsistencyDetail(tracking);
+      if (phoneDetail) sections.push(detailSection('Inconsistencia de celular', [['Detalle', phoneDetail]]));
+      showInfoModal(`Detalle del registro · ${info.nombre}`, [el('div', { className: 'employee-detail' }, sections)]);
     });
     return btn;
   }
@@ -734,7 +816,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
   function pendingEmployeesForToday() {
     const registeredEmployeeKeys = new Set();
     const registeredPersonKeys = new Set();
-    (statsAttendance || []).forEach((row) => {
+    scopedRows(statsAttendance).forEach((row) => {
       if (String(row?.fecha || '').trim() !== today) return;
       const employeeId = String(row?.empleadoId || row?.employeeId || '').trim();
       const documento = String(row?.documento || '').trim();
@@ -747,7 +829,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
 
     const pendingRows = [];
     const seen = new Set();
-    (employees || []).forEach((emp) => {
+    scopedRows(employees).forEach((emp) => {
       if (isSupernumerarioEmployee(emp, supernumerarios)) return;
       if (!isEmployeeExpectedForDate(emp, today, sedes)) return;
       const employeeId = String(emp?.id || '').trim();
@@ -767,7 +849,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
       });
     });
 
-    (supernumerarios || []).forEach((sup) => {
+    scopedRows(supernumerarios).forEach((sup) => {
       if (!isPersonActiveForDate(sup, today, { allowMissingIngreso: true })) return;
       const employeeId = String(sup?.id || sup?.employeeId || '').trim();
       const documento = String(sup?.documento || '').trim();
@@ -816,7 +898,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
   async function refreshEmployeeDailyStatusSnapshot({ silent = true } = {}) {
     if (!deps.listEmployeeDailyStatusRange) return [];
     try {
-      const rows = await deps.listEmployeeDailyStatusRange(today, today);
+      const rows = await deps.listEmployeeDailyStatusRange(today, today, { contratoCodigo: contractFilterCode() });
       employeeDailyStatusRows = rows || [];
       render();
       return employeeDailyStatusRows;
@@ -840,7 +922,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
 
   function refreshNoveltyFilterOptions() {
     if (!noveltyFilter) return;
-    const dayRows = (statsAttendance || []).filter((r) => String(r.fecha || '').trim() === today);
+    const dayRows = scopedRows(statsAttendance).filter((r) => String(r.fecha || '').trim() === today);
     const labels = Array.from(new Set(dayRows.map((r) => noveltyTypeLabel(r)).filter(Boolean))).sort((a, b) => a.localeCompare(b));
     const current = String(noveltyFilter.value || 'all').trim();
     const options = [
@@ -909,6 +991,10 @@ export const WhatsAppLive = (mount, deps = {}) => {
       nombre: row.nombre || null,
       sedeCodigo: row.sedeCodigo || null,
       sedeNombre: sedeNameByCode(row.sedeCodigo, row.sedeNombre || null),
+      contratoCodigo: rowContractCode(row) || null,
+      contratoNombre: row.contratoNombre || row.contratoNombreSnapshot || null,
+      clienteNombreSnapshot: row.clienteNombreSnapshot || null,
+      clienteNitSnapshot: row.clienteNitSnapshot || null,
       novedadCodigo: row.novedadCodigo || null,
       novedadNombre: row.novedadNombre || row.novedad || null,
       decision: selected ? 'reemplazo' : 'ausentismo',
@@ -949,9 +1035,11 @@ export const WhatsAppLive = (mount, deps = {}) => {
   }
 
   function render() {
+    const trackingMessage = qs('#waTrackingMsg', ui);
+    if (trackingMessage) trackingMessage.textContent = trackingError;
     const replMap = replacementMap();
     refreshNoveltyFilterOptions();
-    const baseRows = applyFilters([...attendance]);
+    const baseRows = applyFilters(mergeAttendanceTracking(attendance, trackingRows, today));
     const rows = [...baseRows].sort((a, b) => {
       const va = sortValueForRow(a, sortKey, replMap);
       const vb = sortValueForRow(b, sortKey, replMap);
@@ -959,7 +1047,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
       return va > vb ? sortDir : -sortDir;
     });
     const stats = calculateStats();
-    const pendingEmployees = pendingEmployeesForToday();
+    const pendingEmployees = trackingPending === null ? pendingEmployeesForToday() : scopedRows(trackingPending);
     const pendingRows = pendingEmployees.map((row) => ({
       row,
       info: employeeInfoSnapshot(row)
@@ -1000,7 +1088,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
       ...filteredPendingRows.map(({ row, info }) => {
         return el('tr', pendingRowStyle(row), [
           el('td', {}, [info.documento]),
-          el('td', {}, [info.nombre]),
+          el('td', {}, [info.nombre, ...(row.turnoNombre ? [el('small', { className: 'text-muted', style: 'display:block;' }, [row.turnoNombre])] : [])]),
           el('td', {}, [info.telefono]),
           el('td', {}, [info.sede]),
           el('td', {}, [info.dependencia]),
@@ -1215,13 +1303,51 @@ export const WhatsAppLive = (mount, deps = {}) => {
     ]);
   }
 
+  function markingNode(row, action) {
+    const tracking = row.tracking;
+    const at = action === 'entry' ? tracking?.entryAt : tracking?.exitAt;
+    if (!at) return el('span', { className: 'text-muted' }, [tracking?.entryAt && action === 'exit' ? 'Pendiente de salida' : '-']);
+    const method = action === 'entry' ? tracking.entryMethod : tracking.exitMethod;
+    const detail = markingTimingDetail(tracking, action);
+    const timestamp = detail
+      ? el('button', { type: 'button', className: `marking-time marking-time--${detail.level}`,
+        title: detail.title, 'aria-label': `${markingDateTime(at)}. ${detail.title}` }, [markingDateTime(at)])
+      : el('span', {}, [markingDateTime(at)]);
+    if (detail) timestamp.addEventListener('click', () => showInfoModal(detail.label,
+      [markingDateTime(at), detail.level === 'control' ? 'Atención del turno' : 'Solo explicación', `Motivo: ${detail.reason}`]));
+    return el('div', {}, [timestamp,
+      el('small', { className: 'text-muted', style: 'display:block;' }, [markingMethodLabel(method)])]);
+  }
+
+  function phoneAlert(row) {
+    const detail = phoneInconsistencyDetail(row.tracking);
+    if (!detail) return null;
+    const button = el('button', { type: 'button', className: 'btn btn--icon text-danger',
+      title: detail, 'aria-label': detail }, [lucideInlineIcon('triangle-alert', '!')]);
+    button.addEventListener('click', () => showInfoModal('Inconsistencia de celular', [row.nombre || 'Persona', detail,
+        `Celular registrado: ${row.tracking.employeePhone || '-'}`,
+        `Celular de ingreso: ${row.tracking.entryPhone || '-'}`,
+        `Celular de salida: ${row.tracking.exitPhone || '-'}`]));
+    return button;
+  }
+
+  function personNode(row) {
+    return el('span', { style: 'display:flex;align-items:center;gap:.4rem;' },
+      [el('span', {}, [row.nombre || '-']), ...[phoneAlert(row)].filter(Boolean)]);
+  }
+
+  function turnoLabel(row) {
+    return row.tracking?.turnoNombre || row.turnoNombre || (row.turnoId ? 'Turno asignado' : 'Sin turno');
+  }
+
   function attendanceTableRow(row, replMap) {
     const view = attendanceView(row, replMap);
     return el('tr', { style: rowStyleByClass(view.rowClass) }, [
-      el('td', {}, [row.fecha || '-']),
-      el('td', {}, [row.hora || '-']),
+      el('td', {}, [markingNode(row, 'entry')]),
+      el('td', {}, [markingNode(row, 'exit')]),
       el('td', {}, [row.documento || '-']),
-      el('td', {}, [row.nombre || '-']),
+      el('td', {}, [personNode(row)]),
+      el('td', {}, [turnoLabel(row), el('small', { className: 'text-muted', style: 'display:block;' }, [row.sedeNombre || row.sedeCodigo || '-']), el('small', { className: 'text-muted', style: 'display:block;' }, [markingSitesLabel(row)])]),
       el('td', {}, [el('span', { style: view.novedadStyle }, [view.novedadText])]),
       el('td', {}, [diasNode(view)]),
       el('td', {}, [replacementNode(row, view)]),
@@ -1234,12 +1360,17 @@ export const WhatsAppLive = (mount, deps = {}) => {
     return el('article', { className: 'record-card' }, [
       el('div', { className: 'record-card__header' }, [
         el('div', { className: 'record-card__identity' }, [
-          el('strong', { className: 'record-card__title' }, [row.nombre || '-']),
-          el('span', { className: 'record-card__subtitle' }, [`${row.fecha || '-'} ${row.hora || '-'} - ${row.documento || '-'}`])
+          el('strong', { className: 'record-card__title' }, [personNode(row)]),
+          el('span', { className: 'record-card__subtitle' }, [`Fecha operativa: ${row.fechaOperativa || row.fecha || '-'} · ${row.documento || '-'}`])
         ]),
         el('span', { className: `badge ${view.rowClass === 'replace_yes' ? 'badge--off' : 'badge--ok'}` }, [view.isSuperRow ? 'Supernumerario' : 'Registro'])
       ]),
       el('dl', { className: 'record-card__meta' }, [
+        ['Turno', turnoLabel(row)],
+        ['Sede del turno', row.sedeNombre || row.sedeCodigo || '-'],
+        ['Sedes de marcación', markingSitesLabel(row) || '-'],
+        ['Ingreso', markingNode(row, 'entry')],
+        ['Salida', markingNode(row, 'exit')],
         ['Novedad', el('span', { style: view.novedadStyle }, [view.novedadText])],
         ['Dias', diasNode(view)],
         ['Reemplazo', replacementNode(row, view)]
@@ -1294,6 +1425,8 @@ export const WhatsAppLive = (mount, deps = {}) => {
   }
 
   function sortValueForRow(row, key, replMap) {
+    if (key === 'entryAt' || key === 'exitAt') return row.tracking?.[key] ? new Date(row.tracking[key]).getTime() : 0;
+    if (key === 'turno') return normalize(turnoLabel(row));
     if (key === 'fecha') return String(row.fecha || '');
     if (key === 'hora') return String(row.hora || '');
     if (key === 'documento') return String(row.documento || '');
@@ -1360,10 +1493,11 @@ export const WhatsAppLive = (mount, deps = {}) => {
   }
 
   function calculateStats() {
-    const dayRows = (statsAttendance || []).filter((r) => String(r.fecha || '').trim() === today);
+    const selectedContract = contractFilterCode();
+    const dayRows = scopedRows(statsAttendance).filter((r) => String(r.fecha || '').trim() === today);
     const operationalDayRows = dayRows.filter((row) => rowHasScheduledService(row));
-    const activeSedes = (sedes || []).filter((s) => String(s?.estado || 'activo').trim().toLowerCase() !== 'inactivo');
-    const expectedLocal = (employees || []).filter((e) => {
+    const activeSedes = scopedRows(sedes).filter((s) => String(s?.estado || 'activo').trim().toLowerCase() !== 'inactivo');
+    const expectedLocal = scopedRows(employees).filter((e) => {
       if (!isPersonActiveForDate(e, today)) return false;
       const sedeCodigo = String(e?.sedeCodigo || '').trim();
       const sede = activeSedes.find((row) => String(row?.codigo || '').trim() === sedeCodigo) || null;
@@ -1376,7 +1510,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
       return acc + (Number.isFinite(n) && n > 0 ? n : 0);
     }, 0);
     const replMap = new Map();
-    (statsReplacements || []).forEach((r) => {
+    scopedRows(statsReplacements).forEach((r) => {
       const key = replacementRowKey(r);
       replMap.set(key, r);
     });
@@ -1409,8 +1543,8 @@ export const WhatsAppLive = (mount, deps = {}) => {
       return decision === 'reemplazo' || decision === 'ausentismo';
     }).length;
     const noveltyPending = Math.max(0, noveltyTotal - noveltyHandled);
-    const plannedMetric = dailyMetrics?.planned == null || dailyMetrics?.planned === '' ? null : Number(dailyMetrics.planned);
-    const expectedMetric = dailyMetrics?.expected == null || dailyMetrics?.expected === '' ? null : Number(dailyMetrics.expected);
+    const plannedMetric = selectedContract || dailyMetrics?.planned == null || dailyMetrics?.planned === '' ? null : Number(dailyMetrics.planned);
+    const expectedMetric = selectedContract || dailyMetrics?.expected == null || dailyMetrics?.expected === '' ? null : Number(dailyMetrics.expected);
     const expected = Number.isFinite(expectedMetric) ? expectedMetric : expectedLocal;
     const pendingListCount = pendingEmployeesForToday().length;
     const registered = registeredLocal;
@@ -1433,9 +1567,34 @@ export const WhatsAppLive = (mount, deps = {}) => {
 
   function bindDateStreams() {
     unAttendance?.();
+    unTracking?.();
+    trackingGeneration++;
     unReplacements?.();
     unDailyMetrics?.();
     attendance = [];
+    trackingRows = [];
+    trackingPending = null;
+    trackingError = '';
+    const generation = trackingGeneration;
+    if (deps.streamDailyQrRecords) {
+      const summaries = new Map();
+      const trackingErrors = new Map();
+      const cancellations = [today, previousDay].map(day => deps.streamDailyQrRecords(day, (summary) => {
+        if (generation !== trackingGeneration) return;
+        summaries.set(day, summary);
+        trackingErrors.delete(day);
+        trackingRows = [...(summaries.get(today)?.rows || []), ...carryOverMarkings(summaries.get(previousDay)?.rows || [], today)];
+        trackingPending = summaries.has(today) ? summaries.get(today)?.pendingRows || [] : null;
+        trackingError = [...trackingErrors.values()].join(' ');
+        render();
+      }, (error) => {
+        if (generation !== trackingGeneration) return;
+        trackingErrors.set(day, `No se pudo actualizar el seguimiento de ${day}: ${error?.message || error}`);
+        trackingError = [...trackingErrors.values()].join(' ');
+        render();
+      }));
+      unTracking = () => cancellations.forEach(cancel => cancel?.());
+    }
     replacements = [];
     statsAttendance = [];
     statsReplacements = [];
@@ -1552,7 +1711,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
       if (sortKey === key) sortDir *= -1;
       else {
         sortKey = key;
-        sortDir = key === 'hora' ? -1 : 1;
+        sortDir = ['hora', 'entryAt', 'exitAt'].includes(key) ? -1 : 1;
       }
       resetPagination();
       render();
@@ -1569,15 +1728,6 @@ export const WhatsAppLive = (mount, deps = {}) => {
       }
       render();
     });
-  });
-  btnManualRefresh?.addEventListener('click', () => {
-    refreshCurrentDaySnapshot({ silent: false })
-      .then(() => {
-        if (fallbackMode) msg.textContent = 'Vista actualizada manualmente.';
-      })
-      .catch((err) => {
-        msg.textContent = `Error cargando registro diario: ${err?.message || err}`;
-      });
   });
   if (deps.streamSupernumerarios) {
     unSupernumerarios = deps.streamSupernumerarios((rows) => {
@@ -1619,6 +1769,8 @@ export const WhatsAppLive = (mount, deps = {}) => {
 
   return () => {
     unAttendance?.();
+    unTracking?.();
+    trackingGeneration++;
     unReplacements?.();
     unDailyMetrics?.();
     unSupernumerarios?.();
@@ -1626,6 +1778,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
     unEmployees?.();
     unSedes?.();
     unIncapacitados?.();
+    unSelectedContract?.();
   };
 };
 
@@ -1794,12 +1947,6 @@ function toISODate(value) {
     const v = value.trim();
     if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
     const dt = new Date(v);
-    if (!Number.isNaN(dt.getTime())) return dt.toISOString().slice(0, 10);
-    return null;
-  }
-
-  if (typeof value?.toDate === 'function') {
-    const dt = value.toDate();
     if (!Number.isNaN(dt.getTime())) return dt.toISOString().slice(0, 10);
     return null;
   }

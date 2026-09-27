@@ -9,3 +9,4 @@ backups/
 .vercel/
 functions/.env*
 !functions/.env.example
+/tmp/
