@@ -40,7 +40,11 @@ const fastUpdate = mergeAttendanceTracking([], [marking], date);
 assert.equal(fastUpdate[0].fechaOperativa, '2026-09-07');
 assert.equal(carryOverMarkings([marking], date).length, 1);
 assert.equal(carryOverMarkings([marking], '2026-09-09').length, 0);
-assert.equal(carryOverMarkings([{ ...marking, exitAt: null }], date).length, 1);
+// Still open (no exit yet): only carries over into today if the shift itself genuinely crosses midnight (its own
+// end time falls on today). A day shift whose checkout was simply never registered must not keep reappearing.
+assert.equal(carryOverMarkings([{ ...marking, exitAt: null, turnoFin: '2026-09-08T11:00:00Z' }], date).length, 1, 'an overnight shift still pending its exit carries over');
+assert.equal(carryOverMarkings([{ ...marking, exitAt: null, turnoFin: '2026-09-07T20:00:00Z' }], date).length, 0, 'a plain day shift from yesterday, never checked out, does not leak into today');
+assert.equal(carryOverMarkings([{ ...marking, exitAt: null, turnoFin: null }], date).length, 0, 'without knowing when the shift ends, it is not assumed to be overnight');
 
 const source = await fs.readFile(new URL('../src/assets/js/components/WhatsAppLive.js', import.meta.url), 'utf8');
 let modal;

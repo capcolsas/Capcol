@@ -34,7 +34,12 @@
       "Bash(node daily-qr-realtime-scope.mjs)",
       "Bash(node daily-attendance-tracking.mjs)",
       "Bash(node --check app.js)",
-      "Bash(node --check src/assets/js/components/WhatsAppLive.js)"
+      "Bash(node --check src/assets/js/components/WhatsAppLive.js)",
+      "Bash(node --check ../components/WhatsAppLive.js)",
+      "Bash(grep -n \"from\\('attendance'\\)\\\\.insert\\\\|\\\\.from\\('attendance'\\)\\\\s*$\\\\|into attendance\\\\|'attendance'\\\\\\)\\\\.upsert\\\\|insert.*attendance\" app.js shifts.js)",
+      "Bash(grep -v \"select\\\\|marking_method,\\\\|marking_method\\\\s*$\")",
+      "Bash(awk 'NR<=8024 && /^export \\(async \\)?function/{line=NR; name=$0} END{print line\": \"name}' legacy.js)",
+      "Bash(awk 'NR<=3009 && /^async function/{line=NR; name=$0} END{print line\": \"name}' app.js)"
     ]
   }
 }

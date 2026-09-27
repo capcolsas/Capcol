@@ -16,9 +16,18 @@ export function trackingKey(row) {
   return `${row.turnoId || 'legacy'}:${row.empleadoId || row.employeeId || row.documento || ''}`;
 }
 
+function localDayBogota(value) {
+  return value ? new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Bogota' }).format(new Date(value)) : null;
+}
+
+// A shift started yesterday only belongs to today's registry if it genuinely crosses midnight (its own end time
+// falls on today) or its exit was already marked today. A day shift whose checkout was simply never registered
+// (turnoFin still on yesterday) must not keep reappearing in "today" indefinitely.
 export function carryOverMarkings(rows, date) {
-  return rows.filter(row => row.turnoId && row.entryAt && !row.entryLabel && (!row.exitAt
-    || new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Bogota' }).format(new Date(row.exitAt)) === date));
+  return rows.filter(row => row.turnoId && row.entryAt && !row.entryLabel && (
+    (row.exitAt && localDayBogota(row.exitAt) === date)
+    || (!row.exitAt && row.turnoFin && localDayBogota(row.turnoFin) === date)
+  ));
 }
 
 export function mergeAttendanceTracking(attendance, markings, date) {

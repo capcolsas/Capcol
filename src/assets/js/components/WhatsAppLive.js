@@ -77,8 +77,8 @@ export const WhatsAppLive = (mount, deps = {}) => {
             el('colgroup', {}, [160, 160, 105, 180, 180, 170, 55, 220, 60].map(width => el('col', { style: `width:${width}px;` }))),
             el('thead', {}, [
               el('tr', {}, [
-                el('th', { 'data-sort': 'entryAt', style: 'cursor:pointer' }, ['Fecha y hora de ingreso']),
-                el('th', { 'data-sort': 'exitAt', style: 'cursor:pointer' }, ['Fecha y hora de salida']),
+                el('th', { 'data-sort': 'entryAt', style: 'cursor:pointer' }, ['Ingreso']),
+                el('th', { 'data-sort': 'exitAt', style: 'cursor:pointer' }, ['Salida']),
                 el('th', { 'data-sort': 'documento', style: 'cursor:pointer' }, ['Cedula']),
                 el('th', { 'data-sort': 'nombre', style: 'cursor:pointer' }, ['Nombre']),
                 el('th', { 'data-sort': 'turno', style: 'cursor:pointer' }, ['Turno / Sede']),
@@ -1126,9 +1126,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
     }
     if (btnPrevPage) btnPrevPage.disabled = showAllRows || totalRows === 0 || currentPage <= 1;
     if (btnNextPage) btnNextPage.disabled = showAllRows || totalRows === 0 || currentPage >= totalPages;
-    msg.textContent = totalRows
-      ? `Total registros del dia: ${totalRows}. Mostrando ${visibleFrom}-${visibleTo}.`
-      : 'Total registros del dia: 0.';
+    msg.textContent = '';
     updateCardFilterUI();
     updateSortIndicators();
     updatePendingSortIndicators();
@@ -1347,7 +1345,7 @@ export const WhatsAppLive = (mount, deps = {}) => {
       el('td', {}, [markingNode(row, 'exit')]),
       el('td', {}, [row.documento || '-']),
       el('td', {}, [personNode(row)]),
-      el('td', {}, [turnoLabel(row), el('small', { className: 'text-muted', style: 'display:block;' }, [row.sedeNombre || row.sedeCodigo || '-']), el('small', { className: 'text-muted', style: 'display:block;' }, [markingSitesLabel(row)])]),
+      el('td', {}, [turnoLabel(row), el('small', { className: 'text-muted', style: 'display:block;' }, [row.sedeNombre || row.sedeCodigo || '-'])]),
       el('td', {}, [el('span', { style: view.novedadStyle }, [view.novedadText])]),
       el('td', {}, [diasNode(view)]),
       el('td', {}, [replacementNode(row, view)]),
@@ -1383,13 +1381,16 @@ export const WhatsAppLive = (mount, deps = {}) => {
   }
 
   function pendingRecordCard(row, info) {
+    const isSuper = row?.isSupernumerario === true;
     return el('article', { className: 'record-card' }, [
       el('div', { className: 'record-card__header' }, [
         el('div', { className: 'record-card__identity' }, [
-          el('strong', { className: 'record-card__title' }, [info.nombre || '-']),
+          // The blue "supernumerario" mark only appears in the table row style (see pendingRowStyle); on small
+          // screens this card replaces the table, so it must carry the same signal or it silently disappears there.
+          el('strong', { className: 'record-card__title', ...(isSuper ? { style: 'color:#1d4ed8;', title: 'Supernumerario pendiente de registro' } : {}) }, [info.nombre || '-']),
           el('span', { className: 'record-card__subtitle' }, [`Cedula: ${info.documento || '-'}`])
         ]),
-        el('span', { className: 'badge' }, [info.zona || 'Pendiente'])
+        el('span', { className: `badge ${isSuper ? 'badge--busy' : ''}` }, [isSuper ? 'Supernumerario' : (info.zona || 'Pendiente')])
       ]),
       el('dl', { className: 'record-card__meta' }, [
         ['Telefono', info.telefono || '-'],
