@@ -8,9 +8,32 @@ function clearRecoveryUrl(hashPath = '/login') {
   } catch {}
 }
 
+function authBrand() {
+  return el('div', { className: 'login-brands' }, [
+      el('img', {
+        className: 'login-brands__partner',
+        src: new URL('../../img/tercero.png', import.meta.url).href,
+        alt: 'Logo del tercero',
+        decoding: 'async'
+      })
+  ]);
+}
+
+function authSignature() {
+  return el('div', { className: 'login-signature' }, [
+    el('img', {
+      className: 'login-brands__rocky',
+      src: new URL('../../img/rocky_logo_full.png', import.meta.url).href,
+      alt: 'Rocky Soluciones',
+      decoding: 'async'
+    })
+  ]);
+}
+
 export const Login = (mount, deps = {}) => {
-  const root = el('section', { className: 'main-card login-card' }, [
-    el('h2', {}, ['Acceso']),
+  const root = el('section', { className: 'main-card login-card login-card--branded' }, [
+    authBrand(),
+    el('h2', {}, ['Iniciar sesión']),
     el('div', { id: 'loginContent', className: 'mt-2' }, [])
   ]);
 
@@ -37,7 +60,7 @@ export const Login = (mount, deps = {}) => {
       el('input', { id: 'pass', type: 'password', placeholder: '********', className: 'input', autocomplete: 'current-password' }),
       el('button', { id: 'btnForgotPassword', className: 'login-link', type: 'button' }, ['Olvidé mi contraseña']),
       el('div', { className: 'form-row login-actions mt-2' }, [
-        el('button', { id: 'btnLogin', className: 'btn btn--primary', type: 'submit' }, ['Iniciar sesion']),
+        el('button', { id: 'btnLogin', className: 'btn btn--primary', type: 'submit' }, ['Iniciar sesión']),
         el('button', { id: 'btnOpenCreate', className: 'btn', type: 'button' }, ['Crear cuenta'])
       ]),
       el('p', { id: 'msg', className: 'text-muted mt-2' }, [' '])
@@ -109,11 +132,12 @@ export const Login = (mount, deps = {}) => {
   }
 
   qs('#loginContent', root).replaceChildren(loginForm());
-  mount.replaceChildren(root);
+  mount.replaceChildren(root, authSignature());
 };
 
 export const ForgotPassword = (mount, deps = {}) => {
-  const root = el('section', { className: 'main-card login-card' }, [
+  const root = el('section', { className: 'main-card login-card login-card--branded' }, [
+    authBrand(),
     el('h2', {}, ['Recuperar contraseña']),
     el('p', { className: 'auth-copy' }, ['Ingresa tu correo y te enviaremos un enlace para crear una nueva contraseña.']),
     el('form', { className: 'login-form' }, [
@@ -164,7 +188,7 @@ export const ForgotPassword = (mount, deps = {}) => {
   }
 
   qs('#btnBackLogin', root).addEventListener('click', () => navigate('/login'));
-  mount.replaceChildren(root);
+  mount.replaceChildren(root, authSignature());
 };
 
 export const ResetPassword = (mount, deps = {}) => {

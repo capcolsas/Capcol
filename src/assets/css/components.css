@@ -1724,6 +1724,45 @@
   text-align:center;
   margin-bottom:.45rem;
 }
+.login-brands{
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  gap:1rem;
+  padding:0 0 .75rem;
+  margin-bottom:1rem;
+  border-bottom:1px solid var(--color-border);
+}
+.login-brands img{
+  display:block;
+  height:auto;
+  object-fit:contain;
+}
+html .main-card.login-card.login-card--branded{
+  margin-bottom:0;
+}
+html[data-ui] .main-card.login-card.login-card--branded{
+  margin-bottom:0;
+}
+.login-signature{
+  display:flex;
+  justify-content:center;
+  padding:1rem 0;
+}
+.login-brands__rocky{
+  display:block;
+  width:110px;
+  max-width:50%;
+  height:auto;
+  object-fit:contain;
+  margin:0;
+}
+.login-brands__partner{
+  width:100%;
+  max-width:360px;
+  max-height:110px;
+}
 .login-form{
   width:100%;
   margin:0 auto;

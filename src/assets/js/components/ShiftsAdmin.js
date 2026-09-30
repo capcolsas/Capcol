@@ -52,6 +52,7 @@ const DEFAULT_WINDOW_ENTRY_BEFORE_MINUTES = 60;
 const DEFAULT_WINDOW_ENTRY_AFTER_MINUTES = 30;
 const DEFAULT_WINDOW_EXIT_BEFORE_MINUTES = 30;
 const DEFAULT_WINDOW_EXIT_AFTER_MINUTES = 60;
+const DEFAULT_ALERT_MINUTES = 30;
 const DEFAULT_NOVELTY_WINDOW_HOURS = 48;
 
 export const ShiftsAdmin = (mount, deps = {}) => ShiftPlansAdmin(mount, deps);
@@ -445,13 +446,13 @@ function renderShiftScreen(mount, deps = {}, { mode = 'plans' } = {}) {
       semanaMes: null,
       festivoModo: type === 'festivo' ? 'normal' : 'excluir',
       ventanaEntradaAntesMinutos: DEFAULT_WINDOW_ENTRY_BEFORE_MINUTES,
-      alertaEntradaAntesMinutos: DEFAULT_WINDOW_ENTRY_BEFORE_MINUTES,
+      alertaEntradaAntesMinutos: DEFAULT_ALERT_MINUTES,
       ventanaEntradaDespuesMinutos: DEFAULT_WINDOW_ENTRY_AFTER_MINUTES,
-      alertaEntradaDespuesMinutos: DEFAULT_WINDOW_ENTRY_AFTER_MINUTES,
+      alertaEntradaDespuesMinutos: DEFAULT_ALERT_MINUTES,
       ventanaSalidaAntesMinutos: DEFAULT_WINDOW_EXIT_BEFORE_MINUTES,
-      alertaSalidaAntesMinutos: DEFAULT_WINDOW_EXIT_BEFORE_MINUTES,
+      alertaSalidaAntesMinutos: DEFAULT_ALERT_MINUTES,
       ventanaSalidaDespuesMinutos: DEFAULT_WINDOW_EXIT_AFTER_MINUTES,
-      alertaSalidaDespuesMinutos: DEFAULT_WINDOW_EXIT_AFTER_MINUTES,
+      alertaSalidaDespuesMinutos: DEFAULT_ALERT_MINUTES,
       ventanaNovedadHoras: DEFAULT_NOVELTY_WINDOW_HOURS,
       orden: nextRuleOrder(rows, type, type === 'festivo' ? null : day),
       notas: '',
@@ -553,8 +554,7 @@ function renderShiftScreen(mount, deps = {}, { mode = 'plans' } = {}) {
       const rows = pageGroups.length
         ? await deps.listScheduledShiftsRange(dateFrom, dateTo, {
           sedeCodigo: filters.sedeCodigo || null,
-          sedeCodigos: [...new Set(pageGroups.map(row => row.sedeCodigo))],
-          templateIds: [...new Set(pageGroups.map(row => row.templateId))],
+          sedeTemplatePairs: pageGroups.map(row => ({ sedeCodigo: row.sedeCodigo, templateId: row.templateId })),
           contratoCodigo,
           estados: ['programado', 'abierto']
         })
@@ -1896,7 +1896,7 @@ function renderShiftScreen(mount, deps = {}, { mode = 'plans' } = {}) {
       ['SalidaDespues', DEFAULT_WINDOW_EXIT_AFTER_MINUTES]
     ]) {
       planControls[`ventana${side}Minutos`] = controlSource[`ventana${side}Minutos`] ?? fallback;
-      planControls[`alerta${side}Minutos`] = controlSource[`alerta${side}Minutos`] ?? planControls[`ventana${side}Minutos`];
+      planControls[`alerta${side}Minutos`] = controlSource[`alerta${side}Minutos`] ?? DEFAULT_ALERT_MINUTES;
     }
     const hasDifferentControls = modalRules.some(row => Object.entries(planControls).some(([name, value]) =>
       Number(row[name] ?? (name.startsWith('alerta') ? row[name.replace('alerta', 'ventana')] : value)) !== Number(value)
@@ -2559,10 +2559,11 @@ function renderShiftScreen(mount, deps = {}, { mode = 'plans' } = {}) {
     unSedes?.();
     templates = [];
     sedes = [];
-    // Generated shifts must never subscribe to catalogs across all contracts.
-    const options = isGeneratedScreen ? { contratoCodigo: currentContractCode() } : {};
-    if (isGeneratedScreen && !options.contratoCodigo) {
-      refreshGeneratedFilterOptions();
+    // Turnos screens are always scoped to the active contract; a future screen will handle global catalogs.
+    const options = { contratoCodigo: currentContractCode() };
+    if (!options.contratoCodigo) {
+      if (isGeneratedScreen) refreshGeneratedFilterOptions();
+      else render();
       return;
     }
     unTemplates = deps.streamShiftTemplates?.((rows) => {

@@ -3875,11 +3875,9 @@ export function streamShiftTemplates(onData, onError = null, onStatus = null, op
 export async function listShiftTemplateRuleCounts(templateIds = []) {
   const ids = [...new Set(templateIds.filter(Boolean))];
   const counts = new Map(ids.map(id => [id, 0]));
-  for (const chunk of chunkArray(ids, 200)) {
-    const rows = await selectPagedRows(() => supabase.from('shift_template_rules')
-      .select('template_id').in('template_id', chunk).eq('estado', 'activo').order('id'));
-    for (const row of rows) counts.set(row.template_id, (counts.get(row.template_id) || 0) + 1);
-  }
+  const batches = await Promise.all(chunkArray(ids, 200).map((chunk) => selectPagedRows(() => supabase.from('shift_template_rules')
+    .select('template_id').in('template_id', chunk).eq('estado', 'activo').order('id'))));
+  for (const row of batches.flat()) counts.set(row.template_id, (counts.get(row.template_id) || 0) + 1);
   return [...counts].map(([templateId, count]) => ({ templateId, count }));
 }
 
@@ -4280,8 +4278,21 @@ export function streamScheduledShiftsByDate(fechaOperativa, onData, onError = nu
   };
 }
 
-export async function listScheduledShiftsRange(dateFrom, dateTo, { sedeCodigo = null, sedeCodigos = [], templateIds = [], contratoCodigo = null, estados = [] } = {}) {
+export async function listScheduledShiftsRange(dateFrom, dateTo, { sedeCodigo = null, sedeCodigos = [], templateIds = [], sedeTemplatePairs = null, contratoCodigo = null, estados = [] } = {}) {
   if (!dateFrom || !dateTo) return [];
+  // sedeTemplatePairs restricts to exact (sede, template) combinations. Passing sedeCodigos +
+  // templateIds instead would match their cross product, over-fetching rows for combinations
+  // that were never actually active (costly once a contract has many distinct sedes/templates).
+  const pairs = Array.isArray(sedeTemplatePairs)
+    ? [...new Set(sedeTemplatePairs
+        .map(({ sedeCodigo: sede, templateId } = {}) => {
+          const cleanSede = String(sede || '').trim();
+          const cleanTemplate = String(templateId || '').trim();
+          return cleanSede && cleanTemplate ? `${cleanSede}|${cleanTemplate}` : '';
+        })
+        .filter(Boolean))]
+    : null;
+  if (pairs && !pairs.length) return [];
   const rows = await selectPagedRows(() => {
     let query = supabase
       .from('scheduled_shifts')
@@ -4291,8 +4302,17 @@ export async function listScheduledShiftsRange(dateFrom, dateTo, { sedeCodigo = 
       .order('fecha_operativa', { ascending: true })
       .order('starts_at', { ascending: true });
     if (sedeCodigo) query = query.eq('sede_codigo', String(sedeCodigo).trim());
-    if (sedeCodigos.length) query = query.in('sede_codigo', sedeCodigos);
-    if (templateIds.length) query = query.in('template_id', templateIds);
+    if (pairs) {
+      query = query.or(pairs
+        .map((pair) => {
+          const [sede, templateId] = pair.split('|');
+          return `and(sede_codigo.eq.${sede},template_id.eq.${templateId})`;
+        })
+        .join(','));
+    } else {
+      if (sedeCodigos.length) query = query.in('sede_codigo', sedeCodigos);
+      if (templateIds.length) query = query.in('template_id', templateIds);
+    }
     if (contratoCodigo) query = query.eq('contrato_codigo', String(contratoCodigo).trim());
     if (Array.isArray(estados) && estados.length) query = query.in('estado', estados);
     return query;
@@ -4437,12 +4457,11 @@ export async function listShiftAssignmentsForShifts(scheduledShiftIds = [], { su
     .map((id) => String(id || '').trim())
     .filter(Boolean))];
   if (!ids.length) return [];
-  const batches = [];
-  for (const chunk of chunkArray(ids, 200)) batches.push(await selectPagedRows(() => supabase
+  const batches = await Promise.all(chunkArray(ids, 200).map((chunk) => selectPagedRows(() => supabase
       .from('shift_assignments')
       .select(summaryOnly ? 'id,scheduled_shift_id,employee_id,documento,estado' : '*')
       .in('scheduled_shift_id', chunk)
-      .order('id', { ascending: true })));
+      .order('id', { ascending: true }))));
   const rows = batches.flat();
   return rows.map(mapShiftAssignmentRow);
 }
@@ -5916,7 +5935,7 @@ export async function rehireEmployee(id, { nombre, telefono, cargoCodigo, cargoN
   }
 
   const audit = await getCurrentAuditFields();
-  const zone = await resolveZoneBySedeCode(sedeCodigo);
+  const zone = await resolveZoneBySedeCode(sedeCodigo || currentRow.sede_codigo);
   const patch = {
     estado: 'activo',
     nombre: typeof nombre === 'string' ? nombre : currentRow.nombre || null,

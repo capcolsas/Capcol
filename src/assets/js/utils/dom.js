@@ -67,8 +67,17 @@ export const activateIcon = () => lucideInlineIcon('rotate-ccw', 'Ac', 'app-acti
 export const deactivateIcon = () => lucideInlineIcon('power', 'De', 'app-deactivate-icon');
 export const cancelIcon = () => lucideInlineIcon('x', 'X', 'app-cancel-icon');
 
+// Rendering a table calls this once per icon (e.g. 25 rows x 3 actions = 75 calls in one
+// synchronous pass). lucide.createIcons() always rescans the whole document regardless of
+// `scope`, so without coalescing, N icon creations trigger N full-document hydration passes.
+// Collapsing to a single rAF-scheduled pass turns that O(icons^2) cost back into O(icons).
+let hydratePending = false;
+
 export const hydrateLucideIcons = (scope = document, attempt = 0) => {
+  if (hydratePending) return;
+  hydratePending = true;
   requestAnimationFrame(() => {
+    hydratePending = false;
     if (globalThis.lucide?.createIcons) {
       globalThis.lucide.createIcons({
         attrs: {
@@ -77,7 +86,7 @@ export const hydrateLucideIcons = (scope = document, attempt = 0) => {
           height: 18
         }
       });
-      inlineIconNodes(scope).forEach((icon) => {
+      inlineIconNodes(document).forEach((icon) => {
         icon.classList.toggle('has-lucide-svg', Boolean(icon.querySelector('svg')));
       });
       return;

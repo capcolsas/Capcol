@@ -1106,14 +1106,19 @@ async function touchQrDevice(deviceId) {
 
 async function resolveAttendanceShift(employee, sedeCodigo, action) {
   if (action === 'exit') {
+    const day = currentDate();
+    // Scope to recent days and break ties by the most recent entrada_at: an open shift left over
+    // from days ago (never closed) must not make today's clear exit look ambiguous.
     let query = supabaseAdmin.from('employee_shift_status')
-      .select('scheduled_shift_id').eq('employee_id', employee.id)
-      .not('entrada_at', 'is', null).is('salida_at', null).neq('estado_turno', 'cancelado');
+      .select('scheduled_shift_id,entrada_at').eq('employee_id', employee.id)
+      .not('entrada_at', 'is', null).is('salida_at', null).neq('estado_turno', 'cancelado')
+      .gte('fecha_operativa', addIsoDays(day, -2))
+      .lte('fecha_operativa', addIsoDays(day, 1))
+      .order('entrada_at', { ascending: false });
     if (sedeCodigo) query = query.eq('sede_codigo', sedeCodigo);
     const { data, error } = await query;
     if (error) throw error;
     if (!data?.length) throw qrError('exit_requires_entry', 409);
-    if (data.length > 1) throw qrError('attendance_shift_ambiguous', 409);
     const shift = await getScheduledShiftById(data[0].scheduled_shift_id);
     if (!shift || shift.estado === 'cancelado') throw qrError('attendance_shift_missing', 409);
     return shift;
@@ -1224,7 +1229,14 @@ async function handlePendingAttendanceReason(phone, message) {
     p_request_id: request.id, p_recipient: phone, p_reason: result.reason, p_message_id: message.id || null
   });
   if (saveError) throw saveError;
-  await sendText(phone, 'Motivo guardado. Tu registro está completo.');
+  // The registration is only announced as successful now that its explanation is on record.
+  const shift = await getScheduledShiftById(request.scheduled_shift_id).catch(() => null);
+  const actionLabel = request.action === 'exit' ? 'Salida' : 'Ingreso';
+  const timeLabel = new Date(request.event_at).toLocaleTimeString('es-CO', { timeZone: 'America/Bogota', hour12: false });
+  const summary = shift
+    ? `${actionLabel} registrado correctamente.\nTurno: ${shift.nombre || ''} (${shift.fechaOperativa})\nSede del turno: ${shift.sedeNombre || shift.sedeCodigo}\nHora: ${timeLabel}`
+    : `${actionLabel} registrado correctamente.\nHora: ${timeLabel}`;
+  await sendText(phone, `Motivo guardado. ${summary}`);
   await notifyAttendanceReason(request);
   return true;
 }
@@ -2125,13 +2137,18 @@ async function handleDocumentInput(phone, session, value) {
 
 async function sendIdentityOrMenu(phone, employee) {
   if (employee.isSupernumerario) {
-    await sendButtons(phone,
+    await sendList(phone,
       `Hola, soy Rocky\n\nEres: ${employee.nombre}\nCédula: ${employee.documento}\nEstas como SUPERNUMERARIO\n\nElige una opción:`,
-      [
-        { id: MENU_IDS.ACTION_WORKING, title: 'Ingreso / Salida' },
-        { id: MENU_IDS.ACTION_NOVELTY, title: 'Novedad' },
-        { id: MENU_IDS.UPDATE_DATA, title: 'Actualizar Datos' }
-      ]
+      'Seleccionar',
+      [{
+        title: 'Opciones',
+        rows: [
+          { id: MENU_IDS.QR_ENTRY, title: 'Ingreso' },
+          { id: MENU_IDS.QR_EXIT, title: 'Retiro' },
+          { id: MENU_IDS.ACTION_NOVELTY, title: 'Novedad' },
+          { id: MENU_IDS.UPDATE_DATA, title: 'Actualizar Datos' }
+        ]
+      }]
     );
     return;
   }
@@ -2180,11 +2197,15 @@ async function handleActionSelection(phone, session, parsed) {
       session_state: SESSION.AWAITING_ACTION,
       session_data: { employee: sessionEmployee(employee), menuReady: true }
     });
-    await sendButtons(phone, 'Elige una opción:', [
-      { id: MENU_IDS.ACTION_WORKING, title: 'Ingreso / Salida' },
-      { id: MENU_IDS.ACTION_COMPENSATORY, title: 'Compensatorio' },
-      { id: MENU_IDS.ACTION_NOVELTY, title: 'Novedad' }
-    ]);
+    await sendList(phone, 'Elige una opción:', 'Seleccionar', [{
+      title: 'Opciones',
+      rows: [
+        { id: MENU_IDS.QR_ENTRY, title: 'Ingreso' },
+        { id: MENU_IDS.QR_EXIT, title: 'Retiro' },
+        { id: MENU_IDS.ACTION_COMPENSATORY, title: 'Compensatorio' },
+        { id: MENU_IDS.ACTION_NOVELTY, title: 'Novedad' }
+      ]
+    }]);
     return;
   }
 
@@ -2208,6 +2229,11 @@ async function handleActionSelection(phone, session, parsed) {
       { id: MENU_IDS.UPDATE_TRANSFER, title: 'Traslado de Sede' },
       { id: MENU_IDS.UPDATE_PHONE, title: 'Cambio de Teléfono' }
     ]);
+    return;
+  }
+
+  if (choice === 'entry' || choice === 'exit') {
+    await beginQrAttendance(phone, employee, choice, null, null);
     return;
   }
 
@@ -2573,11 +2599,17 @@ async function handleQrAttendanceAction(phone, session, parsed) {
   if (normalizedId === normalizeKey(MENU_IDS.QR_ENTRY) || normalizedValue === 'ingreso') action = 'entry';
   if (normalizedId === normalizeKey(MENU_IDS.QR_EXIT) || normalizedValue === 'salida') action = 'exit';
   if (!action) {
-    await sendText(phone, 'Selecciona una opcion valida: Ingreso o Salida.');
+    await sendText(phone, 'Selecciona una opcion valida: Ingreso o Retiro.');
     return;
   }
 
   const selectedSede = session?.session_data?.selectedSede || null;
+  await beginQrAttendance(phone, employee, action, selectedSede, session);
+}
+
+// Shared by the direct Ingreso/Retiro menu choice and by handleQrAttendanceAction (kept for
+// sessions already mid-flow on the older two-step Ingreso/Salida sub-menu).
+async function beginQrAttendance(phone, employee, action, selectedSede = null, session = null) {
   const freshEmployee = await reloadEmployeeForAttendance(employee);
   const documento = normalizeDocument(freshEmployee?.documento);
   if (freshEmployee.isSupernumerario && !freshEmployee.marcacionMovil && action === 'entry') {
@@ -2602,7 +2634,7 @@ async function handleQrAttendanceAction(phone, session, parsed) {
         session_state: SESSION.COMPLETED,
         session_data: { employee: sessionEmployee(freshEmployee) }
       });
-      await sendText(phone, 'Ya tienes un ingreso registrado para este turno. Si necesitas marcar salida, escribe "Hola" y selecciona Salida.');
+      await sendText(phone, 'Ya tienes un ingreso registrado para este turno. Si necesitas marcar salida, escribe "Hola" y selecciona Retiro.');
       return;
     }
     if (String(error?.message || '') === 'exit_requires_entry') {
@@ -2629,7 +2661,7 @@ async function handleQrAttendanceAction(phone, session, parsed) {
     documento: freshEmployee.documento,
     session_state: SESSION.AWAITING_QR_LOCATION,
     session_data: {
-      ...(session.session_data || {}),
+      ...(session?.session_data || {}),
       employee: sessionEmployee(freshEmployee),
       selectedSede: { codigo: shift.sedeCodigo, nombre: shift.sedeNombre },
       pendingQrAction: action,
@@ -2805,8 +2837,14 @@ async function completeLocatedMarking(phone, session, employee, shift, sede, loc
   }});
   await storeSession(phone, { employee_id: employee.id, documento: employee.documento,
     session_state: SESSION.COMPLETED, session_data: { employee: sessionEmployee(employee) } });
+  // A late/early marking must not claim success before the employee explains it: only the
+  // reason prompt goes out now, and handlePendingAttendanceReason sends this same confirmation
+  // once the explanation is saved.
+  if (result.reasonRequest) {
+    await notifyAttendanceReason(result.reasonRequest);
+    return;
+  }
   await sendText(phone, `${action === 'exit' ? 'Salida' : 'Ingreso'} registrado correctamente.\nSede de marcación: ${sede.nombre || sede.codigo}\nTurno: ${shift.nombre || ''} (${shift.fechaOperativa})\nSede del turno: ${shift.sedeNombre || shift.sedeCodigo}\nHora: ${new Date(result.eventAt).toLocaleTimeString('es-CO', { timeZone: 'America/Bogota', hour12: false })}\nUbicación validada: ${proof.distanceMeters} m.`);
-  if (result.reasonRequest) await notifyAttendanceReason(result.reasonRequest);
 }
 
 function isNamedLocation(location = {}) {
@@ -4612,6 +4650,8 @@ function mapActionChoice(parsed, isSupernumerario, hasMainMenu) {
     normalizedId === normalizeKey(MENU_IDS.ACTION_WORKING) ||
     normalizedId === 'dailytrabajando' ||
     normalizedValue === 'trabajando';
+  const isEntryAction = normalizedId === normalizeKey(MENU_IDS.QR_ENTRY) || normalizedValue === 'ingreso';
+  const isExitAction = normalizedId === normalizeKey(MENU_IDS.QR_EXIT) || normalizedValue === 'retiro' || normalizedValue === 'salida';
   const isCompensatoryAction =
     normalizedId === normalizeKey(MENU_IDS.ACTION_COMPENSATORY) ||
     normalizedId === 'dailycompensatorio' ||
@@ -4625,6 +4665,8 @@ function mapActionChoice(parsed, isSupernumerario, hasMainMenu) {
     if (normalizedId === normalizeKey(MENU_IDS.IDENTITY_NO) || normalizedValue === 'nosoyyo') return 'identity_no';
   }
   if (normalizedId === normalizeKey(MENU_IDS.UPDATE_DATA) || normalizedValue === 'actualizardatos') return 'update_data';
+  if (isEntryAction) return 'entry';
+  if (isExitAction) return 'exit';
   if (isWorkingAction) return 'working';
   if (isCompensatoryAction) return 'compensatory';
   if (isNoveltyAction) return 'novelty';

@@ -2,56 +2,7 @@ import { Header } from './components/Header.js';
 import { Footer } from './components/Footer.js';
 import { Sidebar, firstAvailableProjectRoute } from './components/Sidebar.js';
 
-import { Information } from './components/Information.js';
-import { DataTreatment } from './components/DataTreatment.js';
-import { About } from './components/About.js';
-import { ForgotPassword, Login, ResetPassword } from './components/Login.js';
-import { Notes } from './components/Notes.js';
-import { CargueMasivoDashboard } from './components/dashboards/CargueMasivoDashboard.js';
-import { EmpleadosDashboard } from './components/dashboards/EmpleadosDashboard.js';
-import { GobiernoDashboard } from './components/dashboards/GobiernoDashboard.js';
-import { OperacionDashboard } from './components/dashboards/OperacionDashboard.js';
-import { ReportesDashboard } from './components/dashboards/ReportesDashboard.js';
-
-import { UsersAdmin } from './components/UsersAdmin.js';
-import { ZonesAdmin } from './components/ZonesAdmin.js';
-import { ContractsAdmin } from './components/ContractsAdmin.js';
-import { ContractDetails } from './components/ContractDetails.js';
 import { shareContractStream, shareContractImageUrls } from './utils/sharedContractData.js';
-import { SiteVisitsAdmin } from './components/SiteVisitsAdmin.js';
-import { Inventory } from './components/Inventory.js';
-import { DependenciesAdmin } from './components/DependenciesAdmin.js';
-import { SedesAdmin } from './components/SedesAdmin.js';
-import { SedeLocationsAdmin } from './components/SedeLocationsAdmin.js';
-import { EmployeesAdmin } from './components/EmployeesAdmin.js';
-import { EmployeeNovelties } from './components/EmployeeNovelties.js';
-import { SupernumerariosAdmin } from './components/SupernumerariosAdmin.js';
-import { SupervisorsAdmin } from './components/SupervisorsAdmin.js';
-import { CargosAdmin } from './components/CargosAdmin.js';
-import { NovedadesAdmin } from './components/NovedadesAdmin.js';
-import { CargueMasivoAdmin } from './components/CargueMasivoAdmin.js';
-import { EmployeeBulkUpdateAdmin } from './components/EmployeeBulkUpdateAdmin.js';
-import { CargueMasivoSedesAdmin } from './components/CargueMasivoSedesAdmin.js';
-import { ImportHistory } from './components/ImportHistory.js';
-import { Absenteeism } from './components/Absenteeism.js';
-import { HistoricalDailyRegistry } from './components/HistoricalDailyRegistry.js';
-import { HistoricalQrRegistry } from './components/HistoricalQrRegistry.js';
-import { EmployeesReport } from './components/EmployeesReport.js';
-import { HiringBySedeReport } from './components/HiringBySedeReport.js';
-import { ConsolidatedNoveltiesReport } from './components/ConsolidatedNoveltiesReport.js';
-import { ConsolidatedReports } from './components/ConsolidatedReports.js';
-import { ContractDashboard } from './components/ContractDashboard.js';
-import { ContractReports } from './components/ContractReports.js';
-import { ImportReplacements } from './components/ImportReplacements.js';
-import { CargarDatos } from './components/CargarDatos.js';
-import { PermissionsCenter } from './components/PermissionsCenter.js';
-import { PermissionsAudit } from './components/PermissionsAudit.js';
-import { WhatsAppLive } from './components/WhatsAppLive.js';
-import { RegistroSede } from './components/RegistroSede.js';
-import { GeneratedShiftsAdmin, ShiftPlansAdmin, ShiftReviewAdmin } from './components/ShiftsAdmin.js';
-import { ShiftRotationsAdmin } from './components/ShiftRotationsAdmin.js';
-import { QrTabletScanner } from './components/QrTabletScanner.js';
-import { QrDevicesInfo } from './components/QrDevicesInfo.js';
 
 import { addRoute, startRouter, navigate, refreshRoute } from './router.js';
 import { getState, setState, subscribe } from './state.js';
@@ -216,58 +167,58 @@ const guardWrite=(perm,fn)=> async (...args)=>{
       }
     });
 
-  addRoute('/login', ()=> Login(root, deps));
-  addRoute('/forgot-password', ()=> ForgotPassword(root, deps));
-  addRoute('/reset-password', ()=> ResetPassword(root, deps));
+  addRoute('/login', async ()=> { const { Login } = await import('./components/Login.js'); return Login(root, deps); });
+  addRoute('/forgot-password', async ()=> { const { ForgotPassword } = await import('./components/Login.js'); return ForgotPassword(root, deps); });
+  addRoute('/reset-password', async ()=> { const { ResetPassword } = await import('./components/Login.js'); return ResetPassword(root, deps); });
   addRoute('/', ()=> requireAuth(()=> {
     const route = firstAvailableProjectRoute();
     setState({ sidebarContext: route === '/about' ? 'settings' : 'contract' });
     navigate(route);
     return null;
   }));
-  addRoute('/information', ()=> requireAuth(()=> Information(root)));
+  addRoute('/information', ()=> requireAuth(async ()=> { const { Information } = await import('./components/Information.js'); return Information(root); }));
   addRoute('/contact', ()=> { navigate('/information'); return null; });
-  addRoute('/data-treatment', ()=> requireAuth(()=> DataTreatment(root)));
-  addRoute('/about', ()=> requireAuth(()=> About(root)));
-  addRoute('/notes', ()=> requireAuth(()=> Notes(root)));
+  addRoute('/data-treatment', ()=> requireAuth(async ()=> { const { DataTreatment } = await import('./components/DataTreatment.js'); return DataTreatment(root); }));
+  addRoute('/about', ()=> requireAuth(async ()=> { const { About } = await import('./components/About.js'); return About(root); }));
+  addRoute('/notes', ()=> requireAuth(async ()=> { const { Notes } = await import('./components/Notes.js'); return Notes(root); }));
 
   // Gobierno
-  addRoute('/gobierno-dashboard', ()=> requireAuth(()=> guardAny([PERMS.VIEW_USERS, PERMS.VIEW_PERMISSIONS, PERMS.VIEW_AUDIT], ()=> GobiernoDashboard(root, deps), { allowSuperAdmin: true })));
-  addRoute('/permissions', ()=> requireAuth(()=> { if(!isSuperAdmin() && !can(PERMS.VIEW_PERMISSIONS)) return block('No tienes permiso para acceder a esta sección.'); return PermissionsCenter(root, deps); }));
-  addRoute('/permissions-audit', ()=> requireAuth(()=> { if(!isSuperAdmin() && !can(PERMS.VIEW_AUDIT)) return block('No tienes permiso para consultar auditoria.'); return PermissionsAudit(root, deps); }));
+  addRoute('/gobierno-dashboard', ()=> requireAuth(()=> guardAny([PERMS.VIEW_USERS, PERMS.VIEW_PERMISSIONS, PERMS.VIEW_AUDIT], async ()=> { const { GobiernoDashboard } = await import('./components/dashboards/GobiernoDashboard.js'); return GobiernoDashboard(root, deps); }, { allowSuperAdmin: true })));
+  addRoute('/permissions', ()=> requireAuth(async ()=> { if(!isSuperAdmin() && !can(PERMS.VIEW_PERMISSIONS)) return block('No tienes permiso para acceder a esta sección.'); const { PermissionsCenter } = await import('./components/PermissionsCenter.js'); return PermissionsCenter(root, deps); }));
+  addRoute('/permissions-audit', ()=> requireAuth(async ()=> { if(!isSuperAdmin() && !can(PERMS.VIEW_AUDIT)) return block('No tienes permiso para consultar auditoria.'); const { PermissionsAudit } = await import('./components/PermissionsAudit.js'); return PermissionsAudit(root, deps); }));
 
   // Administración
-  addRoute('/users', ()=> requireAuth(()=> guard(PERMS.VIEW_USERS, ()=> UsersAdmin(root, deps))));
-  addRoute('/contracts', ()=> requireAuth(()=> guard(PERMS.VIEW_CONTRACTS, ()=> ContractsAdmin(root, deps))));
-  addRoute('/contract-details', ()=> requireAuth(()=> guard(PERMS.VIEW_CONTRACTS, ()=> ContractDetails(root, deps))));
-  addRoute('/inventory', ()=> requireAuth(()=> guard(PERMS.VIEW_INVENTORY, ()=> Inventory(root, deps))));
-  addRoute('/inventory/products', ()=> requireAuth(()=> guard(PERMS.VIEW_INVENTORY, ()=> Inventory(root, deps, 'products'))));
-  addRoute('/inventory/deliveries', ()=> requireAuth(()=> guard(PERMS.VIEW_INVENTORY, ()=> Inventory(root, deps, 'deliveries'))));
-  addRoute('/zones', ()=> requireAuth(()=> guard(PERMS.VIEW_ZONES, ()=> ZonesAdmin(root, deps))));
-  addRoute('/dependencies', ()=> requireAuth(()=> guard(PERMS.VIEW_DEPENDENCIES, ()=> DependenciesAdmin(root, deps))));
-  addRoute('/sedes', ()=> requireAuth(()=> guard(PERMS.VIEW_SEDES, ()=> SedesAdmin(root, deps))));
-  addRoute('/sedes-ubicacion', ()=> requireAuth(()=> guard(PERMS.VIEW_SEDES, ()=> SedeLocationsAdmin(root, deps))));
-  addRoute('/bulk-upload-sedes', ()=> requireAuth(()=> guard(PERMS.VIEW_BULK_UPLOAD_SEDES, ()=> CargueMasivoSedesAdmin(root, deps))));
-  addRoute('/empleados-dashboard', ()=> requireAuth(()=> guardAny([PERMS.VIEW_EMPLOYEES, PERMS.VIEW_EMPLOYEE_NOVELTIES, PERMS.VIEW_SUPERVISORS, PERMS.VIEW_INCAPACITIES], ()=> EmpleadosDashboard(root, deps))));
-  addRoute('/employees', ()=> requireAuth(()=> guard(PERMS.VIEW_EMPLOYEES, ()=> EmployeesAdmin(root, deps))));
-  addRoute('/employee-novelties', ()=> requireAuth(()=> guard(PERMS.VIEW_EMPLOYEE_NOVELTIES, ()=> EmployeeNovelties(root, deps))));
-  addRoute('/supernumerarios', ()=> requireAuth(()=> guard(PERMS.VIEW_SUPERNUMERARIOS, ()=> SupernumerariosAdmin(root, deps))));
-  addRoute('/bulk-upload', ()=> requireAuth(()=> guard(PERMS.VIEW_BULK_UPLOAD_EMPLOYEES, ()=> CargueMasivoAdmin(root, deps))));
-  addRoute('/bulk-update-employees', ()=> requireAuth(()=> guard(PERMS.VIEW_BULK_UPLOAD_EMPLOYEES, ()=> EmployeeBulkUpdateAdmin(root, deps))));
-  addRoute('/cargos', ()=> requireAuth(()=> guard(PERMS.VIEW_CARGOS, ()=> CargosAdmin(root, deps))));
-  addRoute('/novedades', ()=> requireAuth(()=> guard(PERMS.VIEW_NOVEDADES, ()=> NovedadesAdmin(root, deps))));
-  addRoute('/supervisors', ()=> requireAuth(()=> guard(PERMS.VIEW_SUPERVISORS, ()=> SupervisorsAdmin(root, deps))));
-  addRoute('/turnos-planes', ()=> requireAuth(()=> guard(PERMS.VIEW_SHIFT_PLANS, ()=> ShiftPlansAdmin(root, deps))));
-  addRoute('/turnos-generados', ()=> requireAuth(()=> guard(PERMS.VIEW_GENERATED_SHIFTS, ()=> GeneratedShiftsAdmin(root, deps))));
-  addRoute('/turnos-rotaciones', ()=> requireAuth(()=> guard(PERMS.MANAGE_GENERATED_SHIFTS, ()=> ShiftRotationsAdmin(root, deps))));
-  addRoute('/turnos-visitas', ()=> requireAuth(()=> guard(PERMS.EDIT_CONTRACTS, ()=> SiteVisitsAdmin(root, deps))));
-  addRoute('/turnos-revision', ()=> requireAuth(()=> guard(PERMS.VIEW_SHIFT_REVIEW, ()=> ShiftReviewAdmin(root, deps))));
+  addRoute('/users', ()=> requireAuth(()=> guard(PERMS.VIEW_USERS, async ()=> { const { UsersAdmin } = await import('./components/UsersAdmin.js'); return UsersAdmin(root, deps); })));
+  addRoute('/contracts', ()=> requireAuth(()=> guard(PERMS.VIEW_CONTRACTS, async ()=> { const { ContractsAdmin } = await import('./components/ContractsAdmin.js'); return ContractsAdmin(root, deps); })));
+  addRoute('/contract-details', ()=> requireAuth(()=> guard(PERMS.VIEW_CONTRACTS, async ()=> { const { ContractDetails } = await import('./components/ContractDetails.js'); return ContractDetails(root, deps); })));
+  addRoute('/inventory', ()=> requireAuth(()=> guard(PERMS.VIEW_INVENTORY, async ()=> { const { Inventory } = await import('./components/Inventory.js'); return Inventory(root, deps); })));
+  addRoute('/inventory/products', ()=> requireAuth(()=> guard(PERMS.VIEW_INVENTORY, async ()=> { const { Inventory } = await import('./components/Inventory.js'); return Inventory(root, deps, 'products'); })));
+  addRoute('/inventory/deliveries', ()=> requireAuth(()=> guard(PERMS.VIEW_INVENTORY, async ()=> { const { Inventory } = await import('./components/Inventory.js'); return Inventory(root, deps, 'deliveries'); })));
+  addRoute('/zones', ()=> requireAuth(()=> guard(PERMS.VIEW_ZONES, async ()=> { const { ZonesAdmin } = await import('./components/ZonesAdmin.js'); return ZonesAdmin(root, deps); })));
+  addRoute('/dependencies', ()=> requireAuth(()=> guard(PERMS.VIEW_DEPENDENCIES, async ()=> { const { DependenciesAdmin } = await import('./components/DependenciesAdmin.js'); return DependenciesAdmin(root, deps); })));
+  addRoute('/sedes', ()=> requireAuth(()=> guard(PERMS.VIEW_SEDES, async ()=> { const { SedesAdmin } = await import('./components/SedesAdmin.js'); return SedesAdmin(root, deps); })));
+  addRoute('/sedes-ubicacion', ()=> requireAuth(()=> guard(PERMS.VIEW_SEDES, async ()=> { const { SedeLocationsAdmin } = await import('./components/SedeLocationsAdmin.js'); return SedeLocationsAdmin(root, deps); })));
+  addRoute('/bulk-upload-sedes', ()=> requireAuth(()=> guard(PERMS.VIEW_BULK_UPLOAD_SEDES, async ()=> { const { CargueMasivoSedesAdmin } = await import('./components/CargueMasivoSedesAdmin.js'); return CargueMasivoSedesAdmin(root, deps); })));
+  addRoute('/empleados-dashboard', ()=> requireAuth(()=> guardAny([PERMS.VIEW_EMPLOYEES, PERMS.VIEW_EMPLOYEE_NOVELTIES, PERMS.VIEW_SUPERVISORS, PERMS.VIEW_INCAPACITIES], async ()=> { const { EmpleadosDashboard } = await import('./components/dashboards/EmpleadosDashboard.js'); return EmpleadosDashboard(root, deps); })));
+  addRoute('/employees', ()=> requireAuth(()=> guard(PERMS.VIEW_EMPLOYEES, async ()=> { const { EmployeesAdmin } = await import('./components/EmployeesAdmin.js'); return EmployeesAdmin(root, deps); })));
+  addRoute('/employee-novelties', ()=> requireAuth(()=> guard(PERMS.VIEW_EMPLOYEE_NOVELTIES, async ()=> { const { EmployeeNovelties } = await import('./components/EmployeeNovelties.js'); return EmployeeNovelties(root, deps); })));
+  addRoute('/supernumerarios', ()=> requireAuth(()=> guard(PERMS.VIEW_SUPERNUMERARIOS, async ()=> { const { SupernumerariosAdmin } = await import('./components/SupernumerariosAdmin.js'); return SupernumerariosAdmin(root, deps); })));
+  addRoute('/bulk-upload', ()=> requireAuth(()=> guard(PERMS.VIEW_BULK_UPLOAD_EMPLOYEES, async ()=> { const { CargueMasivoAdmin } = await import('./components/CargueMasivoAdmin.js'); return CargueMasivoAdmin(root, deps); })));
+  addRoute('/bulk-update-employees', ()=> requireAuth(()=> guard(PERMS.VIEW_BULK_UPLOAD_EMPLOYEES, async ()=> { const { EmployeeBulkUpdateAdmin } = await import('./components/EmployeeBulkUpdateAdmin.js'); return EmployeeBulkUpdateAdmin(root, deps); })));
+  addRoute('/cargos', ()=> requireAuth(()=> guard(PERMS.VIEW_CARGOS, async ()=> { const { CargosAdmin } = await import('./components/CargosAdmin.js'); return CargosAdmin(root, deps); })));
+  addRoute('/novedades', ()=> requireAuth(()=> guard(PERMS.VIEW_NOVEDADES, async ()=> { const { NovedadesAdmin } = await import('./components/NovedadesAdmin.js'); return NovedadesAdmin(root, deps); })));
+  addRoute('/supervisors', ()=> requireAuth(()=> guard(PERMS.VIEW_SUPERVISORS, async ()=> { const { SupervisorsAdmin } = await import('./components/SupervisorsAdmin.js'); return SupervisorsAdmin(root, deps); })));
+  addRoute('/turnos-planes', ()=> requireAuth(()=> guard(PERMS.VIEW_SHIFT_PLANS, async ()=> { const { ShiftPlansAdmin } = await import('./components/ShiftsAdmin.js'); return ShiftPlansAdmin(root, deps); })));
+  addRoute('/turnos-generados', ()=> requireAuth(()=> guard(PERMS.VIEW_GENERATED_SHIFTS, async ()=> { const { GeneratedShiftsAdmin } = await import('./components/ShiftsAdmin.js'); return GeneratedShiftsAdmin(root, deps); })));
+  addRoute('/turnos-rotaciones', ()=> requireAuth(()=> guard(PERMS.MANAGE_GENERATED_SHIFTS, async ()=> { const { ShiftRotationsAdmin } = await import('./components/ShiftRotationsAdmin.js'); return ShiftRotationsAdmin(root, deps); })));
+  addRoute('/turnos-visitas', ()=> requireAuth(()=> guard(PERMS.EDIT_CONTRACTS, async ()=> { const { SiteVisitsAdmin } = await import('./components/SiteVisitsAdmin.js'); return SiteVisitsAdmin(root, deps); })));
+  addRoute('/turnos-revision', ()=> requireAuth(()=> guard(PERMS.VIEW_SHIFT_REVIEW, async ()=> { const { ShiftReviewAdmin } = await import('./components/ShiftsAdmin.js'); return ShiftReviewAdmin(root, deps); })));
 
   // Operación
-  addRoute('/operacion-dashboard', ()=> requireAuth(()=> guardAny([PERMS.VIEW_OPERATION_REGISTRY, PERMS.VIEW_QR_DAILY_REGISTRY, PERMS.VIEW_SUPERNUMERARIOS, PERMS.VIEW_IMPORT_HISTORY], ()=> OperacionDashboard(root, deps))));
+  addRoute('/operacion-dashboard', ()=> requireAuth(()=> guardAny([PERMS.VIEW_OPERATION_REGISTRY, PERMS.VIEW_QR_DAILY_REGISTRY, PERMS.VIEW_SUPERNUMERARIOS, PERMS.VIEW_IMPORT_HISTORY], async ()=> { const { OperacionDashboard } = await import('./components/dashboards/OperacionDashboard.js'); return OperacionDashboard(root, deps); })));
   addRoute('/imports', ()=> { navigate('/registros-vivo'); return null; });
   addRoute('/whatsapp-live', ()=> { navigate('/registros-vivo'); return null; });
-  addRoute('/registros-vivo', ()=> requireAuth(()=> guardAny([PERMS.VIEW_OPERATION_REGISTRY, PERMS.VIEW_QR_DAILY_REGISTRY], ()=> WhatsAppLive(root, deps))));
+  addRoute('/registros-vivo', ()=> requireAuth(()=> guardAny([PERMS.VIEW_OPERATION_REGISTRY, PERMS.VIEW_QR_DAILY_REGISTRY], async ()=> { const { WhatsAppLive } = await import('./components/WhatsAppLive.js'); return WhatsAppLive(root, deps); })));
   addRoute('/turnos', ()=> {
     if (can(PERMS.VIEW_SHIFT_REVIEW)) { navigate('/turnos-revision'); return null; }
     if (can(PERMS.VIEW_GENERATED_SHIFTS)) { navigate('/turnos-generados'); return null; }
@@ -275,16 +226,16 @@ const guardWrite=(perm,fn)=> async (...args)=>{
     if (can(PERMS.EDIT_CONTRACTS)) { navigate('/turnos-visitas'); return null; }
     return block('No tienes permiso para acceder a esta sección.');
   });
-  addRoute('/registro-sede', ()=> requireAuth(()=> guard(PERMS.VIEW_OPERATION_REGISTRY, ()=> RegistroSede(root, deps))));
-  addRoute('/lector-qr', ()=> requireAuth(()=> guard(PERMS.VIEW_QR_SCANNER, ()=> QrTabletScanner(root, deps))));
-  addRoute('/tablets-qr', ()=> requireAuth(()=> guard(PERMS.VIEW_QR_DEVICES, ()=> QrDevicesInfo(root, deps))));
+  addRoute('/registro-sede', ()=> requireAuth(()=> guard(PERMS.VIEW_OPERATION_REGISTRY, async ()=> { const { RegistroSede } = await import('./components/RegistroSede.js'); return RegistroSede(root, deps); })));
+  addRoute('/lector-qr', ()=> requireAuth(()=> guard(PERMS.VIEW_QR_SCANNER, async ()=> { const { QrTabletScanner } = await import('./components/QrTabletScanner.js'); return QrTabletScanner(root, deps); })));
+  addRoute('/tablets-qr', ()=> requireAuth(()=> guard(PERMS.VIEW_QR_DEVICES, async ()=> { const { QrDevicesInfo } = await import('./components/QrDevicesInfo.js'); return QrDevicesInfo(root, deps); })));
   addRoute('/registro-qr', ()=> { navigate('/registros-vivo'); return null; });
-  addRoute('/imports-replacements', ()=> requireAuth(()=> guard(PERMS.VIEW_OPERATION_REGISTRY, ()=> ImportReplacements(root, deps))));
-  addRoute('/import-history', ()=> requireAuth(()=> guard(PERMS.VIEW_IMPORT_HISTORY, ()=> ImportHistory(root, deps))));
-  addRoute('/absenteeism', ()=> requireAuth(()=> guard(PERMS.VIEW_REPORTS_ABSENTEEISM, ()=> Absenteeism(root, deps))));
+  addRoute('/imports-replacements', ()=> requireAuth(()=> guard(PERMS.VIEW_OPERATION_REGISTRY, async ()=> { const { ImportReplacements } = await import('./components/ImportReplacements.js'); return ImportReplacements(root, deps); })));
+  addRoute('/import-history', ()=> requireAuth(()=> guard(PERMS.VIEW_IMPORT_HISTORY, async ()=> { const { ImportHistory } = await import('./components/ImportHistory.js'); return ImportHistory(root, deps); })));
+  addRoute('/absenteeism', ()=> requireAuth(()=> guard(PERMS.VIEW_REPORTS_ABSENTEEISM, async ()=> { const { Absenteeism } = await import('./components/Absenteeism.js'); return Absenteeism(root, deps); })));
 
   // Consultor
-  addRoute('/reportes-dashboard', ()=> requireAuth(()=> guardAny(REPORT_VIEW_PERMISSIONS, ()=> ReportesDashboard(root, deps))));
+  addRoute('/reportes-dashboard', ()=> requireAuth(()=> guardAny(REPORT_VIEW_PERMISSIONS, async ()=> { const { ReportesDashboard } = await import('./components/dashboards/ReportesDashboard.js'); return ReportesDashboard(root, deps); })));
   addRoute('/reports', ()=> requireAuth(()=> {
     if (can(PERMS.VIEW_REPORTS_CLIENT)) { navigate('/reports-daily-history'); return null; }
     if (can(PERMS.VIEW_REPORTS_QR_HISTORY)) { navigate('/reports-qr-history'); return null; }
@@ -302,14 +253,14 @@ const guardWrite=(perm,fn)=> async (...args)=>{
     return block('No tienes permiso para acceder a esta seccion.');
   })));
   addRoute('/reports-daily', ()=> { navigate('/reports-daily-history'); return null; });
-  addRoute('/reports-daily-history', ()=> requireAuth(()=> guard(PERMS.VIEW_REPORTS_CLIENT, ()=> HistoricalDailyRegistry(root, deps))));
-  addRoute('/reports-qr-history', ()=> requireAuth(()=> guard(PERMS.VIEW_REPORTS_QR_HISTORY, ()=> HistoricalQrRegistry(root, deps))));
-  addRoute('/reports-employees', ()=> requireAuth(()=> guard(PERMS.VIEW_REPORTS_EMPLOYEES, ()=> EmployeesReport(root, deps))));
-  addRoute('/reports-hiring', ()=> requireAuth(()=> guard(PERMS.VIEW_REPORTS_HIRING, ()=> HiringBySedeReport(root, deps))));
-  addRoute('/reports-novelties-consolidated', ()=> requireAuth(()=> guard(PERMS.VIEW_REPORTS_NOVELTIES_CONSOLIDATED, ()=> ConsolidatedNoveltiesReport(root, deps))));
-  addRoute('/reports-services-consolidated', ()=> requireAuth(()=> guard(PERMS.VIEW_REPORTS_SERVICES_CONSOLIDATED, ()=> ConsolidatedReports(root, deps))));
-  addRoute('/contract-dashboard', ()=> requireAuth(()=> guard(PERMS.VIEW_REPORTS_CLIENT, ()=> ContractDashboard(root, deps))));
-  addRoute('/reports-contracts', ()=> requireAuth(()=> guard(PERMS.VIEW_REPORTS_CLIENT, ()=> ContractReports(root, deps))));
+  addRoute('/reports-daily-history', ()=> requireAuth(()=> guard(PERMS.VIEW_REPORTS_CLIENT, async ()=> { const { HistoricalDailyRegistry } = await import('./components/HistoricalDailyRegistry.js'); return HistoricalDailyRegistry(root, deps); })));
+  addRoute('/reports-qr-history', ()=> requireAuth(()=> guard(PERMS.VIEW_REPORTS_QR_HISTORY, async ()=> { const { HistoricalQrRegistry } = await import('./components/HistoricalQrRegistry.js'); return HistoricalQrRegistry(root, deps); })));
+  addRoute('/reports-employees', ()=> requireAuth(()=> guard(PERMS.VIEW_REPORTS_EMPLOYEES, async ()=> { const { EmployeesReport } = await import('./components/EmployeesReport.js'); return EmployeesReport(root, deps); })));
+  addRoute('/reports-hiring', ()=> requireAuth(()=> guard(PERMS.VIEW_REPORTS_HIRING, async ()=> { const { HiringBySedeReport } = await import('./components/HiringBySedeReport.js'); return HiringBySedeReport(root, deps); })));
+  addRoute('/reports-novelties-consolidated', ()=> requireAuth(()=> guard(PERMS.VIEW_REPORTS_NOVELTIES_CONSOLIDATED, async ()=> { const { ConsolidatedNoveltiesReport } = await import('./components/ConsolidatedNoveltiesReport.js'); return ConsolidatedNoveltiesReport(root, deps); })));
+  addRoute('/reports-services-consolidated', ()=> requireAuth(()=> guard(PERMS.VIEW_REPORTS_SERVICES_CONSOLIDATED, async ()=> { const { ConsolidatedReports } = await import('./components/ConsolidatedReports.js'); return ConsolidatedReports(root, deps); })));
+  addRoute('/contract-dashboard', ()=> requireAuth(()=> guard(PERMS.VIEW_REPORTS_CLIENT, async ()=> { const { ContractDashboard } = await import('./components/ContractDashboard.js'); return ContractDashboard(root, deps); })));
+  addRoute('/reports-contracts', ()=> requireAuth(()=> guard(PERMS.VIEW_REPORTS_CLIENT, async ()=> { const { ContractReports } = await import('./components/ContractReports.js'); return ContractReports(root, deps); })));
   addRoute('/reports-consolidated', ()=> requireAuth(()=> guardAny(CONSOLIDATED_REPORT_VIEW_PERMISSIONS, ()=> {
     if (can(PERMS.VIEW_REPORTS_NOVELTIES_CONSOLIDATED)) { navigate('/reports-novelties-consolidated'); return null; }
     if (can(PERMS.VIEW_REPORTS_SERVICES_CONSOLIDATED)) { navigate('/reports-services-consolidated'); return null; }
@@ -317,8 +268,8 @@ const guardWrite=(perm,fn)=> async (...args)=>{
   })));
 
   // Supervisor/Empleado
-  addRoute('/cargue-masivo-dashboard', ()=> requireAuth(()=> guardAny([PERMS.VIEW_BULK_UPLOAD_SEDES, PERMS.VIEW_BULK_UPLOAD_EMPLOYEES], ()=> CargueMasivoDashboard(root, deps))));
-  addRoute('/upload', ()=> requireAuth(()=> guard(PERMS.VIEW_INCAPACITIES, ()=> CargarDatos(root, deps))));
+  addRoute('/cargue-masivo-dashboard', ()=> requireAuth(()=> guardAny([PERMS.VIEW_BULK_UPLOAD_SEDES, PERMS.VIEW_BULK_UPLOAD_EMPLOYEES], async ()=> { const { CargueMasivoDashboard } = await import('./components/dashboards/CargueMasivoDashboard.js'); return CargueMasivoDashboard(root, deps); })));
+  addRoute('/upload', ()=> requireAuth(()=> guard(PERMS.VIEW_INCAPACITIES, async ()=> { const { CargarDatos } = await import('./components/CargarDatos.js'); return CargarDatos(root, deps); })));
 })();
 function getRoutePath(){ return (window.location.hash || '#/login').replace('#', '').split('?')[0]; }
 function isPublicAuthRoute(){ return PUBLIC_AUTH_ROUTES.has(getRoutePath()); }

@@ -541,8 +541,17 @@ export function ShiftRotationsAdmin(mount, deps = {}) {
     }
     from.onchange = () => { from.value = weekStartIso(from.value) || firstDay; load(); }; panel.append(tools, status, content); showInfoModal(row.nombre, [panel]); await load();
   }
-  const unsubs = [deps.streamSedes?.(data => { sites = data || []; render(); }), deps.streamShiftTemplates?.(data => { plans = data || []; }),
-    subscribe('selectedContractCode', () => { employees = []; closeInfoModal(); closeActionModal(); refresh(); })];
+  let unSedes = null, unTemplates = null;
+  function startCatalogs() {
+    unSedes?.(); unTemplates?.();
+    const code = contractFilterCode();
+    sites = []; plans = [];
+    if (!code) { render(); return; }
+    unSedes = deps.streamSedes?.(data => { sites = data || []; render(); }, null, null, { contratoCodigo: code }) || null;
+    unTemplates = deps.streamShiftTemplates?.(data => { plans = data || []; render(); }, null, null, { contratoCodigo: code }) || null;
+  }
+  const unsubs = [subscribe('selectedContractCode', () => { employees = []; closeInfoModal(); closeActionModal(); startCatalogs(); refresh(); })];
+  startCatalogs();
   refresh();
-  return () => { disposed = true; revision++; unsubs.forEach(un => un?.()); closeInfoModal(); closeActionModal(); };
+  return () => { disposed = true; revision++; unSedes?.(); unTemplates?.(); unsubs.forEach(un => un?.()); closeInfoModal(); closeActionModal(); };
 }
