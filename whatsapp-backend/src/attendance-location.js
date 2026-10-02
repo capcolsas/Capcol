@@ -34,14 +34,23 @@ export function validateAttendanceLocation(location, sede) {
 }
 
 // Deliberately reject ambiguity instead of choosing a shift by proximity alone.
+// The shift rule's entry window is a review threshold (applied when the mark is registered), never a
+// gate: an early entry is still matched to its shift and the registration RPC flags it for review.
+// An upcoming shift is only considered within MAX_ENTRY_LOOKAHEAD_MINUTES so a mark made the evening
+// before cannot silently attach to tomorrow's shift.
+export const MAX_ENTRY_LOOKAHEAD_MINUTES = 12 * 60;
+
 export function selectAttendanceShift(shifts, eventAt = new Date()) {
   const time = new Date(eventAt).getTime();
-  const candidates = [...new Map(shifts.filter(shift => {
-    if (!shift?.id || !['programado', 'abierto'].includes(shift.estado)) return false;
-    const early = Number((shift.rule || shift.template)?.ventanaEntradaAntesMinutos || 0);
-    return time >= new Date(shift.startsAt).getTime() - early * 60000
-      && time < new Date(shift.endsAt).getTime();
-  }).map(shift => [shift.id, shift])).values()];
+  const pending = [...new Map(shifts.filter(shift => shift?.id && ['programado', 'abierto'].includes(shift.estado)
+    && time < new Date(shift.endsAt).getTime()).map(shift => [shift.id, shift])).values()];
+  const active = pending.filter(shift => time >= new Date(shift.startsAt).getTime());
+  let candidates = active;
+  if (!candidates.length) {
+    const upcoming = pending.filter(shift => new Date(shift.startsAt).getTime() - time <= MAX_ENTRY_LOOKAHEAD_MINUTES * 60000);
+    const first = Math.min(...upcoming.map(shift => new Date(shift.startsAt).getTime()));
+    candidates = upcoming.filter(shift => new Date(shift.startsAt).getTime() === first);
+  }
   if (candidates.length > 1) throw new Error('attendance_shift_ambiguous');
   if (!candidates.length) throw new Error('attendance_shift_missing');
   return candidates[0];

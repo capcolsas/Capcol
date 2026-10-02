@@ -19,6 +19,12 @@ const night = { id: 'night', estado: 'abierto', startsAt: '2026-09-07T03:00:00Z'
 assert.equal(selectAttendanceShift([night], '2026-09-07T05:30:00Z').id, 'night');
 assert.throws(() => selectAttendanceShift([night, { ...night, id: 'other' }], '2026-09-07T05:30:00Z'), /ambiguous/);
 assert.throws(() => selectAttendanceShift([night], '2026-09-07T12:00:00Z'), /missing/);
+// The entry window is a review threshold, not a gate: very early marks still resolve the shift.
+assert.equal(selectAttendanceShift([{ ...night, rule: { ventanaEntradaAntesMinutos: 60 } }], '2026-09-07T01:00:00Z').id, 'night', '2h early is not blocked');
+assert.throws(() => selectAttendanceShift([night], '2026-09-06T13:00:00Z'), /missing/, 'a shift further than the lookahead is not matched');
+const next = { ...night, id: 'next', startsAt: '2026-09-07T11:00:00Z', endsAt: '2026-09-07T19:00:00Z' };
+assert.equal(selectAttendanceShift([night, next], '2026-09-07T10:30:00Z').id, 'night', 'the shift in progress wins over the next one');
+assert.equal(selectAttendanceShift([next, { ...night, id: 'later', startsAt: '2026-09-07T19:00:00Z', endsAt: '2026-09-08T03:00:00Z' }], '2026-09-07T09:00:00Z').id, 'next', 'earliest upcoming shift');
 
 // Exercise actual WhatsApp branching with adapters, including proof rejections.
 const appSource = await fs.readFile(new URL('../whatsapp-backend/src/app.js', import.meta.url), 'utf8');
