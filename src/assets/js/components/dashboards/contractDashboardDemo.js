@@ -15,9 +15,10 @@ export function dateAt(iso, offset = 0) {
   return date;
 }
 export function isoDate(date) { return date.toISOString().slice(0, 10); }
-export function mondayOf(iso) {
+// Weeks run Sunday to Saturday, matching public.rotation_week_start and weekStartIso.
+export function sundayOf(iso) {
   const date = dateAt(iso);
-  date.setUTCDate(date.getUTCDate() - (date.getUTCDay() + 6) % 7);
+  date.setUTCDate(date.getUTCDate() - date.getUTCDay());
   return isoDate(date);
 }
 export function demoWeek(start) {

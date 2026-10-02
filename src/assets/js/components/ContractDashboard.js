@@ -6,13 +6,13 @@ import { summarizeShiftCoverage } from '../utils/shiftCoverage.js';
 import { isReviewableShiftStatus, entryMinutesFromStart } from '../utils/shiftReview.js';
 import { showInfoModal, closeInfoModal } from '../utils/infoModal.js';
 import { downloadContractDashboardPdf } from '../utils/contractDashboardPdf.js';
-import { dateAt, isoDate, mondayOf } from './dashboards/contractDashboardDemo.js';
+import { dateAt, isoDate, sundayOf } from './dashboards/contractDashboardDemo.js';
 
 const formatDate = (iso, options = {}) => new Intl.DateTimeFormat('es-CO', { timeZone: 'UTC', day: 'numeric', month: 'short', ...options }).format(dateAt(iso));
 const percent = (part, total) => `${new Intl.NumberFormat('es-CO', { maximumFractionDigits: 1 }).format(total ? part / total * 100 : 0)} %`;
 
 export const ContractDashboard = (mount, deps = {}) => {
-  let week = mondayOf(new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Bogota' }).format(new Date()));
+  let week = sundayOf(new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Bogota' }).format(new Date()));
   let allAlerts = false;
   let incapacityPeople = [];
   let incapacitiesLoad = 'loading';
@@ -582,7 +582,7 @@ export const ContractDashboard = (mount, deps = {}) => {
     const picker = el('input', { className: 'input contract-demo__date', type: 'date', value: weekEnd, 'aria-label': 'Fecha final de la semana', min: '2020-01-12', max: '2035-12-30' });
     picker.addEventListener('change', () => {
       if (!picker.value || !picker.validity.valid) { picker.value = weekEnd; return; }
-      week = mondayOf(picker.value); reloadWeek();
+      week = sundayOf(picker.value); reloadWeek();
     });
     ui.replaceChildren(
       el('header', { className: 'contract-demo__header' }, [
@@ -723,7 +723,7 @@ export const ContractDashboard = (mount, deps = {}) => {
     const weekEnd = isoDate(dateAt(week, 6));
     const month = weekEnd.slice(0, 7);
     const first = `${month}-01`;
-    const start = mondayOf(first);
+    const start = sundayOf(first);
     const host = el('div', { role: 'status' }, [code ? 'Cargando calendario...' : 'Selecciona un contrato para ver el calendario.']);
     showInfoModal(`Calendario · ${new Intl.DateTimeFormat('es-CO', { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(dateAt(first))}`, [host]);
     if (!code) return;
@@ -733,7 +733,7 @@ export const ContractDashboard = (mount, deps = {}) => {
       if (!isCurrent()) return;
       const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Bogota' }).format(new Date());
       const detail = el('p', { className: 'text-muted', 'aria-live': 'polite' }, ['Selecciona un dia para ver su detalle.']);
-      const grid = el('div', { className: 'contract-demo__calendar' }, ['Lun', 'Mar', 'Mie', 'Jue', 'Vie', 'Sab', 'Dom'].map(day => el('strong', {}, [day])));
+      const grid = el('div', { className: 'contract-demo__calendar' }, ['Dom', 'Lun', 'Mar', 'Mie', 'Jue', 'Vie', 'Sab'].map(day => el('strong', {}, [day])));
       for (const row of result.rows) {
         const isToday = row.date === today;
         const description = `${formatDate(row.date, { weekday: 'long', year: 'numeric' })}: ${row.assigned} asignados, ${row.attended} asistencias, ${row.replaced} reemplazos, ${row.absent} ausencias, ${row.pending} pendientes. Cobertura: ${row.assigned ? percent(row.covered, row.assigned) : 'sin turnos asignados'}.${isToday ? ' Hoy: datos parciales.' : ''}`;

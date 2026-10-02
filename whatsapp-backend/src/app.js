@@ -2774,7 +2774,9 @@ async function attendanceSiteOptions(employeeId, shiftId) {
 
 async function assertNoOpenMobileShift(employeeId) {
   const { data, error } = await supabaseAdmin.from('employee_shift_status').select('id')
-    .eq('employee_id', employeeId).not('entrada_at', 'is', null).is('salida_at', null).neq('estado_turno', 'cancelado').limit(1);
+    .eq('employee_id', employeeId).not('entrada_at', 'is', null).is('salida_at', null).neq('estado_turno', 'cancelado')
+    // Closure leaves shifts without exit as salida_pendiente (no exit time written); only those are excluded from blocking.
+    .neq('estado_turno', 'salida_pendiente').limit(1);
   if (error) throw error;
   if (data?.length) throw qrError('attendance_open_shift', 409);
 }

@@ -129,22 +129,11 @@ export function ShiftRotationsAdmin(mount, deps = {}) {
       }));
       if (!selected.size) restPanel.append(el('p', { className: 'text-muted' }, ['Selecciona empleados para programar su descanso semanal.']));
     };
-    const limits = [
-      ['minRestHours', 'Descanso minimo entre turnos (horas)', 72, 0.5],
-      ['maxDailyHours', 'Maximo de horas por dia', 24, 0.5],
-      ['maxWeeklyHours', 'Maximo de horas por semana', 168, 0.5],
-      ['maxConsecutiveDays', 'Maximo de dias consecutivos', 31, 1]
-    ];
-    const ruleControls = new Map();
-    const rulesPanel = el('div', { className: 'rotation-fields' }, limits.map(([key, label, max, step]) => {
-      const enabled = input('checkbox'); enabled.checked = Number(previous?.config.rules?.[key] || 0) > 0;
-      const value = input('number', previous?.config.rules?.[key] || '');
-      value.min = step; value.max = max; value.step = step; value.disabled = !enabled.checked; value.required = enabled.checked;
-      value.setAttribute('aria-label', label);
-      enabled.onchange = () => { value.disabled = !enabled.checked; value.required = enabled.checked; };
-      ruleControls.set(key, { enabled, value });
-      return el('div', { className: 'rotation-field' }, [el('label', { className: 'rotation-toggle' }, [enabled, label]), value]);
-    }));
+    // Los limites de descanso minimo, horas semanales y dias consecutivos ya no se
+    // configuran aqui: se leen del/los planes usados en el ciclo (shift_template_rules),
+    // misma fuente que usan Turnos generados y Calendario. maxDailyHours se elimino sin
+    // reemplazo (ya esta acotado por el horario del plan). Solo queda el reparto de
+    // descanso semanal por empleado (weeklyRestDays), mas abajo.
     const unavailable = (previous?.config.unavailable || []).map(period => ({ ...period }));
     const unavailablePanel = el('div');
     const drawUnavailable = () => {
@@ -232,14 +221,13 @@ export function ShiftRotationsAdmin(mount, deps = {}) {
     form.append(el('h4', {}, ['Descanso semanal']),
       ...(rotativoSupported ? [field('Tipo de descanso', modeSelect), rotatingNote] : []),
       fixedPanel,
-      el('h4', {}, ['Limites de asignacion']), rulesPanel,
       el('h4', {}, ['Periodos de indisponibilidad']), unavailablePanel,
       iconButton('Agregar indisponibilidad', 'calendar-x', () => { unavailable.push({ employee: '', from: start.value, to: start.value }); drawUnavailable(); }), warning, save);
     drawSteps(); drawMembers(); drawUnavailable(); syncRestMode();
     form.onsubmit = async event => {
       event.preventDefault(); if (code !== contractFilterCode()) return;
       const config = { site: site.value, start: start.value, end: end.value || null, days: Number(duration.value), cycle: [...cycle], members: [...selected].map(([employee, offset]) => relievers.has(employee) ? { employee, offset: 0, reliever: true } : { employee, offset }) };
-      config.rules = Object.fromEntries([...ruleControls].map(([key, control]) => [key, control.enabled.checked ? Number(control.value.value) : 0]));
+      config.rules = {};
       config.rules.weeklyRestDays = Object.fromEntries([...restDays].filter(([id]) => selected.has(id)).map(([id, day]) => [id, Number(day)]));
       if (rotativoSupported) {
         config.rules.restMode = restMode;
@@ -491,12 +479,11 @@ export function ShiftRotationsAdmin(mount, deps = {}) {
           for (const week of weeks) for (const item of week.rows) item.relief = (reliefWeeks || []).find(w => w.employee_id === item.employee && String(w.week_start).slice(0, 10) === week.start) || null;
         }
         currentCoverage = buildCoverage(weeks, shifts, [...new Set(row.config.cycle.filter(Boolean))]);
-        const hasWeeklyLimit = Number(row.config.rules?.maxWeeklyHours || 0) > 0;
         content.replaceChildren(
           ...(shifts ? [] : [el('p', { className: 'rotation-alert' }, ['No se pudieron consultar los turnos generados: las horas no estan disponibles.'])]),
-          ...(hasWeeklyLimit ? [el('p', { className: 'text-muted rotation-validation-note' }, [
-            'La validacion del limite semanal configurado incluye esta rotación y las asignaciones existentes del empleado, incluso en otras sedes o contratos y en días de la misma semana que queden fuera de esta vista.'
-          ])] : []),
+          el('p', { className: 'text-muted rotation-validation-note' }, [
+            'El limite semanal, el descanso minimo y los dias consecutivos se validan con lo configurado en el/los planes de esta rotacion (o el limite legal vigente si el plan no lo sobrescribe), e incluyen las asignaciones existentes del empleado, incluso en otras sedes o contratos y en días de la misma semana que queden fuera de esta vista.'
+          ]),
           ...weeks.map((week, index) => weekBlock(week, index))
         );
         const counts = results.reduce((acc, r) => { acc[r.result] = (acc[r.result] || 0) + 1; return acc; }, {});

@@ -9,7 +9,7 @@ import { navigate } from '../router.js';
 import { subscribe } from '../state.js';
 import { contractFilterCode, contractMatches } from '../utils/contractScope.js';
 import { shiftPlanCapacity, validateShiftPlanCapacity } from '../utils/shiftPlanCapacity.js';
-import { netRuleMinutes, formatHours, STANDARD_DAILY_MINUTES } from '../utils/rotationHours.js';
+import { netRuleMinutes, formatHours, STANDARD_DAILY_MINUTES, weekStartIso, formatDayHeader, colombiaWeeklyLimit, COLOMBIA_MAX_WEEKLY_OVERTIME, summarizeWeekRow, minutesByLocalDay } from '../utils/rotationHours.js';
 import { isReviewableShiftStatus, entryMinutesFromStart, shiftReviewLabel, shiftReviewTone, shiftReviewItems, pendingShiftReviewItems, shiftReviewDecisionLabel, shiftReviewSuggestedMinutes } from '../utils/shiftReview.js';
 
 const DAY_OPTIONS = [
@@ -54,6 +54,7 @@ const DEFAULT_WINDOW_EXIT_BEFORE_MINUTES = 30;
 const DEFAULT_WINDOW_EXIT_AFTER_MINUTES = 60;
 const DEFAULT_ALERT_MINUTES = 30;
 const DEFAULT_NOVELTY_WINDOW_HOURS = 48;
+const NULLABLE_PLAN_CONTROLS = new Set(['limiteHorasSemanales', 'limiteDescansoHoras', 'limiteDiasConsecutivos']);
 
 export const ShiftsAdmin = (mount, deps = {}) => ShiftPlansAdmin(mount, deps);
 
@@ -63,9 +64,12 @@ export const GeneratedShiftsAdmin = (mount, deps = {}) => renderShiftScreen(moun
 
 export const ShiftReviewAdmin = (mount, deps = {}) => renderShiftScreen(mount, deps, { mode: 'review' });
 
+export const ShiftCalendarAdmin = (mount, deps = {}) => renderShiftScreen(mount, deps, { mode: 'calendar' });
+
 function renderShiftScreen(mount, deps = {}, { mode = 'plans' } = {}) {
   const isGeneratedScreen = mode === 'generated';
   const isReviewScreen = mode === 'review';
+  const isCalendarScreen = mode === 'calendar';
   const canEdit = can(PERMS.MANAGE_SHIFT_PLANS);
   const canGenerate = can(PERMS.MANAGE_GENERATED_SHIFTS);
   const canAssign = can(PERMS.MANAGE_GENERATED_SHIFTS);
@@ -74,10 +78,10 @@ function renderShiftScreen(mount, deps = {}, { mode = 'plans' } = {}) {
   let lunchSupported = false;
   Promise.resolve(deps.getShiftRotationRulesVersion?.()).then((version) => { lunchSupported = Number(version) >= 66; }).catch(() => {});
   const DEFAULT_LUNCH_MINUTES = 60;
-  const title = isGeneratedScreen ? 'Turnos generados' : isReviewScreen ? 'Revision de turnos' : 'Planes de turnos';
+  const title = isGeneratedScreen ? 'Turnos generados' : isReviewScreen ? 'Revision de turnos' : isCalendarScreen ? 'Calendario de turnos' : 'Planes de turnos';
   const ui = el('section', { className: 'main-card' }, [
     el('h2', {}, [title]),
-    isGeneratedScreen ? generatedPanel() : isReviewScreen ? reviewPanel() : plansPanel()
+    isGeneratedScreen ? generatedPanel() : isReviewScreen ? reviewPanel() : isCalendarScreen ? calendarPanel() : plansPanel()
   ]);
 
   function plansPanel() {
@@ -85,8 +89,7 @@ function renderShiftScreen(mount, deps = {}, { mode = 'plans' } = {}) {
       el('div', { className: 'form-row shift-plans-toolbar' }, [
         field('Buscar', el('input', { id: 'shiftSearch', className: 'input', placeholder: 'Nombre o notas del plan...' })),
         el('div', { className: 'shift-plans-toolbar__actions' }, [
-          el('button', { id: 'btnNewPlan', className: 'btn btn--primary', type: 'button', disabled: !canEdit }, ['Nuevo plan']),
-          el('button', { id: 'btnGenerateShifts', className: 'btn', type: 'button', disabled: !canGenerate }, ['Activar plan'])
+          el('button', { id: 'btnNewPlan', className: 'btn btn--primary', type: 'button', disabled: !canEdit }, ['Nuevo plan'])
         ])
       ]),
       el('div', { className: 'responsive-records mt-2' }, [
@@ -108,10 +111,11 @@ function renderShiftScreen(mount, deps = {}, { mode = 'plans' } = {}) {
 
   function generatedPanel() {
     return el('div', { id: 'shiftGeneratedPanel' }, [
-      el('div', { className: 'form-row shift-module-toolbar' }, [
+      el('div', { className: 'form-row' }, [
         field('Sede', el('select', { id: 'generatedSede', className: 'select' }, [el('option', { value: '' }, ['Todas'])])),
         field('Plan', el('select', { id: 'generatedPlan', className: 'select' }, [el('option', { value: '' }, ['Todos'])])),
-        el('button', { id: 'btnLoadGeneratedShifts', className: 'btn btn--primary right', type: 'button' }, ['Consultar planes activos'])
+        el('button', { id: 'btnLoadGeneratedShifts', className: 'btn', type: 'button' }, ['Consultar']),
+        el('button', { id: 'btnGenerateShifts', className: 'btn btn--primary right', type: 'button', disabled: !canGenerate }, ['Nuevo turno'])
       ]),
       el('div', { id: 'generatedShiftMsg', className: 'text-muted shift-module-message', role: 'status' }, []),
       el('div', { className: 'responsive-records mt-2' }, [
@@ -134,7 +138,7 @@ function renderShiftScreen(mount, deps = {}, { mode = 'plans' } = {}) {
 
   function reviewPanel() {
     return el('div', { id: 'shiftReviewPanel' }, [
-      el('div', { className: 'form-row shift-module-toolbar' }, [
+      el('div', { className: 'form-row' }, [
         field('Desde', el('input', { id: 'shiftReviewFrom', className: 'input', type: 'date', value: addIsoDays(todayBogota(), -7) })),
         field('Hasta', el('input', { id: 'shiftReviewTo', className: 'input', type: 'date', value: todayBogota() })),
         field('Sede', el('select', { id: 'generatedSede', className: 'select' }, [el('option', { value: '' }, ['Todas'])])),
@@ -162,6 +166,30 @@ function renderShiftScreen(mount, deps = {}, { mode = 'plans' } = {}) {
     ]);
   }
 
+  function calendarPanel() {
+    return el('div', { id: 'shiftCalendarPanel' }, [
+      el('div', { className: 'form-row' }, [
+        field('Semana (domingo)', el('input', { id: 'calendarWeekStart', className: 'input', type: 'date', value: weekStartIso(todayBogota()) })),
+        field('Sede', el('select', { id: 'generatedSede', className: 'select' }, [el('option', { value: '' }, ['Todas'])])),
+        el('div', { className: 'shift-calendar-nav' }, [
+          el('button', { id: 'btnCalendarPrevWeek', className: 'btn btn--icon', type: 'button', title: 'Semana anterior', 'aria-label': 'Semana anterior' }, [lucideInlineIcon('chevron-left', '<')]),
+          el('button', { id: 'btnCalendarNextWeek', className: 'btn btn--icon', type: 'button', title: 'Semana siguiente', 'aria-label': 'Semana siguiente' }, [lucideInlineIcon('chevron-right', '>')])
+        ]),
+        el('button', { id: 'btnLoadCalendar', className: 'btn btn--primary right', type: 'button' }, ['Consultar'])
+      ]),
+      el('div', { id: 'calendarMsg', className: 'text-muted shift-module-message', role: 'status' }, []),
+      el('div', { className: 'responsive-records mt-2' }, [
+        el('div', { className: 'table-wrap responsive-table-view shift-week-calendar-table-view' }, [
+          el('table', { className: 'table shift-week-calendar', id: 'tblShiftCalendar' }, [
+            el('thead', { id: 'shiftCalendarHead' }, []),
+            el('tbody', { id: 'shiftCalendarBody' }, [])
+          ])
+        ]),
+        el('div', { id: 'shiftCalendarCards', className: 'record-card-list shift-week-card-list' }, [])
+      ])
+    ]);
+  }
+
   let templates = [];
   let sedes = [];
   let employees = [];
@@ -172,6 +200,12 @@ function renderShiftScreen(mount, deps = {}, { mode = 'plans' } = {}) {
   let reviewShiftById = new Map();
   let reviewLoaded = false;
   let generatedLoaded = false;
+  let calendarWeekStartValue = weekStartIso(todayBogota());
+  let calendarShifts = [];
+  let calendarAssignments = [];
+  let calendarData = { days: [], rows: [] };
+  let calendarLoaded = false;
+  let calendarRevision = 0;
   let pendingGeneratedFilters = null;
   let generatedRevision = 0;
   let reviewRevision = 0;
@@ -192,7 +226,11 @@ function renderShiftScreen(mount, deps = {}, { mode = 'plans' } = {}) {
   const reviewCards = qs('#shiftReviewCards', ui);
   const generatedMsg = qs('#generatedShiftMsg', ui);
   const reviewMsg = qs('#shiftReviewMsg', ui);
-  const planPaginator = !isGeneratedScreen && !isReviewScreen
+  const calendarHead = qs('#shiftCalendarHead', ui);
+  const calendarBody = qs('#shiftCalendarBody', ui);
+  const calendarCards = qs('#shiftCalendarCards', ui);
+  const calendarMsg = qs('#calendarMsg', ui);
+  const planPaginator = !isGeneratedScreen && !isReviewScreen && !isCalendarScreen
     ? createTablePagination(ui, { id: 'shiftPlans', after: '#shiftPlansPanel .responsive-records', onChange: render })
     : null;
   const generatedPaginator = isGeneratedScreen
@@ -212,12 +250,22 @@ function renderShiftScreen(mount, deps = {}, { mode = 'plans' } = {}) {
     resetReviewPaginators();
     loadShiftReview();
   });
+  qs('#btnLoadCalendar', ui)?.addEventListener('click', () => loadCalendar());
+  qs('#btnCalendarPrevWeek', ui)?.addEventListener('click', () => shiftCalendarWeek(-7));
+  qs('#btnCalendarNextWeek', ui)?.addEventListener('click', () => shiftCalendarWeek(7));
+  qs('#calendarWeekStart', ui)?.addEventListener('change', () => {
+    const input = qs('#calendarWeekStart', ui);
+    calendarWeekStartValue = weekStartIso(input.value) || calendarWeekStartValue;
+    input.value = calendarWeekStartValue;
+    loadCalendar();
+  });
   ['#generatedSede', '#generatedPlan'].forEach((selector) => {
     qs(selector, ui)?.addEventListener('change', () => {
       generatedPaginator?.reset();
       resetReviewPaginators();
       if (isGeneratedScreen) loadGeneratedShifts();
       if (isReviewScreen) loadShiftReview({ silent: true });
+      if (isCalendarScreen) loadCalendar();
     });
   });
   ['#shiftReviewFrom', '#shiftReviewTo'].forEach((selector) => {
@@ -477,7 +525,7 @@ function renderShiftScreen(mount, deps = {}, { mode = 'plans' } = {}) {
 
   function render() {
     refreshGeneratedFilterOptions();
-    if (!isGeneratedScreen && !isReviewScreen) {
+    if (!isGeneratedScreen && !isReviewScreen && !isCalendarScreen) {
       const rows = filteredTemplates();
       const pageRows = planPaginator?.slice(rows) || rows;
       planBody.replaceChildren(...(pageRows.length ? pageRows.map(planRow) : [
@@ -489,6 +537,7 @@ function renderShiftScreen(mount, deps = {}, { mode = 'plans' } = {}) {
     }
     if (isGeneratedScreen) renderGeneratedShifts();
     if (isReviewScreen) renderShiftReview();
+    if (isCalendarScreen) renderCalendar();
   }
 
   function generatedFilterValues() {
@@ -1242,6 +1291,16 @@ function renderShiftScreen(mount, deps = {}, { mode = 'plans' } = {}) {
         if (generatedMsg) generatedMsg.textContent = 'Asignacion pendiente por cruce de horarios.';
         return;
       }
+      const assignRuleLimits = await resolveRuleLimitsForShift(targetRows[0]);
+      const laborConflicts = [];
+      for (const emp of selectedEmployees) {
+        laborConflicts.push(...await checkShiftLaborLimits(targetRows, emp, assignRuleLimits));
+      }
+      if (laborConflicts.length) {
+        notify(`Limite de jornada: ${laborConflicts.slice(0, 3).join('; ')}${laborConflicts.length > 3 ? '...' : ''}`, 'warning');
+        if (generatedMsg) generatedMsg.textContent = 'Asignacion pendiente por limite de jornada laboral.';
+        return;
+      }
       const selectedSet = new Set(selectedIds);
       const removals = existingTargetAssignments.filter((row) => row.id && !selectedSet.has(String(row.employeeId || '')));
       if (generatedMsg) generatedMsg.textContent = 'Guardando asignacion de empleados...';
@@ -1377,7 +1436,7 @@ function renderShiftScreen(mount, deps = {}, { mode = 'plans' } = {}) {
       });
       return [...new Set(conflicts)];
     }
-    const allShifts = await deps.listScheduledShiftsRange(dateFrom, dateTo, { contratoCodigo: currentContractCode(), estados: ['programado', 'abierto'] }) || [];
+    const allShifts = await deps.listScheduledShiftsRange(dateFrom, dateTo, { contratoCodigo: currentContractCode(), estados: ['programado', 'abierto', 'cerrado'] }) || [];
     const targetIds = new Set(targetRows.map((row) => String(row.id || '')).filter(Boolean));
     const otherShifts = allShifts.filter((row) => row.id && !targetIds.has(String(row.id)));
     if (!otherShifts.length) return [];
@@ -1402,6 +1461,119 @@ function renderShiftScreen(mount, deps = {}, { mode = 'plans' } = {}) {
       conflicts.push(`${employee.nombre || assignment.nombre || '-'} con ${sedeLabel(other.sedeCodigo, other.sedeNombre)} ${other.fechaOperativa || ''} ${shiftTimeLabel(other)}`);
     });
     return [...new Set(conflicts)];
+  }
+
+  async function resolveRuleLimitsForShift(shift) {
+    if (!shift?.templateId || typeof deps.listShiftTemplateRules !== 'function') return null;
+    const rules = await deps.listShiftTemplateRules(shift.templateId, { includeInactive: false }) || [];
+    const rule = rules.find((row) => row.id === shift.templateRuleId) || rules[0];
+    if (!rule) return null;
+    return {
+      limiteHorasSemanales: rule.limiteHorasSemanales ?? null,
+      limiteDescansoHoras: rule.limiteDescansoHoras ?? null,
+      limiteDiasConsecutivos: rule.limiteDiasConsecutivos ?? null
+    };
+  }
+
+  async function fetchEmployeeShifts(employeeRef, dateFrom, dateTo, excludeShiftIds = []) {
+    const excluded = new Set(excludeShiftIds.filter(Boolean).map(String));
+    if (typeof deps.listShiftAssignmentOverlapCandidates === 'function') {
+      const candidates = await deps.listShiftAssignmentOverlapCandidates({
+        dateFrom,
+        dateTo,
+        contratoCodigo: currentContractCode(),
+        employeeIds: [employeeRef.id].filter(Boolean),
+        documentos: [employeeRef.documento].filter(Boolean),
+        excludeShiftIds: [...excluded]
+      }) || [];
+      return candidates.map((row) => row.shift).filter(Boolean);
+    }
+    if (typeof deps.listScheduledShiftsRange !== 'function') return [];
+    const allShifts = await deps.listScheduledShiftsRange(dateFrom, dateTo, { contratoCodigo: currentContractCode(), estados: ['programado', 'abierto', 'cerrado'] }) || [];
+    const others = allShifts.filter((row) => row.id && !excluded.has(String(row.id)));
+    if (!others.length) return [];
+    const assignments = await deps.listShiftAssignmentsForShifts?.(others.map((row) => row.id)) || [];
+    const mine = new Set(assignments
+      .filter((row) => String(row.estado || 'asignado') !== 'cancelado')
+      .filter((row) => (employeeRef.id && String(row.employeeId || '') === String(employeeRef.id)) || (employeeRef.documento && String(row.documento || '') === String(employeeRef.documento)))
+      .map((row) => String(row.scheduledShiftId || '')));
+    return others.filter((row) => mine.has(String(row.id)));
+  }
+
+  // Mismo contrato de retorno que findAssignmentOverlap: string[] de conflictos legibles.
+  // El limite semanal siempre aplica (cae al limite legal colombiano si el plan no lo sobrescribe);
+  // descanso minimo y dias consecutivos solo aplican si el plan los configuro.
+  async function checkShiftLaborLimits(candidateShifts = [], employeeRef = {}, ruleLimits = null) {
+    if (!candidateShifts.length || (!employeeRef.id && !employeeRef.documento)) return [];
+    const limits = ruleLimits || {};
+    const days = candidateShifts.map((row) => row.fechaOperativa).filter(Boolean).sort();
+    if (!days.length) return [];
+    const marginDays = Math.max(7, Number(limits.limiteDiasConsecutivos) || 0) + 1;
+    const dateFrom = addIsoDays(days[0], -marginDays);
+    const dateTo = addIsoDays(days[days.length - 1], marginDays);
+    const candidateIds = new Set(candidateShifts.map((row) => row.id).filter(Boolean));
+    const others = await fetchEmployeeShifts(employeeRef, dateFrom, dateTo, [...candidateIds]);
+    const workload = [...others, ...candidateShifts];
+    const minutesByDay = new Map();
+    workload.forEach((shift) => {
+      minutesByLocalDay(shift.startsAt, shift.endsAt).forEach((minutes, day) => {
+        minutesByDay.set(day, (minutesByDay.get(day) || 0) + minutes);
+      });
+    });
+    const conflicts = [];
+    const nombre = employeeRef.nombre || '-';
+
+    const weeksTouched = new Set(candidateShifts.map((row) => weekStartIso(row.fechaOperativa)));
+    weeksTouched.forEach((weekStart) => {
+      let weekMinutes = 0;
+      for (let i = 0; i < 7; i += 1) weekMinutes += minutesByDay.get(addIsoDays(weekStart, i)) || 0;
+      const legalLimit = Number.isFinite(limits.limiteHorasSemanales) ? limits.limiteHorasSemanales : colombiaWeeklyLimit(weekStart);
+      const ceiling = legalLimit + COLOMBIA_MAX_WEEKLY_OVERTIME;
+      const weekHours = weekMinutes / 60;
+      if (weekHours > ceiling) {
+        conflicts.push(`${nombre} superaria el maximo legal semanal: ${weekHours.toFixed(1)} h / ${ceiling} h permitidas (semana del ${weekStart})`);
+      }
+    });
+
+    if (Number.isFinite(limits.limiteDescansoHoras)) {
+      const restMs = limits.limiteDescansoHoras * 3600000;
+      candidateShifts.forEach((candidate) => {
+        const candidateStart = new Date(candidate.startsAt).getTime();
+        const candidateEnd = new Date(candidate.endsAt).getTime();
+        const tooClose = others.some((other) => {
+          if (other.id === candidate.id) return false;
+          const otherStart = new Date(other.startsAt).getTime();
+          const otherEnd = new Date(other.endsAt).getTime();
+          return otherStart < candidateEnd + restMs && otherEnd > candidateStart - restMs;
+        });
+        if (tooClose) {
+          conflicts.push(`${nombre} no tendria el descanso minimo de ${limits.limiteDescansoHoras} h alrededor de ${candidate.fechaOperativa} ${shiftTimeLabel(candidate)}`);
+        }
+      });
+    }
+
+    if (Number.isFinite(limits.limiteDiasConsecutivos)) {
+      const workedDays = [...minutesByDay.entries()].filter(([, minutes]) => minutes > 0).map(([day]) => day).sort();
+      const candidateDaySet = new Set(candidateShifts.map((row) => row.fechaOperativa));
+      const flaggedStreaks = new Set();
+      let streakStart = null;
+      let streakLength = 0;
+      let prevDay = null;
+      workedDays.forEach((day) => {
+        if (prevDay && addIsoDays(prevDay, 1) === day) streakLength += 1;
+        else { streakStart = day; streakLength = 1; }
+        if (streakLength > limits.limiteDiasConsecutivos && !flaggedStreaks.has(streakStart)) {
+          const streakDays = Array.from({ length: streakLength }, (_, i) => addIsoDays(streakStart, i));
+          if (streakDays.some((d) => candidateDaySet.has(d))) {
+            conflicts.push(`${nombre} acumularia ${streakLength} dias consecutivos trabajados / ${limits.limiteDiasConsecutivos} permitidos`);
+            flaggedStreaks.add(streakStart);
+          }
+        }
+        prevDay = day;
+      });
+    }
+
+    return conflicts;
   }
 
   function intervalsOverlap(startA, endA, startB, endB) {
@@ -1856,7 +2028,7 @@ function renderShiftScreen(mount, deps = {}, { mode = 'plans' } = {}) {
   }
 
   async function refreshRuleCounts() {
-    if (isGeneratedScreen || isReviewScreen || !deps.listShiftTemplateRuleCounts) return;
+    if (isGeneratedScreen || isReviewScreen || isCalendarScreen || !deps.listShiftTemplateRuleCounts) return;
     const revision = ++ruleRevision;
     const ids = templates.filter(row => !row.contratoCodigo || contractMatches(row)).map((row) => row.id).filter(Boolean);
     let entries;
@@ -1898,9 +2070,15 @@ function renderShiftScreen(mount, deps = {}, { mode = 'plans' } = {}) {
       planControls[`ventana${side}Minutos`] = controlSource[`ventana${side}Minutos`] ?? fallback;
       planControls[`alerta${side}Minutos`] = controlSource[`alerta${side}Minutos`] ?? DEFAULT_ALERT_MINUTES;
     }
-    const hasDifferentControls = modalRules.some(row => Object.entries(planControls).some(([name, value]) =>
-      Number(row[name] ?? (name.startsWith('alerta') ? row[name.replace('alerta', 'ventana')] : value)) !== Number(value)
-    ));
+    planControls.limiteHorasSemanales = controlSource.limiteHorasSemanales ?? null;
+    planControls.limiteDescansoHoras = controlSource.limiteDescansoHoras ?? null;
+    planControls.limiteDiasConsecutivos = controlSource.limiteDiasConsecutivos ?? null;
+    planControls.alertaDescansoSemanal = controlSource.alertaDescansoSemanal === true;
+    const hasDifferentControls = modalRules.some(row => Object.entries(planControls).some(([name, value]) => {
+      if (typeof value === 'boolean') return Boolean(row[name]) !== value;
+      if (value === null) return row[name] != null;
+      return Number(row[name] ?? (name.startsWith('alerta') ? row[name.replace('alerta', 'ventana')] : value)) !== Number(value);
+    }));
     let removedRuleIds = new Set();
     let dirty = false;
     let confirmingClose = false;
@@ -2235,7 +2413,29 @@ function renderShiftScreen(mount, deps = {}, { mode = 'plans' } = {}) {
         ]),
         section('Novedad posterior', 'Tiempo disponible para registrar novedades, en horas.', [
           ['Plazo', 'ventanaNovedadHoras']
-        ])
+        ]),
+        laborLimitsSection()
+      ]);
+    }
+
+    function laborLimitsSection() {
+      const nullableField = (label, name, step = '1') => labeledControl(label, el('input', {
+        className: 'input', type: 'number', min: '0', step, placeholder: 'Sin límite',
+        value: planControls[name] == null ? '' : String(planControls[name]), 'data-plan-control': name
+      }));
+      const checkboxField = (label, name) => el('label', { className: 'shift-rule-control shift-rule-control--checkbox' }, [
+        el('input', { type: 'checkbox', 'data-plan-control': name, checked: planControls[name] === true }),
+        el('span', {}, [label])
+      ]);
+      return el('fieldset', { className: 'shift-rule-control-section' }, [
+        el('legend', {}, ['Límites de jornada laboral']),
+        el('p', { className: 'text-muted' }, [`Deja un campo vacío para no aplicar ese límite en este plan. El límite legal vigente para horas semanales es ${colombiaWeeklyLimit(todayBogota())} h; se usa automáticamente si no configuras un valor aquí.`]),
+        el('div', { className: 'shift-rule-inline-grid' }, [
+          nullableField('Máximo de horas por semana', 'limiteHorasSemanales', '0.5'),
+          nullableField('Descanso mínimo entre turnos (horas)', 'limiteDescansoHoras', '0.5'),
+          nullableField('Máximo de días consecutivos', 'limiteDiasConsecutivos')
+        ]),
+        checkboxField('Alertar si no tiene ningún día de descanso en la semana', 'alertaDescansoSemanal')
       ]);
     }
 
@@ -2307,7 +2507,10 @@ function renderShiftScreen(mount, deps = {}, { mode = 'plans' } = {}) {
     function readModalDraft() {
       for (const name of Object.keys(planControls)) {
         const input = dialog.querySelector(`[data-plan-control="${name}"]`);
-        if (input) planControls[name] = input.value === '' ? NaN : Number(input.value);
+        if (!input) continue;
+        if (input.type === 'checkbox') { planControls[name] = input.checked; continue; }
+        if (input.value === '' && NULLABLE_PLAN_CONTROLS.has(name)) { planControls[name] = null; continue; }
+        planControls[name] = input.value === '' ? NaN : Number(input.value);
       }
       basePlan.nombre = String(qs('[data-plan-field="nombre"]', dialog)?.value || '').trim();
       basePlan.estado = String(qs('[data-plan-field="estado"]', dialog)?.value || 'activo').trim();
@@ -2367,6 +2570,13 @@ function renderShiftScreen(mount, deps = {}, { mode = 'plans' } = {}) {
       }
       if (!Number.isInteger(planControls.ventanaNovedadHoras) || planControls.ventanaNovedadHoras < 0) {
         throw new Error('El plazo para novedades debe ser un número entero de horas mayor o igual a cero.');
+      }
+      for (const [name, max, integer] of [['limiteHorasSemanales', 168, false], ['limiteDescansoHoras', 72, false], ['limiteDiasConsecutivos', 31, true]]) {
+        const value = planControls[name];
+        if (value === null) continue;
+        if (!Number.isFinite(value) || value <= 0 || value > max || (integer && !Number.isInteger(value))) {
+          throw new Error('Los límites de jornada deben quedar vacíos (sin límite) o ser un número positivo válido.');
+        }
       }
       modalRules.forEach((row) => {
         if (!/^\d{2}:\d{2}$/.test(String(row.horaInicio || '')) || !/^\d{2}:\d{2}$/.test(String(row.horaFin || ''))) {
@@ -2432,6 +2642,10 @@ function renderShiftScreen(mount, deps = {}, { mode = 'plans' } = {}) {
           ventanaSalidaDespuesMinutos: row.ventanaSalidaDespuesMinutos,
           alertaSalidaDespuesMinutos: row.alertaSalidaDespuesMinutos,
           ventanaNovedadHoras: row.ventanaNovedadHoras,
+          limiteHorasSemanales: row.limiteHorasSemanales,
+          limiteDescansoHoras: row.limiteDescansoHoras,
+          limiteDiasConsecutivos: row.limiteDiasConsecutivos,
+          alertaDescansoSemanal: row.alertaDescansoSemanal === true,
           orden: row.orden,
           estado: 'activo'
         }));
@@ -2553,6 +2767,427 @@ function renderShiftScreen(mount, deps = {}, { mode = 'plans' } = {}) {
     if (filters.sedeCodigo && qs('#generatedSede', ui)) qs('#generatedSede', ui).value = filters.sedeCodigo;
   }
 
+  // ---------------------------------------------------------------------
+  // Calendario de turnos: lee scheduled_shifts/shift_assignments reales para
+  // la semana visible. A diferencia de la vista previa de rotaciones, no
+  // depende de ninguna fila de shift_rotations: mover un descanso o
+  // intercambiar dos empleados aqui es simplemente liberar una asignacion y
+  // crear otra (upsertShiftAssignments/removeShiftAssignment), las mismas
+  // funciones genericas que ya usa "Turnos generados" para asignar personal.
+  // ---------------------------------------------------------------------
+  function calendarSedeCode() {
+    return String(qs('#generatedSede', ui)?.value || '').trim();
+  }
+
+  function shiftCalendarWeek(days) {
+    calendarWeekStartValue = addIsoDays(calendarWeekStartValue, days);
+    const input = qs('#calendarWeekStart', ui);
+    if (input) input.value = calendarWeekStartValue;
+    loadCalendar();
+  }
+
+  function buildCalendarData(weekStart, shifts, assignments, rulesByTemplate = new Map()) {
+    const shiftsById = new Map(shifts.map((row) => [String(row.id || ''), row]));
+    const days = Array.from({ length: 7 }, (_, index) => addIsoDays(weekStart, index));
+    const byEmployee = new Map();
+    assignments.forEach((assignment) => {
+      const shift = shiftsById.get(String(assignment.scheduledShiftId || ''));
+      if (!shift) return;
+      const key = String(assignment.employeeId || assignment.documento || '').trim();
+      if (!key) return;
+      if (!byEmployee.has(key)) {
+        byEmployee.set(key, {
+          employeeId: assignment.employeeId || null,
+          documento: assignment.documento || null,
+          nombre: assignment.nombre || '-',
+          cells: new Map(),
+          minutes: 0
+        });
+      }
+      const row = byEmployee.get(key);
+      if (!row.cells.has(shift.fechaOperativa)) row.cells.set(shift.fechaOperativa, []);
+      row.cells.get(shift.fechaOperativa).push({ assignment, shift });
+    });
+    byEmployee.forEach((row) => {
+      let minutes = 0;
+      const templateIds = new Set();
+      row.cells.forEach((items) => items.forEach(({ shift }) => {
+        const gross = Math.max(0, Math.round((Date.parse(shift.endsAt) - Date.parse(shift.startsAt)) / 60000));
+        const lunch = Math.min(gross, Math.max(0, Number(shift.almuerzoMinutos) || 0));
+        minutes += gross - lunch;
+        if (shift.templateId) templateIds.add(shift.templateId);
+      }));
+      row.minutes = minutes;
+      const workDays = days.filter((day) => (row.cells.get(day) || []).length > 0);
+      const restDates = days.filter((day) => !(row.cells.get(day) || []).length);
+      const configuredLimits = [...templateIds].map((id) => rulesByTemplate.get(id)?.limiteHorasSemanales).filter((value) => Number.isFinite(value));
+      const alertaDescansoSemanal = [...templateIds].some((id) => rulesByTemplate.get(id)?.alertaDescansoSemanal === true);
+      const limit = configuredLimits.length ? Math.min(...configuredLimits) : colombiaWeeklyLimit(weekStart);
+      row.summary = summarizeWeekRow({ minutes, workDays: workDays.length, restDates, reliever: false }, limit);
+      row.alertaDescansoSemanal = alertaDescansoSemanal;
+    });
+    const rows = Array.from(byEmployee.values()).sort((a, b) => String(a.nombre || '').localeCompare(String(b.nombre || '')));
+    return { days, rows };
+  }
+
+  async function loadCalendar({ silent = false } = {}) {
+    const revision = ++calendarRevision;
+    const contratoCodigo = currentContractCode();
+    if (!contratoCodigo) {
+      calendarLoaded = true;
+      calendarData = { days: [], rows: [] };
+      renderCalendar();
+      if (calendarMsg) calendarMsg.textContent = 'Selecciona un contrato para consultar el calendario de turnos.';
+      return;
+    }
+    const weekInput = qs('#calendarWeekStart', ui)?.value || calendarWeekStartValue;
+    const weekStart = calendarWeekStartValue = weekStartIso(weekInput) || calendarWeekStartValue;
+    const weekEnd = addIsoDays(weekStart, 6);
+    const sedeCodigo = calendarSedeCode() || null;
+    try {
+      if (calendarMsg) calendarMsg.textContent = 'Consultando turnos de la semana...';
+      const shifts = await deps.listScheduledShiftsRange(weekStart, weekEnd, {
+        sedeCodigo,
+        contratoCodigo,
+        estados: ['programado', 'abierto', 'cerrado']
+      }) || [];
+      if (disposed || revision !== calendarRevision || contratoCodigo !== currentContractCode()) return;
+      const shiftIds = shifts.map((row) => row.id).filter(Boolean);
+      const rawAssignments = shiftIds.length ? (await deps.listShiftAssignmentsForShifts?.(shiftIds) || []) : [];
+      const templateIds = [...new Set(shifts.map((row) => row.templateId).filter(Boolean))];
+      const rulesByTemplate = new Map(await Promise.all(templateIds.map(async (id) => {
+        const rules = typeof deps.listShiftTemplateRules === 'function' ? await deps.listShiftTemplateRules(id, { includeInactive: false }) : [];
+        return [id, (rules || [])[0] || null];
+      })));
+      if (disposed || revision !== calendarRevision) return;
+      calendarShifts = shifts;
+      calendarAssignments = rawAssignments.filter((row) => String(row.estado || 'asignado') !== 'cancelado');
+      calendarData = buildCalendarData(weekStart, calendarShifts, calendarAssignments, rulesByTemplate);
+      calendarLoaded = true;
+      renderCalendar();
+      if (calendarMsg) calendarMsg.textContent = '';
+    } catch (error) {
+      if (disposed || revision !== calendarRevision) return;
+      calendarLoaded = true;
+      calendarData = { days: [], rows: [] };
+      renderCalendar();
+      if (calendarMsg) calendarMsg.textContent = `Error consultando el calendario: ${error?.message || error}`;
+    }
+  }
+
+  function renderCalendar() {
+    if (!calendarHead || !calendarBody) return;
+    if (!calendarLoaded) {
+      calendarHead.replaceChildren();
+      calendarBody.replaceChildren(el('tr', {}, [el('td', { className: 'text-muted' }, ['Usa Consultar para ver el calendario de la semana.'])]));
+      calendarCards?.replaceChildren(el('p', { className: 'text-muted record-card__empty' }, ['Usa Consultar para ver el calendario de la semana.']));
+      return;
+    }
+    const { days, rows } = calendarData;
+    calendarHead.replaceChildren(el('tr', {}, [
+      el('th', {}, ['Empleado']),
+      ...days.map((day) => el('th', {}, [formatDayHeader(day)])),
+      el('th', {}, ['Horas semana'])
+    ]));
+    if (!rows.length) {
+      calendarBody.replaceChildren(el('tr', {}, [el('td', { colSpan: days.length + 2, className: 'text-muted' }, ['Sin turnos asignados en esta semana.'])]));
+      calendarCards?.replaceChildren(el('p', { className: 'text-muted record-card__empty' }, ['Sin turnos asignados en esta semana.']));
+      return;
+    }
+    calendarBody.replaceChildren(...rows.map((row) => el('tr', {}, [
+      el('th', {}, [row.nombre || '-']),
+      ...days.map((day) => calendarDayCell(row, day)),
+      calendarTotalCell(row)
+    ])));
+    calendarCards?.replaceChildren(...rows.map((row) => calendarEmployeeCard(row)));
+  }
+
+  function calendarTotalContent(row) {
+    const summary = row.summary;
+    if (!summary) return [formatHours(row.minutes)];
+    return [
+      el('strong', {}, [formatHours(row.minutes)]),
+      el('progress', { value: String(Math.min(row.minutes, summary.limitMinutes)), max: String(summary.limitMinutes), 'aria-label': `Horas de la semana frente al limite de ${summary.limitMinutes / 60} h` }),
+      el('small', { className: summary.kind === 'extra' ? 'shift-week-alert' : 'text-muted' }, [summary.label]),
+      ...(summary.noRest && row.alertaDescansoSemanal ? [el('small', { className: 'shift-week-alert' }, ['Sin día de descanso'])] : [])
+    ];
+  }
+
+  function calendarTotalCell(row) {
+    const summary = row.summary;
+    return el('td', { className: `shift-week-total${summary ? ` shift-week-total--${summary.kind}` : ''}` }, calendarTotalContent(row));
+  }
+
+  function calendarDayContent(row, day) {
+    const items = row.cells.get(day) || [];
+    const canEditDay = canAssign && day >= todayBogota();
+    if (!items.length) {
+      const nodes = [el('small', { className: 'text-muted' }, ['Descanso'])];
+      if (canEditDay) {
+        const assignBtn = el('button', { className: 'btn btn--icon', type: 'button', title: 'Asignar turno', 'aria-label': 'Asignar turno' }, [lucideInlineIcon('calendar-plus', '+')]);
+        assignBtn.addEventListener('click', () => openAssignRestDayModal(day));
+        nodes.push(el('div', { className: 'row-actions' }, [assignBtn]));
+      }
+      return { nodes, rest: true };
+    }
+    const nodes = items.flatMap(({ shift }) => [
+      el('div', { className: 'shift-week-cell__row' }, [
+        el('span', { className: 'shift-week-cell__time' }, [shiftTimeLabel(shift)]),
+        el('span', { className: 'shift-week-cell__sede text-muted' }, [sedeLabel(shift.sedeCodigo, shift.sedeNombre)])
+      ])
+    ]);
+    if (canEditDay) {
+      const moveBtn = el('button', { className: 'btn btn--icon', type: 'button', title: 'Mover descanso', 'aria-label': 'Mover descanso' }, [lucideInlineIcon('move', 'Mv')]);
+      const swapBtn = el('button', { className: 'btn btn--icon', type: 'button', title: 'Intercambiar con otro empleado', 'aria-label': 'Intercambiar con otro empleado' }, [lucideInlineIcon('arrow-left-right', 'Sw')]);
+      moveBtn.addEventListener('click', () => openMoveRestModal(row, day, items[0]));
+      swapBtn.addEventListener('click', () => openSwapModal(row, day, items[0]));
+      nodes.push(el('div', { className: 'row-actions' }, [moveBtn, swapBtn]));
+    }
+    return { nodes, rest: false };
+  }
+
+  function calendarDayCell(row, day) {
+    const { nodes, rest } = calendarDayContent(row, day);
+    return el('td', { className: `shift-week-cell${rest ? ' shift-week-cell--rest' : ''}` }, nodes);
+  }
+
+  function calendarCardDayRow(row, day) {
+    const { nodes, rest } = calendarDayContent(row, day);
+    return el('div', { className: `shift-week-card__day${rest ? ' shift-week-card__day--rest' : ''}` }, [
+      el('div', { className: 'shift-week-card__day-label' }, [formatDayHeader(day)]),
+      el('div', { className: 'shift-week-card__day-body' }, nodes)
+    ]);
+  }
+
+  function calendarEmployeeCard(row) {
+    const summary = row.summary;
+    return el('article', { className: `record-card shift-week-card${summary ? ` shift-week-total--${summary.kind}` : ''}` }, [
+      el('div', { className: 'record-card__header' }, [
+        el('strong', { className: 'record-card__title' }, [row.nombre || '-']),
+        el('div', { className: 'shift-week-card__total' }, calendarTotalContent(row))
+      ]),
+      el('div', { className: 'shift-week-card__days' }, calendarData.days.map((day) => calendarCardDayRow(row, day)))
+    ]);
+  }
+
+  async function openMoveRestModal(row, fromDate, item) {
+    const employeeRef = { id: row.employeeId, documento: row.documento, nombre: row.nombre };
+    const restDays = calendarData.days.filter((day) => !(row.cells.get(day) || []).length && day > todayBogota());
+    const optionsByDay = restDays
+      .map((day) => ({
+        day,
+        candidates: calendarShifts.filter((shift) => shift.fechaOperativa === day
+          && (!calendarSedeCode() || shift.sedeCodigo === calendarSedeCode())
+          && String(shift.estado || '') !== 'cancelado')
+      }))
+      .filter((entry) => entry.candidates.length);
+    if (!optionsByDay.length) {
+      notify('No hay turnos generados en dias libres futuros de esta semana para mover el descanso.', 'warning');
+      return;
+    }
+    const modal = await showActionModal({
+      title: 'Mover descanso',
+      message: `${row.nombre || '-'} trabaja ${formatDayHeader(fromDate)}. Elige el nuevo dia de descanso: el turno actual se libera y se asigna al turno del nuevo dia.`,
+      confirmText: 'Mover',
+      fields: [{ id: 'day', label: 'Nuevo dia de descanso', type: 'select', required: true, options: [
+        { value: '', label: 'Selecciona...' },
+        ...optionsByDay.map(({ day, candidates }) => ({ value: day, label: `${formatDayHeader(day)} (${candidates.length} turno${candidates.length > 1 ? 's' : ''})` }))
+      ] }]
+    });
+    if (!modal.confirmed || !modal.values?.day) return;
+    const target = optionsByDay.find((entry) => entry.day === modal.values.day);
+    if (!target) return;
+    await moveAssignment(item.assignment, target.candidates[0], employeeRef);
+  }
+
+  function assignmentPayload(shift, employeeRef) {
+    return {
+      scheduledShiftId: shift.id,
+      employeeId: employeeRef.id || null,
+      documento: employeeRef.documento || null,
+      nombre: employeeRef.nombre || null,
+      sedeCodigo: shift.sedeCodigo || null,
+      contratoCodigo: shift.contratoCodigo || null,
+      contratoNombre: shift.contratoNombre || null,
+      clienteNombreSnapshot: shift.clienteNombreSnapshot || null,
+      clienteNitSnapshot: shift.clienteNitSnapshot || null,
+      estado: 'asignado'
+    };
+  }
+
+  async function moveAssignment(assignment, destinationShift, employeeRef) {
+    try {
+      const currentCount = calendarAssignments.filter((row) => row.scheduledShiftId === destinationShift.id).length;
+      if (Number.isFinite(destinationShift.operariosPlaneados) && destinationShift.operariosPlaneados > 0 && currentCount >= destinationShift.operariosPlaneados) {
+        notify('El turno destino ya alcanzo su cupo planeado.', 'warning');
+        return;
+      }
+      const overlap = await findAssignmentOverlap([destinationShift], [employeeRef]);
+      if (overlap.length) { notify(`Cruce detectado: ${overlap.join('; ')}`, 'warning'); return; }
+      const moveRuleLimits = await resolveRuleLimitsForShift(destinationShift);
+      const moveLaborConflicts = await checkShiftLaborLimits([destinationShift], employeeRef, moveRuleLimits);
+      if (moveLaborConflicts.length) { notify(`Limite de jornada: ${moveLaborConflicts.join('; ')}`, 'warning'); return; }
+      if (calendarMsg) calendarMsg.textContent = 'Moviendo descanso...';
+      await deps.removeShiftAssignment?.(assignment.id);
+      await deps.upsertShiftAssignments?.([assignmentPayload(destinationShift, employeeRef)]);
+      await deps.addAuditLog?.({
+        targetType: 'shift_assignment', targetId: null, action: 'move_shift_assignment_calendar',
+        before: { scheduledShiftId: assignment.scheduledShiftId, employeeId: employeeRef.id, documento: employeeRef.documento },
+        after: { scheduledShiftId: destinationShift.id, employeeId: employeeRef.id, documento: employeeRef.documento }
+      });
+      notify('Descanso movido correctamente.', 'success');
+      await loadCalendar({ silent: true });
+    } catch (error) {
+      notify('Error: ' + (error?.message || error), 'error');
+      if (calendarMsg) calendarMsg.textContent = 'No se pudo mover el descanso.';
+    }
+  }
+
+  async function openSwapModal(row, date, item) {
+    const options = [];
+    calendarData.rows.forEach((other) => {
+      if (other === row) return;
+      calendarData.days.filter((day) => day >= todayBogota()).forEach((day) => {
+        (other.cells.get(day) || []).forEach((otherItem) => {
+          options.push({ value: `${other.employeeId || other.documento}|${day}`, label: `${other.nombre || '-'} - ${formatDayHeader(day)}`, other, otherItem });
+        });
+      });
+    });
+    if (!options.length) {
+      notify('No hay otro turno de la semana para intercambiar.', 'warning');
+      return;
+    }
+    const modal = await showActionModal({
+      title: 'Intercambiar con otro empleado',
+      message: `${row.nombre || '-'} trabaja ${formatDayHeader(date)}. Elige con quien intercambiar: el otro empleado pasa a este turno y ${row.nombre || '-'} pasa al suyo.`,
+      confirmText: 'Intercambiar',
+      fields: [{ id: 'target', label: 'Empleado y turno', type: 'select', required: true, options: [
+        { value: '', label: 'Selecciona...' },
+        ...options.map((option) => ({ value: option.value, label: option.label }))
+      ] }]
+    });
+    if (!modal.confirmed || !modal.values?.target) return;
+    const chosen = options.find((option) => option.value === modal.values.target);
+    if (!chosen) return;
+    await swapAssignments(
+      { assignment: item.assignment, shift: item.shift, employeeRef: { id: row.employeeId, documento: row.documento, nombre: row.nombre } },
+      { assignment: chosen.otherItem.assignment, shift: chosen.otherItem.shift, employeeRef: { id: chosen.other.employeeId, documento: chosen.other.documento, nombre: chosen.other.nombre } }
+    );
+  }
+
+  async function swapAssignments(a, b) {
+    try {
+      const [overlapA, overlapB] = await Promise.all([
+        findAssignmentOverlap([b.shift], [a.employeeRef]),
+        findAssignmentOverlap([a.shift], [b.employeeRef])
+      ]);
+      if (overlapA.length || overlapB.length) {
+        notify(`Cruce detectado: ${[...overlapA, ...overlapB].join('; ')}`, 'warning');
+        return;
+      }
+      const [rulesForB, rulesForA] = await Promise.all([resolveRuleLimitsForShift(b.shift), resolveRuleLimitsForShift(a.shift)]);
+      const [laborA, laborB] = await Promise.all([
+        checkShiftLaborLimits([b.shift], a.employeeRef, rulesForB),
+        checkShiftLaborLimits([a.shift], b.employeeRef, rulesForA)
+      ]);
+      if (laborA.length || laborB.length) {
+        notify(`Limite de jornada: ${[...laborA, ...laborB].join('; ')}`, 'warning');
+        return;
+      }
+      if (calendarMsg) calendarMsg.textContent = 'Intercambiando turnos...';
+      if (typeof deps.removeShiftAssignments === 'function') {
+        await deps.removeShiftAssignments([a.assignment.id, b.assignment.id]);
+      } else {
+        await deps.removeShiftAssignment?.(a.assignment.id);
+        await deps.removeShiftAssignment?.(b.assignment.id);
+      }
+      await deps.upsertShiftAssignments?.([
+        assignmentPayload(b.shift, a.employeeRef),
+        assignmentPayload(a.shift, b.employeeRef)
+      ]);
+      await deps.addAuditLog?.({
+        targetType: 'shift_assignment', targetId: null, action: 'swap_shift_assignments_calendar',
+        before: { employeeA: a.employeeRef, shiftA: a.shift.id, employeeB: b.employeeRef, shiftB: b.shift.id },
+        after: { employeeA: a.employeeRef, shiftA: b.shift.id, employeeB: b.employeeRef, shiftB: a.shift.id }
+      });
+      notify('Turnos intercambiados correctamente.', 'success');
+      await loadCalendar({ silent: true });
+    } catch (error) {
+      notify('Error: ' + (error?.message || error), 'error');
+      if (calendarMsg) calendarMsg.textContent = 'No se pudo intercambiar el turno.';
+    }
+  }
+
+  async function openAssignRestDayModal(day) {
+    const sedeCodigo = calendarSedeCode();
+    const candidates = calendarShifts.filter((shift) => shift.fechaOperativa === day
+      && (!sedeCodigo || shift.sedeCodigo === sedeCodigo)
+      && String(shift.estado || '') !== 'cancelado');
+    if (!candidates.length) {
+      notify('No hay turnos generados ese dia en esta sede.', 'warning');
+      return;
+    }
+    let candidateEmployees = [];
+    try {
+      candidateEmployees = await deps.listActiveBaseEmployees({ contratoCodigo: currentContractCode(), sedeCodigo: sedeCodigo || undefined }) || [];
+    } catch (error) {
+      notify(`No se pudieron cargar los empleados: ${error?.message || error}`, 'error');
+      return;
+    }
+    const candidateShiftIds = new Set(candidates.map((row) => row.id));
+    const assignedIds = new Set(calendarAssignments.filter((row) => candidateShiftIds.has(row.scheduledShiftId)).map((row) => String(row.employeeId || '')));
+    const available = candidateEmployees
+      .filter((emp) => String(emp.estado || 'activo') !== 'inactivo')
+      .filter((emp) => !assignedIds.has(String(emp.id || '')))
+      .sort((a, b) => String(a.nombre || '').localeCompare(String(b.nombre || '')));
+    if (!available.length) {
+      notify('No hay empleados disponibles para asignar ese dia.', 'warning');
+      return;
+    }
+    const modal = await showActionModal({
+      title: 'Asignar turno',
+      message: `Selecciona el turno y el empleado para ${formatDayHeader(day)}.`,
+      confirmText: 'Asignar',
+      fields: [
+        { id: 'shiftId', label: 'Turno', type: 'select', required: true, options: [
+          { value: '', label: 'Selecciona...' },
+          ...candidates.map((shift) => ({ value: shift.id, label: `${sedeLabel(shift.sedeCodigo, shift.sedeNombre)} - ${shiftTimeLabel(shift)}` }))
+        ] },
+        { id: 'employeeId', label: 'Empleado', type: 'select', required: true, options: [
+          { value: '', label: 'Selecciona...' },
+          ...available.map((emp) => ({ value: emp.id, label: `${emp.nombre || '-'} - ${emp.documento || '-'}` }))
+        ] }
+      ]
+    });
+    if (!modal.confirmed || !modal.values?.shiftId || !modal.values?.employeeId) return;
+    const shift = candidates.find((row) => row.id === modal.values.shiftId);
+    const employee = available.find((emp) => String(emp.id || '') === modal.values.employeeId);
+    if (!shift || !employee) return;
+    try {
+      const currentCount = calendarAssignments.filter((row) => row.scheduledShiftId === shift.id).length;
+      if (Number.isFinite(shift.operariosPlaneados) && shift.operariosPlaneados > 0 && currentCount >= shift.operariosPlaneados) {
+        notify('El turno ya alcanzo su cupo planeado.', 'warning');
+        return;
+      }
+      const overlap = await findAssignmentOverlap([shift], [employee]);
+      if (overlap.length) { notify(`Cruce detectado: ${overlap.join('; ')}`, 'warning'); return; }
+      const assignRestRuleLimits = await resolveRuleLimitsForShift(shift);
+      const assignRestLaborConflicts = await checkShiftLaborLimits([shift], employee, assignRestRuleLimits);
+      if (assignRestLaborConflicts.length) { notify(`Limite de jornada: ${assignRestLaborConflicts.join('; ')}`, 'warning'); return; }
+      if (calendarMsg) calendarMsg.textContent = 'Asignando turno...';
+      await deps.upsertShiftAssignments?.([assignmentPayload(shift, employee)]);
+      await deps.addAuditLog?.({
+        targetType: 'shift_assignment', targetId: null, action: 'assign_shift_calendar',
+        before: {}, after: { scheduledShiftId: shift.id, employeeId: employee.id, documento: employee.documento }
+      });
+      notify('Turno asignado correctamente.', 'success');
+      await loadCalendar({ silent: true });
+    } catch (error) {
+      notify('Error: ' + (error?.message || error), 'error');
+      if (calendarMsg) calendarMsg.textContent = 'No se pudo asignar el turno.';
+    }
+  }
+
   function startCatalogs() {
     const revision = ++catalogRevision;
     unTemplates?.();
@@ -2592,6 +3227,7 @@ function renderShiftScreen(mount, deps = {}, { mode = 'plans' } = {}) {
     observedContractCode = code;
     generatedRevision++;
     reviewRevision++;
+    calendarRevision++;
     employees = [];
     if (isGeneratedScreen) {
       pendingGeneratedFilters = null;
@@ -2603,11 +3239,19 @@ function renderShiftScreen(mount, deps = {}, { mode = 'plans' } = {}) {
       generatedLoaded = false;
       startCatalogs();
     }
+    if (isCalendarScreen) {
+      calendarShifts = [];
+      calendarAssignments = [];
+      calendarData = { days: [], rows: [] };
+      calendarLoaded = false;
+      startCatalogs();
+    }
     refreshGeneratedFilterOptions();
     generatedPaginator?.reset();
     resetReviewPaginators();
     if (isGeneratedScreen) loadGeneratedShifts({ silent: true });
     if (isReviewScreen) loadShiftReview({ silent: true });
+    if (isCalendarScreen) loadCalendar({ silent: true });
     refreshRuleCounts();
     render();
   });
@@ -2618,6 +3262,7 @@ function renderShiftScreen(mount, deps = {}, { mode = 'plans' } = {}) {
   render();
   if (isGeneratedScreen) loadGeneratedShifts({ silent: true });
   if (isReviewScreen) loadShiftReview({ silent: true });
+  if (isCalendarScreen) loadCalendar({ silent: true });
   return () => {
     disposed = true;
     unTemplates?.();

@@ -923,6 +923,10 @@ function mapShiftTemplateRuleRow(row = {}) {
     ventanaSalidaDespuesMinutos: Number(row.ventana_salida_despues_minutos || 0),
     alertaSalidaDespuesMinutos: Number(row.alerta_salida_despues_minutos ?? row.ventana_salida_despues_minutos ?? 0),
     ventanaNovedadHoras: Number(row.ventana_novedad_horas || 0),
+    limiteHorasSemanales: row.limite_horas_semanales == null ? null : Number(row.limite_horas_semanales),
+    limiteDescansoHoras: row.limite_descanso_horas == null ? null : Number(row.limite_descanso_horas),
+    limiteDiasConsecutivos: row.limite_dias_consecutivos == null ? null : Number(row.limite_dias_consecutivos),
+    alertaDescansoSemanal: row.alerta_descanso_semanal === true,
     estado: row.estado || 'activo',
     orden: Number(row.orden || 0),
     notas: row.notas || null,
@@ -1190,6 +1194,10 @@ function shiftTemplateRulePayload(data = {}, { includeAudit = false } = {}) {
   if (data.alertaSalidaDespuesMinutos !== undefined) payload.alerta_salida_despues_minutos = Number(data.alertaSalidaDespuesMinutos);
   if (data.ventanaSalidaDespuesMinutos !== undefined) payload.ventana_salida_despues_minutos = Math.max(0, numberOrDefault(data.ventanaSalidaDespuesMinutos, 0));
   if (data.ventanaNovedadHoras !== undefined) payload.ventana_novedad_horas = Math.max(0, numberOrDefault(data.ventanaNovedadHoras, 0));
+  if (data.limiteHorasSemanales !== undefined) payload.limite_horas_semanales = nullableNumber(data.limiteHorasSemanales);
+  if (data.limiteDescansoHoras !== undefined) payload.limite_descanso_horas = nullableNumber(data.limiteDescansoHoras);
+  if (data.limiteDiasConsecutivos !== undefined) payload.limite_dias_consecutivos = nullableNumber(data.limiteDiasConsecutivos);
+  if (data.alertaDescansoSemanal !== undefined) payload.alerta_descanso_semanal = data.alertaDescansoSemanal === true;
   if (data.estado !== undefined) payload.estado = String(data.estado || 'activo').trim() || 'activo';
   if (data.orden !== undefined) payload.orden = numberOrDefault(data.orden, 0);
   if (data.notas !== undefined) payload.notas = String(data.notas || '').trim() || null;
@@ -4515,7 +4523,7 @@ export async function listShiftAssignmentOverlapCandidates({
         .in('id', chunk)
         .gte('fecha_operativa', dateFrom)
         .lte('fecha_operativa', dateTo)
-        .in('estado', ['programado', 'abierto']);
+        .in('estado', ['programado', 'abierto', 'cerrado']);
       const cleanContract = String(contratoCodigo || '').trim();
       if (cleanContract) query = query.eq('contrato_codigo', cleanContract);
       return query;

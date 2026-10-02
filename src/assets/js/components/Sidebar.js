@@ -389,6 +389,7 @@ function buildStandardSections({ includeConsolidatedReports = true, linkOptions 
   if (sedeLinks.length) sections.push(section('Sedes', sedeLinks, 'sedes', '/sedes'));
 
   const shiftLinks = [];
+  if (can(PERMS.VIEW_GENERATED_SHIFTS)) shiftLinks.push(navLink('Calendario', '/turnos-calendario', linkOptions));
   if (can(PERMS.VIEW_SHIFT_PLANS)) shiftLinks.push(navLink('Planes de turnos', '/turnos-planes', linkOptions));
   if (can(PERMS.VIEW_GENERATED_SHIFTS)) shiftLinks.push(navLink('Turnos generados', '/turnos-generados', linkOptions));
   if (can(PERMS.VIEW_SHIFT_REVIEW)) shiftLinks.push(navLink('Revision de turnos', '/turnos-revision', { badgeId: 'sidebarShiftReviewBadge', ...linkOptions }));
@@ -475,6 +476,7 @@ function buildContractProjectLinks(contractCode) {
   if (sedeLinks.length) groups.push(subSection('Sedes', sedeLinks, `contract_sedes_${contractCode}`));
 
   const shiftLinks = [];
+  if (can(PERMS.VIEW_GENERATED_SHIFTS)) shiftLinks.push(navLink('Calendario', '/turnos-calendario', options));
   if (can(PERMS.VIEW_SHIFT_PLANS)) shiftLinks.push(navLink('Planes de turnos', '/turnos-planes', options));
   if (can(PERMS.VIEW_GENERATED_SHIFTS)) shiftLinks.push(navLink('Turnos generados', '/turnos-generados', options));
   if (can(PERMS.MANAGE_GENERATED_SHIFTS)) shiftLinks.push(navLink('Rotaciones', '/turnos-rotaciones', options));

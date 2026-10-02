@@ -44,6 +44,8 @@ const ctx = vm.createContext({
         neq: (key, value) => { rows = rows.filter(row => row[key] !== value); return query; },
         in: (key, values) => { rows = rows.filter(row => values.includes(row[key])); return query; },
         not: (key, _op, value) => { rows = rows.filter(row => row[key] !== value); return query; },
+        gte: (key, value) => { rows = rows.filter(row => row[key] === undefined || row[key] >= value); return query; },
+        lte: (key, value) => { rows = rows.filter(row => row[key] === undefined || row[key] <= value); return query; },
         is: (key, value) => { rows = rows.filter(row => row[key] === value); return query; },
         limit: n => { rows = rows.slice(0, n); return query; },
         range: (from, to) => { rows = rows.slice(from, to + 1); return query; },
@@ -106,6 +108,9 @@ await assert.rejects(ctx.validateSupernumerarioEntrySite(employee, 'A'), /attend
 contracts = ['C', 'D'];
 open = [{ id: 'OPEN', employee_id: 'E', scheduled_shift_id: 'TA', entrada_at: '2026-09-22T01:00:00Z', salida_at: null, estado_turno: 'trabajado' }];
 await assert.rejects(begin(), /attendance_open_shift/);
+open = [{ ...open[0], estado_turno: 'salida_pendiente' }];
+await begin(); // closed shift with salida_pendiente must not throw attendance_open_shift
+open = [{ ...open[0], estado_turno: 'trabajado' }];
 await ctx.handleQrAttendanceAction('123', session, { id: 'qr_exit' });
 assert.equal(session.session_data.pendingShiftId, 'TA', 'exit recovers the open shift without a site search');
 await ctx.handleQrLocationInput('123', session, location(sites[1]));
