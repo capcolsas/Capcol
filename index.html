@@ -3,8 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Capcol S.A.S. | Rocky</title>
-  <meta name="description" content="Rocky de Capcol: CRM Operativo y Administrativo, simple y de bajo costo para centralizar empleados, sedes, novedades y reportes en tiempo real." />
+  <title>Capcol S.A.S. | Soluciones operativas y tecnológicas</title>
+  <meta name="description" content="Capcol S.A.S.: logística de eventos, transporte de pasajeros, proyectos de construcción, desarrollo de software (Rocky) y suministro de bienes para entidades y empresas." />
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="Capcol S.A.S. | Soluciones operativas y tecnológicas" />
+  <meta property="og:description" content="Logística, transporte, construcción, software y suministro para entidades y empresas." />
+  <meta property="og:image" content="src/assets/img/capcol-logo.png" />
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Organization","name":"Capcol S.A.S.","legalName":"Consultores en Administración Pública Colombiana S.A.S.","taxID":"900.939.656-7","email":"capcol@capcol.com.co","address":{"@type":"PostalAddress","addressLocality":"Caramanta","addressRegion":"Antioquia","addressCountry":"CO"}}</script>
   <link rel="icon" type="image/png" href="src/assets/img/capcol-logo.png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -69,7 +74,7 @@
       font-weight: 800;
     }
 
-    .brand img { width: 34px; height: 34px; object-fit: contain; }
+    .brand img { width: auto; height: 52px; object-fit: contain; }
 
     .nav {
       display: flex;
@@ -163,7 +168,8 @@
     }
 
     .hero {
-      padding: 70px 0 44px;
+      padding: 72px 0 56px;
+      text-align: center;
       border-bottom: 1px solid var(--line);
       background:
         linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
@@ -171,45 +177,29 @@
 
     .hero-grid {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) 360px;
+      grid-template-columns: minmax(0, 1fr);
       gap: 44px;
       align-items: center;
     }
 
-    .micro-logo {
-      width: 96px;
-      margin-bottom: 18px;
-    }
 
-    .eyebrow {
-      display: inline-flex;
-      width: fit-content;
-      margin-bottom: 16px;
-      padding: 7px 10px;
-      border-radius: 999px;
-      background: #edf6fc;
-      color: var(--blue);
-      font-size: 12px;
-      font-weight: 900;
-      letter-spacing: 0.07em;
-      text-transform: uppercase;
-    }
 
     .hero h1 {
-      max-width: 760px;
+      max-width: 900px;
+      margin: 0 auto;
       color: #0f1f33;
-      font-size: clamp(2.35rem, 5.1vw, 4.75rem);
+      font-size: clamp(2.1rem, 4.2vw, 3.5rem);
       letter-spacing: -0.04em;
     }
 
     .hero-copy {
-      max-width: 680px;
-      margin-top: 22px;
+      max-width: 720px;
+      margin: 22px auto 0;
       color: var(--muted);
       font-size: clamp(1rem, 1.35vw, 1.16rem);
     }
 
-    .actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 28px; }
+    .actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; margin-top: 28px; }
 
     .btn {
       min-height: 44px;
@@ -232,33 +222,10 @@
     .btn-secondary { background: #ffffff; color: var(--navy); border-color: var(--line); }
     .btn-dark { background: var(--navy); color: #ffffff; }
 
-    .summary-card {
-      padding: 22px;
-      border: 1px solid var(--line);
-      border-radius: 18px;
-      background: #ffffff;
-      box-shadow: var(--shadow);
-    }
 
-    .summary-card h2 { font-size: 1.2rem; margin-bottom: 10px; }
-    .summary-card p { color: var(--muted); }
 
-    .summary-list {
-      display: grid;
-      gap: 10px;
-      margin-top: 18px;
-    }
 
-    .summary-list div {
-      padding: 12px;
-      border-radius: 12px;
-      background: var(--soft);
-      color: var(--muted);
-      font-size: 14px;
-      font-weight: 700;
-    }
 
-    .summary-list strong { color: var(--navy); }
 
     .section { padding: 64px 0; }
     .section.soft { background: var(--soft); }
@@ -493,15 +460,63 @@
       .products-dropdown { left: 0; right: auto; }
       .hero-grid, .section-head, .product-strip { grid-template-columns: 1fr; }
       .grid-3, .process, .footer-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .contact-grid { grid-template-columns: 1fr; }
     }
 
     @media (max-width: 640px) {
+      .brand img { height: 38px; }
       .container { width: min(100% - 22px, 1120px); }
       .hero { padding-top: 46px; }
-      .hero h1 { font-size: 2.25rem; }
-      .grid-2, .grid-3, .form-grid, .process, .footer-grid { grid-template-columns: 1fr; }
+      .hero h1 { font-size: 2rem; }
+      .grid-2, .grid-3, .form-grid, .process, .footer-grid, .contact-grid { grid-template-columns: 1fr; }
       .client-logo { flex-basis: min(72vw, 240px); }
       .section { padding: 48px 0; }
+    }
+
+    .products-trigger[aria-expanded="true"] { background: var(--soft); color: var(--blue); }
+    .products-menu.open .products-dropdown { opacity: 1; visibility: visible; transform: translateY(0); }
+
+    .service-card { scroll-margin-top: 92px; display: flex; flex-direction: column; }
+    .service-card .more { margin-top: auto; padding-top: 14px; color: var(--blue); font-size: 14px; font-weight: 900; text-decoration: none; }
+    .service-card .more:hover { text-decoration: underline; }
+    .service-card.featured { border-color: var(--blue); box-shadow: 0 14px 34px rgba(23, 105, 170, 0.14); }
+    .badge { width: fit-content; margin-bottom: 10px; padding: 3px 9px; border-radius: 999px; background: #edf6fc; color: var(--blue); font-size: 11px; font-weight: 900; letter-spacing: 0.06em; text-transform: uppercase; }
+
+    .rocky-logo-panel { width: fit-content; margin-bottom: 20px; padding: 6px 22px; border-radius: 16px; background: #ffffff; }
+    .rocky-logo-panel img { width: 240px; height: auto; margin: -18px 0; }
+
+    .rocky-points { display: grid; gap: 8px; margin: 16px 0 0; padding: 0; list-style: none; color: #cbd9e8; }
+    .rocky-points li::before { content: "✓ "; color: #8fd8ff; font-weight: 900; }
+    .product-actions { display: grid; gap: 10px; }
+    .btn-outline-light { border-color: rgba(255,255,255,0.4); color: #ffffff; }
+
+    .btn-wa { background: var(--green); color: #ffffff; }
+    .contact-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-bottom: 14px; }
+    .contact-card h3 { margin-bottom: 6px; }
+    .contact-card .phone { margin: 8px 0 14px; color: var(--navy); font-family: "Sora", sans-serif; font-size: 1.3rem; font-weight: 800; }
+    select {
+      width: 100%; border: 1px solid var(--line); border-radius: 10px; padding: 12px 13px;
+      color: var(--ink); background: #ffffff; font: inherit;
+    }
+    input:focus-visible, textarea:focus-visible, select:focus-visible, .btn:focus-visible, a:focus-visible, button:focus-visible {
+      outline: 3px solid rgba(23, 105, 170, 0.35); outline-offset: 2px;
+    }
+
+    details.policy { border: 1px solid var(--line); border-radius: 16px; background: #ffffff; padding: 0 20px; }
+    details.policy summary { cursor: pointer; padding: 18px 0; color: var(--navy); font-family: "Sora", sans-serif; font-weight: 800; }
+    details.policy .grid-2 { padding-bottom: 20px; }
+
+    .wa-float {
+      position: fixed; right: 18px; bottom: 18px; z-index: 30;
+      min-height: 48px; display: inline-flex; align-items: center; padding: 0 18px;
+      border-radius: 999px; background: var(--green); color: #ffffff;
+      font-size: 14px; font-weight: 900; text-decoration: none; box-shadow: var(--shadow);
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      .reveal, .clients-track { animation: none; }
+      .btn:hover { transform: none; }
     }
   </style>
 </head>
@@ -509,22 +524,22 @@
   <header class="topbar">
     <div class="container topbar-inner">
       <a class="brand" href="#inicio" aria-label="Capcol S.A.S.">
-        <img src="src/assets/img/capcol-logo.png" alt="Capcol" />
-        <span>CAPCOL S.A.S.</span>
+        <img src="src/assets/img/capcol-header.png" alt="Capcol S.A.S. - Consultores en Administración Pública Colombiana" width="2169" height="725" />
       </a>
       <nav class="nav" aria-label="Navegación principal">
-        <div class="products-menu">
-          <button class="products-trigger" type="button" aria-haspopup="true">Productos</button>
-          <div class="products-dropdown" role="menu" aria-label="Líneas de negocio Capcol">
-            <a href="#clientes" role="menuitem">Logística de eventos<span>Operación masiva y elecciones</span></a>
-            <a href="#clientes" role="menuitem">Transporte de pasajeros<span>Rutas, control y seguimiento</span></a>
-            <a href="#clientes" role="menuitem">Proyectos de construcción<span>Planeación, ejecución y trazabilidad</span></a>
-            <a href="#rocky" role="menuitem">Desarrollo de software<span>Rocky y soluciones operativas</span></a>
-            <a href="#clientes" role="menuitem">Suministro de bienes<span>Gestión de bienes para entidades</span></a>
+        <div class="products-menu" id="productsMenu">
+          <button class="products-trigger" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="productsDropdown">Servicios</button>
+          <div class="products-dropdown" id="productsDropdown" aria-label="Líneas de negocio Capcol">
+            <a href="#logistica">Logística de eventos<span>Operación masiva y elecciones</span></a>
+            <a href="#transporte">Transporte de pasajeros<span>Rutas, control y seguimiento</span></a>
+            <a href="#construccion">Proyectos de construcción<span>Planeación, ejecución y trazabilidad</span></a>
+            <a href="#software">Desarrollo de software<span>Rocky y soluciones operativas</span></a>
+            <a href="#suministro">Suministro de bienes<span>Gestión de bienes para entidades</span></a>
           </div>
         </div>
+        <a href="#rocky">Rocky</a>
+        <a href="#clientes">Clientes</a>
         <a href="#contacto">Contacto</a>
-        <a href="#datos">Datos</a>
         <a class="rocky-link" href="access.html" target="_blank" rel="noopener noreferrer">Ingresar a Rocky</a>
       </nav>
     </div>
@@ -534,83 +549,79 @@
     <section class="hero">
       <div class="container hero-grid">
         <div class="reveal">
-          <h1>Rocky - CRM Operativo y Administrativo.</h1>
+          <h1>Soluciones operativas, logísticas y tecnológicas para entidades y empresas.</h1>
           <p class="hero-copy">
-            Solo con WhatsApp centraliza empleados, sedes, novedades y reportes en tiempo real para equipos ubicados en diferentes municipios o puntos de servicio. Olvídate de aplicaciones costosas y planes de datos que hacen cara la opración, menos hojas de cálculo, menos reprocesos y más información disponible para decidir.
+            Combinamos experiencia en administración pública con operación en campo y desarrollo de software propio: desde la logística de un evento masivo hasta el control diario de tu personal con Rocky.
           </p>
           <div class="actions">
-            <a class="btn btn-primary" href="#contacto">Solicitar demostración</a>
-            <a class="btn btn-secondary" href="#beneficios">Ver beneficios</a>
+            <a class="btn btn-primary" href="#servicios">Ver servicios</a>
+            <a class="btn btn-wa" href="#contacto">Hablar por WhatsApp</a>
           </div>
         </div>
 
-        <aside class="summary-card reveal d1">
-          <img class="micro-logo" src="src/assets/img/rocky_logo_full.png" alt="Rocky" />
-          <h2>CRM Operativo y Administrativo para operación distribuida</h2>
-          <p>Hace de WhatsApp una herramienta práctica y económica para organizaciones que necesitan control operativo y administrativo sin una implementación costosa.</p>
-          <div class="summary-list">
-            <div><strong>Bajo costo:</strong> implementación liviana y escalable.</div>
-            <div><strong>Tiempo real:</strong> novedades y reportes disponibles al consultar.</div>
-            <div><strong>Cobertura:</strong> empleados por sedes, zonas y contratos.</div>
-          </div>
-        </aside>
       </div>
     </section>
 
-    <section id="rocky" class="section">
-      <div class="container product-strip reveal">
-        <div>
-          <div class="kicker" style="color:#8fd8ff;">Rocky de Capcol</div>
-          <h2>Un CRM Operativo y Administrativo para ordenar personal en campo.</h2>
-          <p>
-            Rocky está pensado para empresas y entidades que manejan empleados en ubicaciones distintas y necesitan consolidar información operativa, administrativa y contractual de forma clara, rápida y verificable.
-          </p>
-        </div>
-        <a class="btn btn-primary" href="access.html" target="_blank" rel="noopener noreferrer">Ingresar a Rocky</a>
-      </div>
-    </section>
-
-    <section id="beneficios" class="section soft">
+    <section id="servicios" class="section">
       <div class="container">
         <div class="section-head reveal">
           <div>
-            <div class="kicker">Beneficios</div>
-            <h2>Lo esencial que el cliente necesita entender.</h2>
+            <div class="kicker">Líneas de negocio</div>
+            <h2>Lo que hace Capcol.</h2>
           </div>
           <p class="section-intro">
-            Rocky ayuda a equipos administrativos, operativos y de supervisión a tener una gestión más visible, ordenada y fácil de consultar.
+            Servicios pensados para entidades públicas y empresas que necesitan cumplir, controlar y reportar su operación con claridad.
           </p>
         </div>
 
         <div class="grid-3">
-          <article class="card reveal d1"><div class="tag">01</div><h3>Empleados centralizados</h3><p>Información del personal organizada por sede, dependencia, zona o punto geográfico.</p></article>
-          <article class="card reveal d2"><div class="tag green">02</div><h3>Novedades en tiempo real</h3><p>Registros, permisos e historial disponibles para supervisión y administración.</p></article>
-          <article class="card reveal d3"><div class="tag gold">03</div><h3>Reportes claros</h3><p>Seguimiento por sede, contrato, equipo o territorio sin depender de archivos dispersos.</p></article>
-          <article class="card reveal d1"><div class="tag">04</div><h3>Bajo costo</h3><p>Digitalización útil sin desarrollos empresariales pesados ni licencias innecesarias.</p></article>
-          <article class="card reveal d2"><div class="tag green">05</div><h3>Operación verificable</h3><p>Evidencia de movimientos, novedades y datos para control interno o contractual.</p></article>
-          <article class="card reveal d3"><div class="tag gold">06</div><h3>Soporte Capcol</h3><p>Acompañamiento de un equipo que entiende operación, administración y tecnología.</p></article>
+          <article id="logistica" class="card service-card reveal d1"><div class="tag">01</div><h3>Logística de eventos</h3><p>Planeación y operación de eventos masivos, jornadas electorales y actividades institucionales.</p><a class="more" href="#contacto" data-service="Logística de eventos">Cotizar este servicio →</a></article>
+          <article id="transporte" class="card service-card reveal d2"><div class="tag green">02</div><h3>Transporte de pasajeros</h3><p>Rutas, control y seguimiento del servicio de transporte para personal, comunidades y eventos.</p><a class="more" href="#contacto" data-service="Transporte de pasajeros">Cotizar este servicio →</a></article>
+          <article id="construccion" class="card service-card reveal d3"><div class="tag gold">03</div><h3>Proyectos de construcción</h3><p>Planeación, ejecución y trazabilidad de obras y adecuaciones.</p><a class="more" href="#contacto" data-service="Proyectos de construcción">Cotizar este servicio →</a></article>
+          <article id="software" class="card service-card featured reveal d1"><span class="badge">Producto propio</span><div class="tag">04</div><h3>Desarrollo de software</h3><p>Rocky y soluciones operativas a la medida para organizar personal, sedes y reportes.</p><a class="more" href="#rocky">Conocer Rocky →</a></article>
+          <article id="suministro" class="card service-card reveal d2"><div class="tag green">05</div><h3>Suministro de bienes</h3><p>Gestión y entrega de bienes para entidades, con control de inventarios y actas.</p><a class="more" href="#contacto" data-service="Suministro de bienes">Cotizar este servicio →</a></article>
+          <article class="card service-card reveal d3"><div class="tag gold">+</div><h3>¿Otra necesidad?</h3><p>Cuéntanos tu caso. Si no está en la lista, evaluamos cómo apoyarte.</p><a class="more" href="#contacto" data-service="Otro">Escríbenos →</a></article>
         </div>
       </div>
     </section>
 
-    <section id="implementacion" class="section">
+    <section id="rocky" class="section soft">
+      <div class="container product-strip reveal">
+        <div>
+          <div class="rocky-logo-panel"><img src="src/assets/img/rocky_logo_full.png" alt="Rocky Soluciones" width="1774" height="887" loading="lazy" /></div>
+          <div class="kicker" style="color:#8fd8ff;">Producto estrella · Rocky de Capcol</div>
+          <h2>CRM Operativo y Administrativo para personal en campo, solo con WhatsApp.</h2>
+          <p>
+            Centraliza empleados, sedes, novedades y reportes en tiempo real para equipos en distintos municipios o puntos de servicio, sin aplicaciones costosas ni planes de datos.
+          </p>
+          <ul class="rocky-points">
+            <li>Empleados organizados por sede, zona y contrato.</li>
+            <li>Novedades, marcaciones QR, incapacidades y certificados laborales.</li>
+            <li>Reportes verificables para control interno y contractual.</li>
+            <li>Implementación liviana con acompañamiento de Capcol.</li>
+          </ul>
+        </div>
+        <div class="product-actions">
+          <a class="btn btn-primary" href="access.html" target="_blank" rel="noopener noreferrer">Ingresar a Rocky</a>
+          <a class="btn btn-outline-light" href="#contacto" data-service="Rocky (demostración)">Solicitar demostración</a>
+        </div>
+      </div>
+    </section>
+
+    <section id="porque" class="section">
       <div class="container">
         <div class="section-head reveal">
           <div>
-            <div class="kicker">Implementación</div>
-            <h2>De diagnóstico a operación activa.</h2>
+            <div class="kicker">Por qué Capcol</div>
+            <h2>Operación, administración y tecnología en un mismo equipo.</h2>
           </div>
-          <p class="section-intro">
-            Capcol acompaña la adopción de Rocky desde el levantamiento inicial hasta los primeros ciclos de operación.
-          </p>
+          <p class="section-intro">Una sola empresa para ejecutar, controlar y documentar.</p>
         </div>
-
-        <ol class="process">
-          <li class="reveal d1"><strong>1</strong><span><b>Diagnóstico:</b> empleados, sedes, zonas y reportes necesarios.</span></li>
-          <li class="reveal d2"><strong>2</strong><span><b>Configuración:</b> datos base, perfiles y reglas del proyecto.</span></li>
-          <li class="reveal d3"><strong>3</strong><span><b>Activación:</b> capacitación y primeros ciclos de uso.</span></li>
-          <li class="reveal d1"><strong>4</strong><span><b>Soporte:</b> ajustes y evolución según la operación real.</span></li>
-        </ol>
+        <div class="grid-3">
+          <article class="card reveal d1"><div class="tag">01</div><h3>Entendemos lo público</h3><p>Nacimos como consultores en administración pública: conocemos los procesos, soportes y tiempos de las entidades.</p></article>
+          <article class="card reveal d2"><div class="tag green">02</div><h3>Tecnología propia</h3><p>Rocky es desarrollo de Capcol, por lo que podemos adaptarlo a la operación real de cada cliente.</p></article>
+          <article class="card reveal d3"><div class="tag gold">03</div><h3>Operación verificable</h3><p>Evidencia de movimientos, novedades y entregas para control interno o contractual.</p></article>
+        </div>
       </div>
     </section>
 
@@ -648,34 +659,58 @@
       <div class="container">
         <div class="section-head reveal">
           <div>
-            <div class="kicker">Contacto comercial</div>
-            <h2>Solicita una demostración de Rocky.</h2>
+            <div class="kicker">Contacto por WhatsApp</div>
+            <h2>Escríbenos y te atendemos.</h2>
           </div>
-          <p class="section-intro">Cuéntanos tu operación y revisamos cómo centralizar empleados, sedes, novedades y reportes.</p>
+          <p class="section-intro">Elige el canal, cuéntanos qué necesitas y se abrirá WhatsApp con tu mensaje listo para enviar.</p>
+        </div>
+
+        <div class="contact-grid reveal d1">
+          <article class="card contact-card">
+            <h3>Atención administrativa</h3>
+            <p>Cotizaciones, servicios, contratos y demostraciones de Rocky.</p>
+            <div class="phone">350 626 4742</div>
+            <a class="btn btn-wa" href="https://wa.me/573506264742" target="_blank" rel="noopener noreferrer">Abrir WhatsApp administrativo</a>
+          </article>
+          <article class="card contact-card">
+            <h3>Soporte técnico</h3>
+            <p>Ayuda para usuarios de Rocky: acceso, marcaciones, reportes e incidencias.</p>
+            <div class="phone">350 262 4743</div>
+            <a class="btn btn-dark" href="https://wa.me/573502624743" target="_blank" rel="noopener noreferrer">Abrir WhatsApp de soporte</a>
+          </article>
         </div>
 
         <form id="proposalForm" class="card reveal d1">
           <div class="form-grid">
             <div class="field">
               <label for="name">Nombre completo</label>
-              <input id="name" name="name" type="text" required />
+              <input id="name" name="name" type="text" autocomplete="name" required />
             </div>
             <div class="field">
-              <label for="email">Correo empresarial</label>
-              <input id="email" name="email" type="email" required />
+              <label for="company">Entidad o empresa</label>
+              <input id="company" name="company" type="text" autocomplete="organization" />
             </div>
             <div class="field field-full">
-              <label for="subject">Asunto</label>
-              <input id="subject" name="subject" type="text" value="Solicitud de demostración de Rocky" required />
+              <label for="service">¿Qué servicio te interesa?</label>
+              <select id="service" name="service">
+                <option>Logística de eventos</option>
+                <option>Transporte de pasajeros</option>
+                <option>Proyectos de construcción</option>
+                <option>Rocky (demostración)</option>
+                <option>Desarrollo de software a la medida</option>
+                <option>Suministro de bienes</option>
+                <option>Otro</option>
+                <option>Soporte técnico de Rocky</option>
+              </select>
             </div>
             <div class="field field-full">
               <label for="message">Mensaje</label>
-              <textarea id="message" name="message" required placeholder="Describe sedes, empleados o necesidades de seguimiento"></textarea>
+              <textarea id="message" name="message" required placeholder="Cuéntanos tu necesidad: sedes, empleados, fechas, ciudad..."></textarea>
             </div>
           </div>
           <div class="form-actions">
-            <button class="btn btn-primary" type="submit" id="submitBtn">Enviar solicitud</button>
-            <p id="formStatus" class="form-note">El formulario envía la solicitud al equipo comercial de Capcol.</p>
+            <button class="btn btn-wa" type="submit" id="submitBtn">Continuar en WhatsApp</button>
+            <p id="formStatus" class="form-note">Si eliges "Soporte técnico de Rocky" te llevamos al canal de soporte; en otro caso, al administrativo.</p>
           </div>
         </form>
       </div>
@@ -683,17 +718,12 @@
 
     <section id="datos" class="section soft">
       <div class="container">
-        <div class="section-head reveal">
-          <div>
-            <div class="kicker">Tratamiento de datos</div>
-            <h2>Política de tratamiento de datos personales.</h2>
-          </div>
-          <p class="section-intro">
+        <details class="policy reveal">
+          <summary>Política de tratamiento de datos personales</summary>
+          <p class="section-intro" style="padding-bottom:16px;">
             Consultores en Administración Pública Colombiana S.A.S. informa su política de tratamiento de datos personales conforme a la Ley 1581 de 2012, el Decreto 1377 de 2013, el Decreto 1074 de 2015 y demás normas aplicables.
           </p>
-        </div>
-
-        <div class="grid-2">
+          <div class="grid-2">
           <article class="card reveal d1">
             <h3>Responsable</h3>
             <ul>
@@ -731,6 +761,7 @@
             </ul>
           </article>
         </div>
+        </details>
       </div>
     </section>
   </main>
@@ -738,8 +769,8 @@
   <footer>
     <div class="container footer-grid">
       <div>
-        <strong>Capcol S.A.S.</strong>
         <span>Consultores en Administración Pública Colombiana S.A.S.</span>
+        <span><a href="#datos" id="datosLink">Tratamiento de datos</a></span>
       </div>
       <div>
         <strong>NIT</strong>
@@ -751,54 +782,66 @@
       </div>
       <div>
         <strong>Contacto</strong>
-        <span><a href="mailto:capcol@capcol.com.co">capcol@capcol.com.co</a> | 3502624742</span>
+        <span><a href="https://wa.me/573506264742" target="_blank" rel="noopener noreferrer">WhatsApp administrativo: 350 626 4742</a></span>
+        <span><a href="https://wa.me/573502624743" target="_blank" rel="noopener noreferrer">Soporte técnico: 350 262 4743</a></span>
+        <span><a href="mailto:capcol@capcol.com.co">capcol@capcol.com.co</a></span>
       </div>
     </div>
   </footer>
 
+  <a class="wa-float" href="https://wa.me/573506264742" target="_blank" rel="noopener noreferrer" aria-label="Escribir a Capcol por WhatsApp">WhatsApp</a>
+
   <script>
+    // Números de contacto (formato internacional, sin signos). Se reemplazarán por el bot propio de atención.
+    const WA_ADMIN = '573506264742';
+    const WA_SUPPORT = '573502624743';
+
     const form = document.getElementById('proposalForm');
     const statusEl = document.getElementById('formStatus');
-    const submitBtn = document.getElementById('submitBtn');
-    const proposalDefaultSubject = 'Solicitud de demostración de Rocky';
+    const serviceEl = document.getElementById('service');
 
-    form?.addEventListener('submit', async (event) => {
+    form?.addEventListener('submit', (event) => {
       event.preventDefault();
-      statusEl.textContent = 'Enviando solicitud...';
-      statusEl.className = 'form-note';
-      submitBtn.disabled = true;
-
-      const payload = {
-        name: form.name.value.trim(),
-        email: form.email.value.trim(),
-        subject: form.subject.value.trim(),
-        message: form.message.value.trim()
-      };
-
-      try {
-        const response = await fetch('/api/contact', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
-
-        const data = await response.json().catch(() => ({}));
-
-        if (!response.ok || !data.ok) {
-          throw new Error(data.error || 'No fue posible enviar la solicitud.');
-        }
-
-        form.reset();
-        form.subject.value = proposalDefaultSubject;
-        statusEl.textContent = data.message || 'Solicitud enviada correctamente. Te contactaremos pronto.';
-        statusEl.className = 'form-note ok';
-      } catch (error) {
-        statusEl.textContent = (error && error.message) ? error.message : 'Error inesperado al enviar la solicitud.';
-        statusEl.className = 'form-note error';
-      } finally {
-        submitBtn.disabled = false;
-      }
+      const service = serviceEl.value;
+      const company = form.company.value.trim();
+      const isSupport = service === 'Soporte técnico de Rocky';
+      const lines = [
+        isSupport ? 'Hola, necesito soporte técnico de Rocky.' : 'Hola, quiero información sobre: ' + service + '.',
+        'Nombre: ' + form.name.value.trim(),
+        company ? 'Entidad/empresa: ' + company : '',
+        'Mensaje: ' + form.message.value.trim()
+      ].filter(Boolean);
+      const url = 'https://wa.me/' + (isSupport ? WA_SUPPORT : WA_ADMIN) + '?text=' + encodeURIComponent(lines.join('\n'));
+      const win = window.open(url, '_blank', 'noopener');
+      if (!win) { window.location.href = url; }
+      statusEl.textContent = 'Abrimos WhatsApp con tu mensaje. Solo falta enviarlo.';
+      statusEl.className = 'form-note ok';
     });
+
+    // Los enlaces "Cotizar este servicio" preseleccionan el servicio en el formulario.
+    document.querySelectorAll('[data-service]').forEach((link) => {
+      link.addEventListener('click', () => {
+        const option = Array.from(serviceEl.options).find((o) => o.text === link.dataset.service);
+        if (option) serviceEl.value = option.value || option.text;
+      });
+    });
+
+    // Menú de servicios accesible: clic/teclado además de hover.
+    const menu = document.getElementById('productsMenu');
+    const trigger = menu.querySelector('.products-trigger');
+    const setMenu = (open) => {
+      menu.classList.toggle('open', open);
+      trigger.setAttribute('aria-expanded', String(open));
+    };
+    trigger.addEventListener('click', () => setMenu(!menu.classList.contains('open')));
+    document.addEventListener('click', (e) => { if (!menu.contains(e.target)) setMenu(false); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') setMenu(false); });
+    menu.querySelectorAll('a').forEach((a) => a.addEventListener('click', () => setMenu(false)));
+
+    // La política de datos se abre al llegar desde el pie de página.
+    const openPolicy = () => { const d = document.querySelector('details.policy'); if (d) d.open = true; };
+    document.getElementById('datosLink')?.addEventListener('click', openPolicy);
+    if (location.hash === '#datos') openPolicy();
   </script>
 </body>
 </html>

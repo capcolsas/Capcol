@@ -4,7 +4,7 @@
 --
 -- Idempotente: sirve para un proyecto nuevo y para actualizar uno existente.
 -- Ejecutar en orden 01 -> 05 en el editor SQL de Supabase (o con psql).
--- Fuentes incluidas (8):
+-- Fuentes incluidas (9):
 --   schema_operations_phase60_mobile_attendance.sql
 --   schema_operations_phase61_attendance_alert_thresholds.sql
 --   schema_operations_phase63_shift_review_decisions.sql
@@ -13,6 +13,7 @@
 --   schema_operations_phase67_shift_status_payroll_sync.sql
 --   schema_operations_phase68_backfill_pending_exits.sql
 --   schema_operations_phase69_shift_labor_limits.sql
+--   schema_operations_phase70_site_visit_permissions.sql
 -- ============================================================
 
 -- >>>>>>>>>> schema_operations_phase60_mobile_attendance.sql
@@ -117,7 +118,6 @@ begin
       and a.estado in ('asignado','confirmado')) then raise exception 'attendance_shift_missing'; end if;
     if exists(select 1 from public.employee_shift_status s where s.employee_id=v_emp
       and s.entrada_at is not null and s.salida_at is null and s.estado_turno <> 'cancelado'
-      and s.estado_turno <> 'salida_pendiente' -- closure leaves unexited shifts as salida_pendiente (no exit time written); they no longer block
       and s.scheduled_shift_id <> v_shift_id) then raise exception 'attendance_open_shift'; end if;
   end if;
   select * into v_site from public.sedes where codigo = p_event->>'sede_codigo' for share;
@@ -310,7 +310,6 @@ begin
       and a.estado in ('asignado','confirmado')) then raise exception 'attendance_shift_missing'; end if;
     if exists(select 1 from public.employee_shift_status s where s.employee_id=v_emp
       and s.entrada_at is not null and s.salida_at is null and s.estado_turno <> 'cancelado'
-      and s.estado_turno <> 'salida_pendiente' -- closure leaves unexited shifts as salida_pendiente (no exit time written); they no longer block
       and s.scheduled_shift_id <> v_shift_id) then raise exception 'attendance_open_shift'; end if;
   end if;
   select * into v_site from public.sedes where codigo = p_event->>'sede_codigo' for share;
@@ -2481,13 +2480,7 @@ set
   requires_review = true
 where entrada_at is not null
   and salida_at is null
-  and estado_turno not in ('salida_pendiente', 'post_cierre_pendiente', 'ausente_con_novedad', 'cancelado')
-  -- 'programado' only counts when its shift is already closed: rows of any cargo (supervisors included)
-  -- that old logic closed without ever moving them out of 'programado'. No exit time is written.
-  and (estado_turno <> 'programado'
-    or closed
-    or exists (select 1 from public.scheduled_shifts ss
-               where ss.id = employee_shift_status.scheduled_shift_id and ss.estado = 'cerrado'));
+  and estado_turno not in ('salida_pendiente', 'post_cierre_pendiente', 'ausente_con_novedad', 'cancelado', 'programado');
 
 -- >>>>>>>>>> schema_operations_phase69_shift_labor_limits.sql
 -- Phase 69: opt-in labor-compliance limits per shift plan (weekly hours, minimum rest,
@@ -2747,5 +2740,42 @@ create or replace function public.shift_rotation_rules_version()
 returns integer language sql stable as $$select 70$$;
 revoke all on function public.shift_rotation_rules_version() from public,anon;
 grant execute on function public.shift_rotation_rules_version() to authenticated,service_role;
+
+commit;
+
+-- >>>>>>>>>> schema_operations_phase70_site_visit_permissions.sql
+-- Phase 70: split site-visit access into consult (viewSiteVisits) and manage (manageSiteVisits).
+-- Apply after phase 69.
+--
+-- Until now visit_admin() required editContracts for reading AND managing visits, so the
+-- Centro de Permisos could not grant one without the other. Both new keys fall back to
+-- editContracts, so roles and users without an explicit value keep exactly their current access.
+begin;
+
+-- Manage: program cycles (visit_save_settings) and review visits (visit_review).
+create or replace function public.visit_admin(p_contract text) returns boolean language sql stable security definer set search_path=public as $$
+ select coalesce(public.can_read_contract_data(p_contract) and public.current_profile_has_permission('manageSiteVisits','editContracts'),false)
+$$;
+
+-- Consult: read every cycle, assignment and visit of the contract.
+create or replace function public.visit_viewer(p_contract text) returns boolean language sql stable security definer set search_path=public as $$
+ select coalesce(public.can_read_contract_data(p_contract) and (
+   public.current_profile_has_permission('viewSiteVisits','editContracts')
+   or public.current_profile_has_permission('manageSiteVisits','editContracts')
+ ),false)
+$$;
+grant execute on function public.visit_viewer(text) to authenticated;
+
+create or replace function public.visit_assignment_read(p_assignment uuid) returns boolean language sql stable security definer set search_path=public as $$
+ select exists(select 1 from visit_assignments a where a.id=p_assignment and
+ (visit_viewer(a.contrato_codigo) or (a.supervisor_id=auth.uid() and visit_active_user())))
+$$;
+
+drop policy if exists visit_settings_read on public.visit_settings;
+drop policy if exists visit_settings_read on public.visit_settings;
+create policy visit_settings_read on public.visit_settings for select to authenticated using(visit_viewer(contrato_codigo));
+drop policy if exists visit_cycles_read on public.visit_cycles;
+drop policy if exists visit_cycles_read on public.visit_cycles;
+create policy visit_cycles_read on public.visit_cycles for select to authenticated using(visit_viewer(contrato_codigo) or exists(select 1 from visit_assignments a where a.cycle_id=visit_cycles.id and a.supervisor_id=auth.uid()));
 
 commit;

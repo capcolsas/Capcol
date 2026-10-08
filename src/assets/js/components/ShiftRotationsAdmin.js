@@ -1,7 +1,7 @@
 import { el, lucideInlineIcon } from '../utils/dom.js';
-import { subscribe } from '../state.js';
+import { getState, subscribe } from '../state.js';
 import { contractFilterCode } from '../utils/contractScope.js';
-import { can, PERMS } from '../permissions.js';
+import { isSuperAdmin } from '../permissions.js';
 import { todayBogota, addIsoDays, SHIFT_GENERATION_DAYS } from '../utils/shiftCalendar.js';
 import { quotasByTemplate, buildCycleByQuota, buildCoverage, coverageStatus } from '../utils/rotationCoverage.js';
 import { buildRotationWeeks, summarizeWeekRow, distributeWeeklyRestDays, weekStartIso, formatHours, formatTime, formatDayHeader, formatRange, weekdayName } from '../utils/rotationHours.js';
@@ -12,7 +12,8 @@ export function ShiftRotationsAdmin(mount, deps = {}) {
   const ui = el('section', { className: 'main-card rotation-page' });
   const body = el('div');
   const message = el('p', { className: 'text-muted', role: 'status' });
-  const editable = can(PERMS.MANAGE_GENERATED_SHIFTS);
+  // The rotation RPCs only accept Administrativo and SuperAdmin (is_admin_like), whatever the permission matrix says.
+  const editable = isSuperAdmin() || getState().userProfile?.role === 'admin';
   let sites = [], plans = [], employees = [], rows = [], disposed = false, revision = 0;
   const iconButton = (label, icon, action) => el('button', { className: 'btn btn--icon', type: 'button', title: label, 'aria-label': label, onclick: action }, [lucideInlineIcon(icon)]);
   const title = el('div', { className: 'rotation-heading' }, [el('h2', {}, ['Rotaciones de turnos'])]);

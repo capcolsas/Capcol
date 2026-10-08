@@ -211,8 +211,8 @@ const guardWrite=(perm,fn)=> async (...args)=>{
   addRoute('/turnos-planes', ()=> requireAuth(()=> guard(PERMS.VIEW_SHIFT_PLANS, async ()=> { const { ShiftPlansAdmin } = await import('./components/ShiftsAdmin.js'); return ShiftPlansAdmin(root, deps); })));
   addRoute('/turnos-generados', ()=> requireAuth(()=> guard(PERMS.VIEW_GENERATED_SHIFTS, async ()=> { const { GeneratedShiftsAdmin } = await import('./components/ShiftsAdmin.js'); return GeneratedShiftsAdmin(root, deps); })));
   addRoute('/turnos-calendario', ()=> requireAuth(()=> guard(PERMS.VIEW_GENERATED_SHIFTS, async ()=> { const { ShiftCalendarAdmin } = await import('./components/ShiftsAdmin.js'); return ShiftCalendarAdmin(root, deps); })));
-  addRoute('/turnos-rotaciones', ()=> requireAuth(()=> guard(PERMS.MANAGE_GENERATED_SHIFTS, async ()=> { const { ShiftRotationsAdmin } = await import('./components/ShiftRotationsAdmin.js'); return ShiftRotationsAdmin(root, deps); })));
-  addRoute('/turnos-visitas', ()=> requireAuth(()=> guard(PERMS.EDIT_CONTRACTS, async ()=> { const { SiteVisitsAdmin } = await import('./components/SiteVisitsAdmin.js'); return SiteVisitsAdmin(root, deps); })));
+  addRoute('/turnos-rotaciones', ()=> requireAuth(()=> guard(PERMS.VIEW_SHIFT_ROTATIONS, async ()=> { const { ShiftRotationsAdmin } = await import('./components/ShiftRotationsAdmin.js'); return ShiftRotationsAdmin(root, deps); })));
+  addRoute('/turnos-visitas', ()=> requireAuth(()=> guard(PERMS.VIEW_SITE_VISITS, async ()=> { const { SiteVisitsAdmin } = await import('./components/SiteVisitsAdmin.js'); return SiteVisitsAdmin(root, deps); })));
   addRoute('/turnos-revision', ()=> requireAuth(()=> guard(PERMS.VIEW_SHIFT_REVIEW, async ()=> { const { ShiftReviewAdmin } = await import('./components/ShiftsAdmin.js'); return ShiftReviewAdmin(root, deps); })));
 
   // Operación
@@ -224,7 +224,7 @@ const guardWrite=(perm,fn)=> async (...args)=>{
     if (can(PERMS.VIEW_SHIFT_REVIEW)) { navigate('/turnos-revision'); return null; }
     if (can(PERMS.VIEW_GENERATED_SHIFTS)) { navigate('/turnos-generados'); return null; }
     if (can(PERMS.VIEW_SHIFT_PLANS)) { navigate('/turnos-planes'); return null; }
-    if (can(PERMS.EDIT_CONTRACTS)) { navigate('/turnos-visitas'); return null; }
+    if (can(PERMS.VIEW_SITE_VISITS)) { navigate('/turnos-visitas'); return null; }
     return block('No tienes permiso para acceder a esta sección.');
   });
   addRoute('/registro-sede', ()=> requireAuth(()=> guard(PERMS.VIEW_OPERATION_REGISTRY, async ()=> { const { RegistroSede } = await import('./components/RegistroSede.js'); return RegistroSede(root, deps); })));
@@ -260,7 +260,7 @@ const guardWrite=(perm,fn)=> async (...args)=>{
   addRoute('/reports-hiring', ()=> requireAuth(()=> guard(PERMS.VIEW_REPORTS_HIRING, async ()=> { const { HiringBySedeReport } = await import('./components/HiringBySedeReport.js'); return HiringBySedeReport(root, deps); })));
   addRoute('/reports-novelties-consolidated', ()=> requireAuth(()=> guard(PERMS.VIEW_REPORTS_NOVELTIES_CONSOLIDATED, async ()=> { const { ConsolidatedNoveltiesReport } = await import('./components/ConsolidatedNoveltiesReport.js'); return ConsolidatedNoveltiesReport(root, deps); })));
   addRoute('/reports-services-consolidated', ()=> requireAuth(()=> guard(PERMS.VIEW_REPORTS_SERVICES_CONSOLIDATED, async ()=> { const { ConsolidatedReports } = await import('./components/ConsolidatedReports.js'); return ConsolidatedReports(root, deps); })));
-  addRoute('/contract-dashboard', ()=> requireAuth(()=> guard(PERMS.VIEW_REPORTS_CLIENT, async ()=> { const { ContractDashboard } = await import('./components/ContractDashboard.js'); return ContractDashboard(root, deps); })));
+  addRoute('/contract-dashboard', ()=> requireAuth(()=> guard(PERMS.VIEW_CONTRACT_DASHBOARD, async ()=> { const { ContractDashboard } = await import('./components/ContractDashboard.js'); return ContractDashboard(root, deps); })));
   addRoute('/reports-contracts', ()=> requireAuth(()=> guard(PERMS.VIEW_REPORTS_CLIENT, async ()=> { const { ContractReports } = await import('./components/ContractReports.js'); return ContractReports(root, deps); })));
   addRoute('/reports-consolidated', ()=> requireAuth(()=> guardAny(CONSOLIDATED_REPORT_VIEW_PERMISSIONS, ()=> {
     if (can(PERMS.VIEW_REPORTS_NOVELTIES_CONSOLIDATED)) { navigate('/reports-novelties-consolidated'); return null; }

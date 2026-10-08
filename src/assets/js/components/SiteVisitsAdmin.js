@@ -2,6 +2,7 @@ import { el } from '../utils/dom.js';
 import { subscribe } from '../state.js';
 import { contractFilterCode } from '../utils/contractScope.js';
 import { SiteVisits } from './SiteVisits.js';
+import { can, PERMS } from '../permissions.js';
 
 export function SiteVisitsAdmin(mount, deps = {}) {
   const ui = el('section', { className: 'main-card' });
@@ -22,7 +23,7 @@ export function SiteVisitsAdmin(mount, deps = {}) {
       );
       return;
     }
-    cleanup = SiteVisits(ui, deps, { contract, admin: true });
+    cleanup = SiteVisits(ui, deps, { contract, admin: true, canManage: can(PERMS.MANAGE_SITE_VISITS) });
   }
 
   const unsubscribe = subscribe('selectedContractCode', render);

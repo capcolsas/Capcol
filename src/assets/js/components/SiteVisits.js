@@ -2,7 +2,7 @@ import { el } from '../utils/dom.js';
 import { assignmentVisitStatus, VISIT_STATUS, visitToday } from '../utils/visits.js';
 import { googleMapsDirectionsUrl } from '../utils/sedeLocation.js';
 
-export function SiteVisits(mount, deps, { contract = null, admin = false, actorId = null } = {}) {
+export function SiteVisits(mount, deps, { contract = null, admin = false, canManage = admin, actorId = null } = {}) {
   const ui = el('section', { className: 'site-visits' });
   let data = { cycles: [], assignments: [], visits: [], settings: null };
   let cycleId = '', supervisor = '', filter = 'all', disposed = false, busy = false, draft = null, sequence = 0;
@@ -93,7 +93,7 @@ export function SiteVisits(mount, deps, { contract = null, admin = false, actorI
     const completed = count('completed');
     notice.textContent = '';
     const children = [el('h2', {}, [admin ? 'Visitas' : 'Tus ciclos de visitas'])];
-    if (admin) children.push(el('details', { className: 'site-visits__settings', open: !data.settings }, [
+    if (admin && canManage) children.push(el('details', { className: 'site-visits__settings', open: !data.settings }, [
       el('summary', {}, ['Programación de visitas']), settingsPanel()
     ]));
     if (!cycle) {
@@ -227,7 +227,7 @@ export function SiteVisits(mount, deps, { contract = null, admin = false, actorI
           photo.replaceWith(el('a', { href: url, target: '_blank', rel: 'noopener noreferrer' }, [el('img', { src: url, alt: 'Evidencia de la visita', loading: 'lazy' })]));
         }).catch(() => { photo.textContent = 'No se pudo cargar la foto. Vuelve a abrir el historial para reintentar.'; });
       }
-      if (admin && visit.status === 'review') {
+      if (admin && canManage && visit.status === 'review') {
         const note = el('textarea', { className: 'input', rows: 2, maxLength: 5000 });
         const message = el('p', { role: 'status' });
         const decide = async accept => {

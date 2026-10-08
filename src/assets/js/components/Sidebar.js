@@ -393,7 +393,7 @@ function buildStandardSections({ includeConsolidatedReports = true, linkOptions 
   if (can(PERMS.VIEW_SHIFT_PLANS)) shiftLinks.push(navLink('Planes de turnos', '/turnos-planes', linkOptions));
   if (can(PERMS.VIEW_GENERATED_SHIFTS)) shiftLinks.push(navLink('Turnos generados', '/turnos-generados', linkOptions));
   if (can(PERMS.VIEW_SHIFT_REVIEW)) shiftLinks.push(navLink('Revision de turnos', '/turnos-revision', { badgeId: 'sidebarShiftReviewBadge', ...linkOptions }));
-  if (can(PERMS.EDIT_CONTRACTS)) shiftLinks.push(navLink('Visitas', '/turnos-visitas', linkOptions));
+  if (can(PERMS.VIEW_SITE_VISITS)) shiftLinks.push(navLink('Visitas', '/turnos-visitas', linkOptions));
   if (shiftLinks.length) sections.push(section('Turnos', shiftLinks, 'turnos', '/turnos-revision'));
 
   const employeeLinks = [];
@@ -461,7 +461,7 @@ function buildContractProjectLinks(contractCode) {
   const options = { contractCode, sidebarContext: 'contract' };
   const groups = [];
   const summaryLinks = [];
-  if (can(PERMS.VIEW_REPORTS_CLIENT)) summaryLinks.push(navLink('Resumen', '/contract-dashboard', options));
+  if (can(PERMS.VIEW_CONTRACT_DASHBOARD)) summaryLinks.push(navLink('Resumen', '/contract-dashboard', options));
   if (summaryLinks.length) groups.push(...summaryLinks);
   const adminLinks = [];
   if (can(PERMS.VIEW_ZONES)) adminLinks.push(navLink('Zonas', '/zones', options));
@@ -479,9 +479,9 @@ function buildContractProjectLinks(contractCode) {
   if (can(PERMS.VIEW_GENERATED_SHIFTS)) shiftLinks.push(navLink('Calendario', '/turnos-calendario', options));
   if (can(PERMS.VIEW_SHIFT_PLANS)) shiftLinks.push(navLink('Planes de turnos', '/turnos-planes', options));
   if (can(PERMS.VIEW_GENERATED_SHIFTS)) shiftLinks.push(navLink('Turnos generados', '/turnos-generados', options));
-  if (can(PERMS.MANAGE_GENERATED_SHIFTS)) shiftLinks.push(navLink('Rotaciones', '/turnos-rotaciones', options));
+  if (can(PERMS.VIEW_SHIFT_ROTATIONS)) shiftLinks.push(navLink('Rotaciones', '/turnos-rotaciones', options));
   if (can(PERMS.VIEW_SHIFT_REVIEW)) shiftLinks.push(navLink('Revision de turnos', '/turnos-revision', options));
-  if (can(PERMS.EDIT_CONTRACTS)) shiftLinks.push(navLink('Visitas', '/turnos-visitas', options));
+  if (can(PERMS.VIEW_SITE_VISITS)) shiftLinks.push(navLink('Visitas', '/turnos-visitas', options));
   if (shiftLinks.length) groups.push(subSection('Turnos', shiftLinks, `contract_turnos_${contractCode}`));
 
   const employeeLinks = [];
@@ -530,14 +530,14 @@ function contractProjectTitle(contract = {}) {
 }
 
 export function firstAvailableProjectRoute() {
-  if (can(PERMS.VIEW_INVENTORY) && !can(PERMS.VIEW_CONTRACTS) && !can(PERMS.VIEW_REPORTS_CLIENT)) return '/inventory';
-  if (can(PERMS.VIEW_REPORTS_CLIENT)) return '/contract-dashboard';
+  if (can(PERMS.VIEW_INVENTORY) && !can(PERMS.VIEW_CONTRACTS) && !can(PERMS.VIEW_CONTRACT_DASHBOARD)) return '/inventory';
+  if (can(PERMS.VIEW_CONTRACT_DASHBOARD)) return '/contract-dashboard';
   if (can(PERMS.VIEW_CONTRACTS)) return '/contract-details';
   if (can(PERMS.VIEW_SEDES)) return '/sedes';
   if (can(PERMS.VIEW_EMPLOYEES)) return '/employees';
   if (can(PERMS.VIEW_OPERATION_REGISTRY)) return '/registros-vivo';
   if (can(PERMS.VIEW_SHIFT_PLANS)) return '/turnos-planes';
-  if (can(PERMS.EDIT_CONTRACTS)) return '/turnos-visitas';
+  if (can(PERMS.VIEW_SITE_VISITS)) return '/turnos-visitas';
   return '/about';
 }
 

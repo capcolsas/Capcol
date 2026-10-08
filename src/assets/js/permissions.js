@@ -1,7 +1,8 @@
 import { getState } from './state.js';
 import { PERMISSION_ACTION_VIEW_MAP, ROLES, PERMS, permsForRole } from './roles.js';
 
-const LEGACY_FALLBACK_BY_NEW = {
+// A newer key with no stored value of its own inherits the key it was split from.
+export const LEGACY_FALLBACK_BY_NEW = {
   [PERMS.VIEW_INVENTORY]: PERMS.VIEW_CONTRACTS,
   [PERMS.MANAGE_INVENTORY]: PERMS.EDIT_CONTRACTS,
   [PERMS.DISPATCH_INVENTORY]: PERMS.EDIT_CONTRACTS,
@@ -67,7 +68,11 @@ const LEGACY_FALLBACK_BY_NEW = {
   [PERMS.VIEW_BULK_UPLOAD_EMPLOYEES]: PERMS.EDIT_EMPLOYEES,
   [PERMS.BULK_UPLOAD_EMPLOYEES]: PERMS.EDIT_EMPLOYEES,
   [PERMS.VIEW_INCAPACITIES]: PERMS.UPLOAD_DATA,
-  [PERMS.MANAGE_INCAPACITIES]: PERMS.UPLOAD_DATA
+  [PERMS.MANAGE_INCAPACITIES]: PERMS.UPLOAD_DATA,
+  [PERMS.VIEW_SITE_VISITS]: PERMS.EDIT_CONTRACTS,
+  [PERMS.MANAGE_SITE_VISITS]: PERMS.EDIT_CONTRACTS,
+  [PERMS.VIEW_SHIFT_ROTATIONS]: PERMS.MANAGE_GENERATED_SHIFTS,
+  [PERMS.VIEW_CONTRACT_DASHBOARD]: PERMS.VIEW_REPORTS_CLIENT
 };
 
 export function getRole() {
@@ -78,32 +83,34 @@ export function isSuperAdmin() {
   return getRole() === ROLES.SUPERADMIN;
 }
 
+const has = (obj, key) => Object.prototype.hasOwnProperty.call(obj || {}, key);
+
+// Effective permissions of a role (plus optional user overrides). A value stored explicitly always wins:
+// legacy keys only fill in permissions that neither the overrides nor the role matrix define.
+export function resolvePermissions(role, matrix = null, overrides = {}) {
+  const roleMatrix = matrix && typeof matrix === 'object' ? matrix : {};
+  const userOverrides = overrides && typeof overrides === 'object' ? overrides : {};
+  const merged = { ...permsForRole(role), ...roleMatrix, ...userOverrides };
+  Object.entries(LEGACY_FALLBACK_BY_NEW).forEach(([newKey, legacyKey]) => {
+    if (has(userOverrides, newKey)) return;
+    if (has(userOverrides, legacyKey)) { merged[newKey] = userOverrides[legacyKey] === true; return; }
+    if (has(roleMatrix, newKey)) return;
+    if (has(roleMatrix, legacyKey)) { merged[newKey] = roleMatrix[legacyKey] === true; return; }
+    if (merged[legacyKey] === true) merged[newKey] = true;
+  });
+  Object.entries(PERMISSION_ACTION_VIEW_MAP).forEach(([actionKey, viewKey]) => {
+    if (merged[actionKey] === true) merged[viewKey] = true;
+  });
+  return merged;
+}
+
 export function getEffectivePermissions() {
   const s = getState();
   if (!s.user || !s.userProfile?.role) return {};
   if (isSuperAdmin()) return Object.fromEntries(Object.values(PERMS).map((k) => [k, true]));
   const role = s.userProfile.role;
   if (role === ROLES.SUPERVISOR && s.userProfile?.supervisorEligible !== true) return {};
-  const matrix = s.roleMatrix?.[role];
-  const base = { ...permsForRole(role), ...(matrix || {}) };
-  if (matrix && typeof matrix === 'object') {
-    Object.entries(LEGACY_FALLBACK_BY_NEW).forEach(([newKey, legacyKey]) => {
-      if (Object.prototype.hasOwnProperty.call(matrix, newKey)) return;
-      if (Object.prototype.hasOwnProperty.call(matrix, legacyKey)) base[newKey] = matrix[legacyKey] === true;
-      else if (base[legacyKey] === true) base[newKey] = true;
-    });
-  }
-  const overrides = s.userOverrides || {};
-  const merged = { ...base, ...overrides };
-  Object.entries(LEGACY_FALLBACK_BY_NEW).forEach(([newKey, legacyKey]) => {
-    if (Object.prototype.hasOwnProperty.call(overrides, newKey)) return;
-    if (Object.prototype.hasOwnProperty.call(overrides, legacyKey)) merged[newKey] = overrides[legacyKey] === true;
-    else if (merged[legacyKey] === true) merged[newKey] = true;
-  });
-  Object.entries(PERMISSION_ACTION_VIEW_MAP).forEach(([actionKey, viewKey]) => {
-    if (merged[actionKey] === true) merged[viewKey] = true;
-  });
-  return merged;
+  return resolvePermissions(role, s.roleMatrix?.[role], s.userOverrides);
 }
 
 export function can(key) {

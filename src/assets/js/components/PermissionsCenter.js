@@ -1,164 +1,24 @@
 import { el } from '../utils/dom.js';
 import { showActionModal } from '../utils/actionModal.js';
 import { showInfoModal } from '../utils/infoModal.js';
-import { can, isSuperAdmin } from '../permissions.js';
-import { ALL_ROLES, PERMISSION_ACTION_VIEW_MAP, ROLE_LABELS, ROLES, PERMS, permsForRole } from '../roles.js';
+import { can, isSuperAdmin, resolvePermissions } from '../permissions.js';
+import { ALL_ROLES, PERMISSION_ACTION_VIEW_MAP, ROLE_LABELS, ROLES, PERMS } from '../roles.js';
 import { getState } from '../state.js';
 
-const PERM_KEYS = [
-  PERMS.VIEW_INVENTORY,
-  PERMS.MANAGE_INVENTORY,
-  PERMS.DISPATCH_INVENTORY,
-  PERMS.RECEIVE_INVENTORY,
-  PERMS.VIEW_PERMISSIONS,
-  PERMS.MANAGE_PERMISSIONS,
-  PERMS.VIEW_AUDIT,
-  PERMS.MANAGE_AUDIT,
-  PERMS.VIEW_USERS,
-  PERMS.EDIT_USERS,
-  PERMS.VIEW_ZONES,
-  PERMS.EDIT_ZONES,
-  PERMS.VIEW_DEPENDENCIES,
-  PERMS.EDIT_DEPENDENCIES,
-  PERMS.VIEW_SEDES,
-  PERMS.EDIT_SEDES,
-  PERMS.VIEW_EMPLOYEES,
-  PERMS.EDIT_EMPLOYEES,
-  PERMS.VIEW_EMPLOYEE_NOVELTIES,
-  PERMS.MANAGE_EMPLOYEE_SCHEDULES,
-  PERMS.VIEW_SUPERNUMERARIOS,
-  PERMS.EDIT_SUPERNUMERARIOS,
-  PERMS.VIEW_SUPERVISORS,
-  PERMS.EDIT_SUPERVISORS,
-  PERMS.VIEW_CARGOS,
-  PERMS.EDIT_CARGOS,
-  PERMS.VIEW_NOVEDADES,
-  PERMS.EDIT_NOVEDADES,
-  PERMS.VIEW_SHIFT_PLANS,
-  PERMS.MANAGE_SHIFT_PLANS,
-  PERMS.VIEW_GENERATED_SHIFTS,
-  PERMS.MANAGE_GENERATED_SHIFTS,
-  PERMS.VIEW_SHIFT_REVIEW,
-  PERMS.MANAGE_SHIFT_REVIEW,
-  PERMS.VIEW_OPERATION_REGISTRY,
-  PERMS.MANAGE_OPERATION_REGISTRY,
-  PERMS.IMPORT_DATA,
-  PERMS.VIEW_QR_SCANNER,
-  PERMS.USE_QR_SCANNER,
-  PERMS.VIEW_QR_DAILY_REGISTRY,
-  PERMS.MANAGE_QR_DAILY_REGISTRY,
-  PERMS.VIEW_QR_DEVICES,
-  PERMS.MANAGE_QR_DEVICES,
-  PERMS.VIEW_IMPORT_HISTORY,
-  PERMS.MANAGE_IMPORT_HISTORY,
-  PERMS.VIEW_REPORTS_CLIENT,
-  PERMS.EXPORT_REPORTS_CLIENT,
-  PERMS.VIEW_REPORTS_QR_HISTORY,
-  PERMS.EXPORT_REPORTS_QR_HISTORY,
-  PERMS.VIEW_REPORTS_ABSENTEEISM,
-  PERMS.EXPORT_REPORTS_ABSENTEEISM,
-  PERMS.VIEW_REPORTS_COMPANY,
-  PERMS.EXPORT_REPORTS_COMPANY,
-  PERMS.VIEW_REPORTS_EMPLOYEES,
-  PERMS.EXPORT_REPORTS_EMPLOYEES,
-  PERMS.VIEW_REPORTS_HIRING,
-  PERMS.EXPORT_REPORTS_HIRING,
-  PERMS.VIEW_REPORTS_NOVELTIES_CONSOLIDATED,
-  PERMS.EXPORT_REPORTS_NOVELTIES_CONSOLIDATED,
-  PERMS.VIEW_REPORTS_SERVICES_CONSOLIDATED,
-  PERMS.EXPORT_REPORTS_SERVICES_CONSOLIDATED,
-  PERMS.VIEW_BULK_UPLOAD_SEDES,
-  PERMS.BULK_UPLOAD_SEDES,
-  PERMS.VIEW_BULK_UPLOAD_EMPLOYEES,
-  PERMS.BULK_UPLOAD_EMPLOYEES,
-  PERMS.VIEW_INCAPACITIES,
-  PERMS.MANAGE_INCAPACITIES,
-  PERMS.UPLOAD_DATA
-];
-
-const PERM_LABELS = {
-  [PERMS.VIEW_INVENTORY]: 'Inventarios - Consulta',
-  [PERMS.MANAGE_INVENTORY]: 'Inventarios - Productos, ingresos y ajustes',
-  [PERMS.DISPATCH_INVENTORY]: 'Inventarios - Despachar',
-  [PERMS.RECEIVE_INVENTORY]: 'Inventarios - Registrar recibido',
-  [PERMS.VIEW_PERMISSIONS]: 'Permisos - Consulta',
-  [PERMS.MANAGE_PERMISSIONS]: 'Gestionar permisos',
-  [PERMS.VIEW_AUDIT]: 'Auditoria - Consulta',
-  [PERMS.MANAGE_AUDIT]: 'Auditoria - Acciones',
-  [PERMS.VIEW_USERS]: 'Usuarios - Consulta',
-  [PERMS.EDIT_USERS]: 'Usuarios - Edicion',
-  [PERMS.VIEW_ZONES]: 'Zonas - Consulta',
-  [PERMS.EDIT_ZONES]: 'Zonas - Edicion',
-  [PERMS.VIEW_DEPENDENCIES]: 'Dependencias - Consulta',
-  [PERMS.EDIT_DEPENDENCIES]: 'Dependencias - Edicion',
-  [PERMS.VIEW_SEDES]: 'Sedes - Consulta',
-  [PERMS.EDIT_SEDES]: 'Sedes - Edicion',
-  [PERMS.VIEW_EMPLOYEES]: 'Empleados - Consulta',
-  [PERMS.EDIT_EMPLOYEES]: 'Empleados - Edicion',
-  [PERMS.VIEW_EMPLOYEE_NOVELTIES]: 'Novedades empleados - Consulta',
-  [PERMS.MANAGE_EMPLOYEE_SCHEDULES]: 'Novedades empleados - Acciones',
-  [PERMS.VIEW_SUPERNUMERARIOS]: 'Supernumerarios - Consulta',
-  [PERMS.EDIT_SUPERNUMERARIOS]: 'Supernumerarios - Edicion',
-  [PERMS.VIEW_SUPERVISORS]: 'Supervisores - Consulta',
-  [PERMS.EDIT_SUPERVISORS]: 'Supervisores - Edicion',
-  [PERMS.VIEW_CARGOS]: 'Cargos - Consulta',
-  [PERMS.EDIT_CARGOS]: 'Cargos - Edicion',
-  [PERMS.VIEW_NOVEDADES]: 'Novedades - Consulta',
-  [PERMS.EDIT_NOVEDADES]: 'Novedades - Edicion',
-  [PERMS.VIEW_SHIFT_PLANS]: 'Planes de turnos - Consulta',
-  [PERMS.MANAGE_SHIFT_PLANS]: 'Planes de turnos - Gestionar',
-  [PERMS.VIEW_GENERATED_SHIFTS]: 'Turnos generados - Consulta',
-  [PERMS.MANAGE_GENERATED_SHIFTS]: 'Turnos generados - Gestionar',
-  [PERMS.VIEW_SHIFT_REVIEW]: 'Revision de turnos - Consulta',
-  [PERMS.MANAGE_SHIFT_REVIEW]: 'Revision de turnos - Gestionar',
-  [PERMS.VIEW_OPERATION_REGISTRY]: 'Registro diario/sede - Consulta',
-  [PERMS.MANAGE_OPERATION_REGISTRY]: 'Registro diario/sede - Acciones',
-  [PERMS.IMPORT_DATA]: 'Operacion - Registro',
-  [PERMS.VIEW_QR_SCANNER]: 'Lector QR - Consulta',
-  [PERMS.USE_QR_SCANNER]: 'Lector QR - Acciones',
-  [PERMS.VIEW_QR_DAILY_REGISTRY]: 'QR - Registro diario',
-  [PERMS.MANAGE_QR_DAILY_REGISTRY]: 'QR - Registro diario - Acciones',
-  [PERMS.VIEW_QR_DEVICES]: 'Tablets QR - Consulta',
-  [PERMS.MANAGE_QR_DEVICES]: 'QR - Administrar tablets',
-  [PERMS.VIEW_IMPORT_HISTORY]: 'Operacion - Historial',
-  [PERMS.MANAGE_IMPORT_HISTORY]: 'Operacion - Historial - Acciones',
-  [PERMS.MANAGE_ABSENTEEISM]: 'Operacion - Ausentismo',
-  [PERMS.VIEW_REPORTS_CLIENT]: 'Reportes - Diarios',
-  [PERMS.EXPORT_REPORTS_CLIENT]: 'Reportes diarios - Exportar',
-  [PERMS.VIEW_REPORTS_QR_HISTORY]: 'Reportes - Historico QR',
-  [PERMS.EXPORT_REPORTS_QR_HISTORY]: 'Historico QR - Exportar',
-  [PERMS.VIEW_REPORTS_ABSENTEEISM]: 'Reportes - Ausentismo',
-  [PERMS.EXPORT_REPORTS_ABSENTEEISM]: 'Ausentismo - Exportar',
-  [PERMS.VIEW_REPORTS_COMPANY]: 'Reportes - Consolidados',
-  [PERMS.EXPORT_REPORTS_COMPANY]: 'Reportes consolidados - Exportar',
-  [PERMS.VIEW_REPORTS_EMPLOYEES]: 'Reporte empleados - Consulta',
-  [PERMS.EXPORT_REPORTS_EMPLOYEES]: 'Reporte empleados - Exportar',
-  [PERMS.VIEW_REPORTS_HIRING]: 'Contratacion por sedes - Consulta',
-  [PERMS.EXPORT_REPORTS_HIRING]: 'Contratacion por sedes - Exportar',
-  [PERMS.VIEW_REPORTS_NOVELTIES_CONSOLIDATED]: 'Consolidado novedades - Consulta',
-  [PERMS.EXPORT_REPORTS_NOVELTIES_CONSOLIDATED]: 'Consolidado novedades - Exportar',
-  [PERMS.VIEW_REPORTS_SERVICES_CONSOLIDATED]: 'Consolidado servicios - Consulta',
-  [PERMS.EXPORT_REPORTS_SERVICES_CONSOLIDATED]: 'Consolidado servicios - Exportar',
-  [PERMS.VIEW_BULK_UPLOAD_SEDES]: 'Cargue masivo sedes - Consulta',
-  [PERMS.BULK_UPLOAD_SEDES]: 'Cargue masivo - Sedes',
-  [PERMS.VIEW_BULK_UPLOAD_EMPLOYEES]: 'Cargue masivo empleados - Consulta',
-  [PERMS.BULK_UPLOAD_EMPLOYEES]: 'Cargue masivo - Empleados',
-  [PERMS.VIEW_INCAPACITIES]: 'Incapacidades - Consulta',
-  [PERMS.MANAGE_INCAPACITIES]: 'Incapacidades - Acciones',
-  [PERMS.UPLOAD_DATA]: 'Incapacidades'
-};
-
+// Every module the app routes to has a row here. A row without `action` is consult-only: the module has
+// no actions of its own. `note` lists the other screens the same permission opens.
 const PERMISSION_SECTIONS = [
   {
     title: 'Administracion',
-    description: 'Catalogos base, estructura operativa y configuracion QR.',
+    description: 'Contratos, catalogos base, estructura operativa y configuracion QR.',
     items: [
+      { label: 'Contratos', view: PERMS.VIEW_CONTRACTS, action: PERMS.EDIT_CONTRACTS, actionLabel: 'Edicion', note: 'Consulta tambien habilita: Detalle de contrato y el selector de contrato del menu.' },
       { label: 'Zonas', view: PERMS.VIEW_ZONES, action: PERMS.EDIT_ZONES, actionLabel: 'Edicion' },
       { label: 'Inventarios', view: PERMS.VIEW_INVENTORY, action: PERMS.MANAGE_INVENTORY, actionLabel: 'Ingresos y ajustes' },
       { label: 'Entregas de inventario', view: PERMS.VIEW_INVENTORY, action: PERMS.DISPATCH_INVENTORY, actionLabel: 'Despachar' },
       { label: 'Recibidos de inventario', view: PERMS.VIEW_INVENTORY, action: PERMS.RECEIVE_INVENTORY, actionLabel: 'Registrar firma' },
       { label: 'Dependencias', view: PERMS.VIEW_DEPENDENCIES, action: PERMS.EDIT_DEPENDENCIES, actionLabel: 'Edicion' },
-      { label: 'Sedes', view: PERMS.VIEW_SEDES, action: PERMS.EDIT_SEDES, actionLabel: 'Edicion' },
+      { label: 'Sedes', view: PERMS.VIEW_SEDES, action: PERMS.EDIT_SEDES, actionLabel: 'Edicion', note: 'Tambien habilita: Ubicacion sedes.' },
       { label: 'Lector QR', view: PERMS.VIEW_QR_SCANNER, action: PERMS.USE_QR_SCANNER, actionLabel: 'Usar lector' },
       { label: 'Tablets QR', view: PERMS.VIEW_QR_DEVICES, action: PERMS.MANAGE_QR_DEVICES, actionLabel: 'Administrar' },
       { label: 'Cargos', view: PERMS.VIEW_CARGOS, action: PERMS.EDIT_CARGOS, actionLabel: 'Edicion' },
@@ -177,28 +37,31 @@ const PERMISSION_SECTIONS = [
   },
   {
     title: 'Turnos',
-    description: 'Planes, turnos activos, asignaciones y revision de novedades por turno.',
+    description: 'Planes, turnos activos, rotaciones, visitas y revision de novedades por turno.',
     items: [
       { label: 'Planes de turnos', view: PERMS.VIEW_SHIFT_PLANS, action: PERMS.MANAGE_SHIFT_PLANS, actionLabel: 'Gestionar' },
-      { label: 'Turnos generados', view: PERMS.VIEW_GENERATED_SHIFTS, action: PERMS.MANAGE_GENERATED_SHIFTS, actionLabel: 'Gestionar' },
-      { label: 'Revision de turnos', view: PERMS.VIEW_SHIFT_REVIEW, action: PERMS.MANAGE_SHIFT_REVIEW, actionLabel: 'Gestionar' }
+      { label: 'Turnos generados', view: PERMS.VIEW_GENERATED_SHIFTS, action: PERMS.MANAGE_GENERATED_SHIFTS, actionLabel: 'Gestionar', note: 'Consulta tambien habilita: Calendario.' },
+      { label: 'Rotaciones', view: PERMS.VIEW_SHIFT_ROTATIONS, note: 'Crear y editar rotaciones queda reservado a Administrativo y SuperAdmin.' },
+      { label: 'Revision de turnos', view: PERMS.VIEW_SHIFT_REVIEW, action: PERMS.MANAGE_SHIFT_REVIEW, actionLabel: 'Gestionar' },
+      { label: 'Visitas', view: PERMS.VIEW_SITE_VISITS, action: PERMS.MANAGE_SITE_VISITS, actionLabel: 'Programar y revisar' }
     ]
   },
   {
     title: 'Operacion',
-    description: 'Registro diario, QR operativo, supernumerarios, historial y ausentismo.',
+    description: 'Registro diario, supernumerarios e historial.',
     items: [
-      { label: 'Registro diario y sede', view: PERMS.VIEW_OPERATION_REGISTRY, action: PERMS.MANAGE_OPERATION_REGISTRY, actionLabel: 'Gestionar' },
-      { label: 'Registro QR', view: PERMS.VIEW_QR_DAILY_REGISTRY, action: PERMS.MANAGE_QR_DAILY_REGISTRY, actionLabel: 'Gestionar' },
+      { label: 'Registro diario y sede', view: PERMS.VIEW_OPERATION_REGISTRY, action: PERMS.MANAGE_OPERATION_REGISTRY, actionLabel: 'Gestionar', note: 'Tambien habilita: Registro Sede y Reemplazos.' },
+      { label: 'Registro diario (solo QR)', view: PERMS.VIEW_QR_DAILY_REGISTRY, note: 'Abre Registro Diario en consulta. Para gestionar novedades usa "Registro diario y sede".' },
       { label: 'Supernumerarios', view: PERMS.VIEW_SUPERNUMERARIOS, action: PERMS.EDIT_SUPERNUMERARIOS, actionLabel: 'Edicion' },
-      { label: 'Historial', view: PERMS.VIEW_IMPORT_HISTORY, action: PERMS.MANAGE_IMPORT_HISTORY, actionLabel: 'Acciones' }
+      { label: 'Historial', view: PERMS.VIEW_IMPORT_HISTORY }
     ]
   },
   {
     title: 'Reportes',
-    description: 'Historicos diarios, QR, empleados, contratacion y consolidados.',
+    description: 'Resumen de contrato, historicos diarios, QR, empleados, contratacion y consolidados.',
     items: [
-      { label: 'Historico Registro Diario', view: PERMS.VIEW_REPORTS_CLIENT, action: PERMS.EXPORT_REPORTS_CLIENT, actionLabel: 'Exportar' },
+      { label: 'Resumen de contrato', view: PERMS.VIEW_CONTRACT_DASHBOARD },
+      { label: 'Historico Registro Diario', view: PERMS.VIEW_REPORTS_CLIENT, action: PERMS.EXPORT_REPORTS_CLIENT, actionLabel: 'Exportar', note: 'Consulta tambien habilita: Reporte Contratos.' },
       { label: 'Historico Registro QR', view: PERMS.VIEW_REPORTS_QR_HISTORY, action: PERMS.EXPORT_REPORTS_QR_HISTORY, actionLabel: 'Exportar' },
       { label: 'Ausentismo', view: PERMS.VIEW_REPORTS_ABSENTEEISM, action: PERMS.EXPORT_REPORTS_ABSENTEEISM, actionLabel: 'Exportar' },
       { label: 'Empleados', view: PERMS.VIEW_REPORTS_EMPLOYEES, action: PERMS.EXPORT_REPORTS_EMPLOYEES, actionLabel: 'Exportar' },
@@ -212,7 +75,7 @@ const PERMISSION_SECTIONS = [
     description: 'Plantillas y cargues masivos de sedes y empleados.',
     items: [
       { label: 'Cargue sedes', view: PERMS.VIEW_BULK_UPLOAD_SEDES, action: PERMS.BULK_UPLOAD_SEDES, actionLabel: 'Importar' },
-      { label: 'Cargue empleados', view: PERMS.VIEW_BULK_UPLOAD_EMPLOYEES, action: PERMS.BULK_UPLOAD_EMPLOYEES, actionLabel: 'Importar' }
+      { label: 'Cargue empleados', view: PERMS.VIEW_BULK_UPLOAD_EMPLOYEES, action: PERMS.BULK_UPLOAD_EMPLOYEES, actionLabel: 'Importar', note: 'Tambien habilita: Actualizar empleados.' }
     ]
   },
   {
@@ -220,90 +83,11 @@ const PERMISSION_SECTIONS = [
     description: 'Usuarios, auditoria y administracion de permisos.',
     items: [
       { label: 'Centro de permisos', view: PERMS.VIEW_PERMISSIONS, action: PERMS.MANAGE_PERMISSIONS, actionLabel: 'Editar' },
-      { label: 'Auditoria', view: PERMS.VIEW_AUDIT, action: PERMS.MANAGE_AUDIT, actionLabel: 'Acciones' },
-      { label: 'Usuarios', view: PERMS.VIEW_USERS, action: PERMS.EDIT_USERS, actionLabel: 'Edicion' }
+      { label: 'Auditoria', view: PERMS.VIEW_AUDIT },
+      { label: 'Usuarios', view: PERMS.VIEW_USERS, action: PERMS.EDIT_USERS, actionLabel: 'Edicion', note: 'Edicion incluye asignar contratos a cada usuario.' }
     ]
   }
 ];
-const LEGACY_FALLBACK_BY_NEW = {
-  [PERMS.VIEW_PERMISSIONS]: PERMS.MANAGE_PERMISSIONS,
-  [PERMS.VIEW_AUDIT]: PERMS.MANAGE_PERMISSIONS,
-  [PERMS.MANAGE_AUDIT]: PERMS.MANAGE_PERMISSIONS,
-  [PERMS.VIEW_USERS]: 'manageUsers',
-  [PERMS.EDIT_USERS]: 'manageUsers',
-  [PERMS.VIEW_ZONES]: 'manageZones',
-  [PERMS.EDIT_ZONES]: 'manageZones',
-  [PERMS.VIEW_DEPENDENCIES]: 'manageDependencies',
-  [PERMS.EDIT_DEPENDENCIES]: 'manageDependencies',
-  [PERMS.VIEW_SEDES]: 'manageSedes',
-  [PERMS.EDIT_SEDES]: 'manageSedes',
-  [PERMS.VIEW_EMPLOYEES]: 'manageEmployees',
-  [PERMS.EDIT_EMPLOYEES]: 'manageEmployees',
-  [PERMS.VIEW_EMPLOYEE_NOVELTIES]: PERMS.VIEW_EMPLOYEES,
-  [PERMS.MANAGE_EMPLOYEE_SCHEDULES]: 'manageEmployees',
-  [PERMS.VIEW_SUPERNUMERARIOS]: 'manageEmployees',
-  [PERMS.EDIT_SUPERNUMERARIOS]: 'manageEmployees',
-  [PERMS.VIEW_CARGOS]: 'manageEmployees',
-  [PERMS.EDIT_CARGOS]: 'manageEmployees',
-  [PERMS.VIEW_NOVEDADES]: 'manageEmployees',
-  [PERMS.EDIT_NOVEDADES]: 'manageEmployees',
-  [PERMS.VIEW_SHIFT_PLANS]: PERMS.VIEW_OPERATION_REGISTRY,
-  [PERMS.MANAGE_SHIFT_PLANS]: PERMS.EDIT_SEDES,
-  [PERMS.VIEW_GENERATED_SHIFTS]: PERMS.VIEW_OPERATION_REGISTRY,
-  [PERMS.MANAGE_GENERATED_SHIFTS]: PERMS.MANAGE_OPERATION_REGISTRY,
-  [PERMS.VIEW_SHIFT_REVIEW]: PERMS.VIEW_OPERATION_REGISTRY,
-  [PERMS.MANAGE_SHIFT_REVIEW]: PERMS.MANAGE_OPERATION_REGISTRY,
-  [PERMS.VIEW_SUPERVISORS]: 'manageSupervisors',
-  [PERMS.EDIT_SUPERVISORS]: 'manageSupervisors',
-  [PERMS.VIEW_OPERATION_REGISTRY]: PERMS.IMPORT_DATA,
-  [PERMS.MANAGE_OPERATION_REGISTRY]: PERMS.IMPORT_DATA,
-  [PERMS.VIEW_QR_SCANNER]: PERMS.IMPORT_DATA,
-  [PERMS.USE_QR_SCANNER]: PERMS.VIEW_QR_SCANNER,
-  [PERMS.VIEW_QR_DAILY_REGISTRY]: PERMS.IMPORT_DATA,
-  [PERMS.MANAGE_QR_DAILY_REGISTRY]: PERMS.VIEW_QR_DAILY_REGISTRY,
-  [PERMS.VIEW_QR_DEVICES]: PERMS.MANAGE_QR_DEVICES,
-  [PERMS.MANAGE_QR_DEVICES]: PERMS.EDIT_SEDES,
-  [PERMS.MANAGE_IMPORT_HISTORY]: PERMS.VIEW_IMPORT_HISTORY,
-  [PERMS.VIEW_REPORTS_QR_HISTORY]: PERMS.VIEW_QR_DAILY_REGISTRY,
-  [PERMS.VIEW_REPORTS_ABSENTEEISM]: PERMS.MANAGE_ABSENTEEISM,
-  [PERMS.VIEW_REPORTS_CLIENT]: PERMS.VIEW_REPORTS,
-  [PERMS.EXPORT_REPORTS_CLIENT]: PERMS.VIEW_REPORTS_CLIENT,
-  [PERMS.EXPORT_REPORTS_QR_HISTORY]: PERMS.VIEW_REPORTS_QR_HISTORY,
-  [PERMS.EXPORT_REPORTS_ABSENTEEISM]: PERMS.VIEW_REPORTS_ABSENTEEISM,
-  [PERMS.VIEW_REPORTS_COMPANY]: PERMS.VIEW_REPORTS,
-  [PERMS.EXPORT_REPORTS_COMPANY]: PERMS.VIEW_REPORTS_COMPANY,
-  [PERMS.VIEW_REPORTS_EMPLOYEES]: PERMS.VIEW_REPORTS_COMPANY,
-  [PERMS.EXPORT_REPORTS_EMPLOYEES]: PERMS.EXPORT_REPORTS_COMPANY,
-  [PERMS.VIEW_REPORTS_HIRING]: PERMS.VIEW_REPORTS_COMPANY,
-  [PERMS.EXPORT_REPORTS_HIRING]: PERMS.EXPORT_REPORTS_COMPANY,
-  [PERMS.VIEW_REPORTS_NOVELTIES_CONSOLIDATED]: PERMS.VIEW_REPORTS_COMPANY,
-  [PERMS.EXPORT_REPORTS_NOVELTIES_CONSOLIDATED]: PERMS.EXPORT_REPORTS_COMPANY,
-  [PERMS.VIEW_REPORTS_SERVICES_CONSOLIDATED]: PERMS.VIEW_REPORTS_COMPANY,
-  [PERMS.EXPORT_REPORTS_SERVICES_CONSOLIDATED]: PERMS.EXPORT_REPORTS_COMPANY,
-  [PERMS.VIEW_BULK_UPLOAD_SEDES]: PERMS.EDIT_SEDES,
-  [PERMS.BULK_UPLOAD_SEDES]: PERMS.EDIT_SEDES,
-  [PERMS.VIEW_BULK_UPLOAD_EMPLOYEES]: PERMS.EDIT_EMPLOYEES,
-  [PERMS.BULK_UPLOAD_EMPLOYEES]: PERMS.EDIT_EMPLOYEES,
-  [PERMS.VIEW_INCAPACITIES]: PERMS.UPLOAD_DATA,
-  [PERMS.MANAGE_INCAPACITIES]: PERMS.UPLOAD_DATA
-};
-function normalizePermissionRecord(raw = {}, role = null) {
-  const hasAny = raw && Object.keys(raw).length > 0;
-  const base = hasAny ? Object.fromEntries(PERM_KEYS.map((k) => [k, false])) : permsForRole(role || ROLES.ADMIN);
-  const out = { ...base };
-  PERM_KEYS.forEach((k) => {
-    if (Object.prototype.hasOwnProperty.call(raw, k)) out[k] = raw[k] === true;
-  });
-  Object.entries(LEGACY_FALLBACK_BY_NEW).forEach(([newKey, legacyKey]) => {
-    if (Object.prototype.hasOwnProperty.call(raw, newKey)) return;
-    if (Object.prototype.hasOwnProperty.call(raw, legacyKey)) out[newKey] = raw[legacyKey] === true;
-    else if (out[legacyKey] === true) out[newKey] = true;
-  });
-  Object.entries(PERMISSION_ACTION_VIEW_MAP).forEach(([actionKey, viewKey]) => {
-    if (out[actionKey] === true) out[viewKey] = true;
-  });
-  return out;
-}
 
 export const PermissionsCenter = (mount, deps = {}) => {
   const canViewPermissions = isSuperAdmin() || can(PERMS.VIEW_PERMISSIONS);
@@ -339,7 +123,7 @@ export const PermissionsCenter = (mount, deps = {}) => {
 
     const s = getState();
     const matrix = s.roleMatrix || {};
-    const computedBase = normalizePermissionRecord(matrix[selectedRole] || {}, selectedRole);
+    const computedBase = resolvePermissions(selectedRole, matrix[selectedRole] || null);
     const original = JSON.parse(JSON.stringify(computedBase));
     const base = JSON.parse(JSON.stringify(computedBase));
     const editingSuperAdmin = selectedRole === ROLES.SUPERADMIN;
@@ -402,8 +186,8 @@ export const PermissionsCenter = (mount, deps = {}) => {
 
   function permissionSection(sectionDef, index, base, disabled) {
     const items = (sectionDef.items || []).map(normalizePermissionPair);
-    const activeCount = items.reduce((acc, item) => acc + (base[item.view] === true ? 1 : 0) + (base[item.action] === true ? 1 : 0), 0);
-    const totalCount = items.length * 2;
+    const activeCount = countActive(items, base);
+    const totalCount = countTotal(items);
     return el('section', { className: 'permissions-center__module', 'data-permission-section-index': String(index) }, [
       el('div', { className: 'permissions-center__module-head' }, [
         el('div', {}, [
@@ -437,10 +221,19 @@ export const PermissionsCenter = (mount, deps = {}) => {
     return {
       label: item.label || 'Permiso',
       view: item.view,
-      action: item.action,
+      action: item.action || null,
       viewLabel: item.viewLabel || 'Consulta',
-      actionLabel: item.actionLabel || 'Accion'
+      actionLabel: item.actionLabel || 'Accion',
+      note: item.note || ''
     };
+  }
+
+  function countActive(items, base) {
+    return items.reduce((acc, item) => acc + (base[item.view] === true ? 1 : 0) + (item.action && base[item.action] === true ? 1 : 0), 0);
+  }
+
+  function countTotal(items) {
+    return items.reduce((acc, item) => acc + (item.action ? 2 : 1), 0);
   }
 
   function syncPermissionCheckboxes(key, checked) {
@@ -455,9 +248,9 @@ export const PermissionsCenter = (mount, deps = {}) => {
       const sectionDef = PERMISSION_SECTIONS[index];
       if (!sectionDef) return;
       const items = (sectionDef.items || []).map(normalizePermissionPair);
-      const activeCount = items.reduce((acc, item) => acc + (base[item.view] === true ? 1 : 0) + (base[item.action] === true ? 1 : 0), 0);
+      const activeCount = countActive(items, base);
       const count = node.querySelector('.permissions-center__module-count');
-      if (count) count.textContent = `${activeCount}/${items.length * 2}`;
+      if (count) count.textContent = `${activeCount}/${countTotal(items)}`;
     });
   }
 
@@ -466,15 +259,18 @@ export const PermissionsCenter = (mount, deps = {}) => {
       el('div', { className: 'permission-pair__title' }, [item.label]),
       el('div', { className: 'permission-pair__checks' }, [
         permCheckbox({ key: item.view, label: item.viewLabel }, base[item.view] === true, (checked) => onChange(item.view, checked), disabled),
-        permCheckbox({ key: item.action, label: item.actionLabel }, base[item.action] === true, (checked) => onChange(item.action, checked), disabled)
-      ])
+        item.action
+          ? permCheckbox({ key: item.action, label: item.actionLabel }, base[item.action] === true, (checked) => onChange(item.action, checked), disabled)
+          : el('span', { className: 'text-muted' }, ['Sin acciones'])
+      ]),
+      ...(item.note ? [el('p', { className: 'text-muted permission-pair__note' }, [item.note])] : [])
     ]);
   }
 
   function permCheckbox(item, val, onChange, disabled) {
     const key = item.key;
     const id = `perm_${key}_${Math.random().toString(36).slice(2, 6)}`;
-    const label = item.label || PERM_LABELS[key] || key;
+    const label = item.label || key;
     const w = el('label', { className: 'perm-item', title: disabled ? 'Solo lectura' : '' }, [
       el('input', { type: 'checkbox', id, checked: !!val, disabled: !!disabled, 'data-perm-key': key }),
       el('span', {}, [label])

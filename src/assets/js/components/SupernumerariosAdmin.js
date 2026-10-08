@@ -3,6 +3,7 @@ import { showCatalogDetail } from '../utils/catalogDetail.js';
 import { showActionModal } from '../utils/actionModal.js';
 import { createTablePagination } from '../utils/pagination.js';
 import { subscribe } from '../state.js';
+import { can, PERMS } from '../permissions.js';
 import { contractCoverageCodes, contractFilterCode, contractMatches } from '../utils/contractScope.js';
 export const SupernumerariosAdmin=(mount,deps={})=>{
   const ui=el('section',{className:'main-card'},[
@@ -383,9 +384,11 @@ export const SupernumerariosAdmin=(mount,deps={})=>{
     btnInfo.addEventListener('click',()=>openSupernumerarioInfoModal(e));
     const btnContracts=el('button',{className:'btn btn--icon',type:'button',title:'Administrar contratos habilitados','aria-label':'Administrar contratos habilitados'},[lucideInlineIcon('file-text')]);
     btnContracts.addEventListener('click',()=>openContractAccessModal(e));
-    box.append(btnContracts,btnInfo); return box;
+    if(can(PERMS.EDIT_SUPERNUMERARIOS)) box.append(btnContracts);
+    box.append(btnInfo); return box;
   }
   async function openContractAccessModal(e){
+    if(!can(PERMS.EDIT_SUPERNUMERARIOS)) return;
     try{
       const options=contractOptions();
       if(!options.length) return alert('No hay contratos activos para asignar.');

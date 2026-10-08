@@ -36,7 +36,7 @@ const deps = {
 const source = (await fs.readFile(new URL('../src/assets/js/components/ShiftRotationsAdmin.js', import.meta.url), 'utf8'))
   .replace(/^import .*;\r?\n/gm, '').replace('export function', 'function');
 const context = vm.createContext({ el, lucideInlineIcon: () => el('i'), subscribe: () => () => {},
-  contractFilterCode: () => 'A', can: () => true, PERMS: {}, cycleEntries, addIsoDays, ...rotationHours, ...rotationCoverage,
+  contractFilterCode: () => 'A', isSuperAdmin: () => true, getState: () => ({}), cycleEntries, addIsoDays, ...rotationHours, ...rotationCoverage,
   SHIFT_GENERATION_DAYS: 30, todayBogota: () => '2026-09-26',
   showInfoModal: (_title, content) => { modal = el('div', {}, content); }, closeInfoModal() {},
   showActionModal: async () => ({ confirmed, values: modalValues }), closeActionModal() {}
