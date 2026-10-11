@@ -8,6 +8,7 @@ import { addRoute, startRouter, navigate, refreshRoute } from './router.js';
 import { getState, setState, subscribe } from './state.js';
 import { can, PERMS, isSuperAdmin } from './permissions.js';
 import { ROLES } from './roles.js';
+import { contractFilterCode } from './utils/contractScope.js';
 import { installBrowserAlertReplacement } from './utils/notifications.js';
 installBrowserAlertReplacement();
 const sidebarMount=document.getElementById('app-sidebar');
@@ -31,7 +32,7 @@ renderHeader();
 footerMount.replaceChildren(Footer());
 subscribe('userProfile', () => footerMount.replaceChildren(Footer()));
 
-let unsubRoleMatrix=null; let unsubUserOverrides=null; let unsubAudit=null;
+let unsubRoleMatrix=null; let unsubUserOverrides=null; let unsubAccessProfiles=null; let unsubAudit=null;
 let authSyncToken = 0;
 let routerStarted = false;
 let sidebarReadyWithDeps = false;
@@ -71,11 +72,12 @@ const guardWrite=(perm,fn)=> async (...args)=>{
         addNote:fb.addNote, streamNotes:fb.streamNotes,
         streamRoleMatrix:fb.streamRoleMatrix, setRolePermissions:fb.setRolePermissions, streamUserOverrides:fb.streamUserOverrides,
         getUserOverrides:fb.getUserOverrides, setUserOverrides:fb.setUserOverrides, clearUserOverrides:fb.clearUserOverrides,
-        addAuditLog:fb.addAuditLog, streamAuditLogs:(cb,max)=>{ if(unsubAudit)unsubAudit(); unsubAudit=fb.streamAuditLogs(cb,max); return unsubAudit; }, streamAuditLogsByKind:fb.streamAuditLogsByKind, listEmployeeAuditLogsRange:fb.listEmployeeAuditLogsRange,
+        addAuditLog:(entry={})=>fb.addAuditLog({ contratoCodigo: contractFilterCode() || null, ...entry }), streamAuditLogs:(cb,max)=>{ if(unsubAudit)unsubAudit(); unsubAudit=fb.streamAuditLogs(cb,max); return unsubAudit; }, streamAuditLogsByKind:fb.streamAuditLogsByKind, listEmployeeAuditLogsRange:fb.listEmployeeAuditLogsRange,
         streamUsers:fb.streamUsers, setUserRole:guardWrite(PERMS.EDIT_USERS,fb.setUserRole), syncSupervisorAccessForUser:guardWrite(PERMS.EDIT_USERS,fb.syncSupervisorAccessForUser), setUserStatus:guardWrite(PERMS.EDIT_USERS,fb.setUserStatus), findUserByEmail:fb.findUserByEmail,
         loadInventory:fb.loadInventory, createInventoryProduct:guardWrite(PERMS.MANAGE_INVENTORY,fb.createInventoryProduct), postInventory:fb.postInventory,
         loadVisits:fb.loadVisits, saveVisitSettings:guardWrite(PERMS.EDIT_CONTRACTS,fb.saveVisitSettings), reviewVisit:guardWrite(PERMS.EDIT_CONTRACTS,fb.reviewVisit), getVisitPhotoUrl:fb.getVisitPhotoUrl,
-        streamProfileContractAccess:fb.streamProfileContractAccess, setUserContractAccess:guardWrite(PERMS.EDIT_USERS,fb.setUserContractAccess),
+        streamProfileContractAccess:fb.streamProfileContractAccess,
+        streamAccessProfiles:fb.streamAccessProfiles, createAccessProfile:fb.createAccessProfile, updateAccessProfile:fb.updateAccessProfile, setAccessProfileStatus:fb.setAccessProfileStatus, setUserAccessProfile:guardWrite(PERMS.EDIT_USERS,fb.setUserAccessProfile), setUserContractAccess:guardWrite(PERMS.EDIT_USERS,fb.setUserContractAccess),
         getContractReferenceImageUrl:sharedContractImages, saveContractReferenceImage:guardWrite(PERMS.EDIT_CONTRACTS,fb.saveContractReferenceImage),
         streamContracts:sharedContracts, countActiveContracts:fb.countActiveContracts, createContract:guardWrite(PERMS.EDIT_CONTRACTS,fb.createContract), updateContract:guardWrite(PERMS.EDIT_CONTRACTS,fb.updateContract), setContractStatus:guardWrite(PERMS.EDIT_CONTRACTS,fb.setContractStatus), findContractByCode:fb.findContractByCode, getNextContractCode:fb.getNextContractCode,
         streamZones:fb.streamZones, createZone:guardWrite(PERMS.EDIT_ZONES,fb.createZone), updateZone:guardWrite(PERMS.EDIT_ZONES,fb.updateZone), setZoneStatus:guardWrite(PERMS.EDIT_ZONES,fb.setZoneStatus), findZoneByCode:fb.findZoneByCode, getNextZoneCode:fb.getNextZoneCode,
@@ -123,9 +125,9 @@ const guardWrite=(perm,fn)=> async (...args)=>{
         const prevUid = String(getState().user?.uid || '').trim();
         const nextUid = String(user?.uid || '').trim();
         const sameUser = Boolean(prevUid && nextUid && prevUid === nextUid);
-        if(!sameUser){ if(unsubRoleMatrix){unsubRoleMatrix();unsubRoleMatrix=null;} if(unsubUserOverrides){unsubUserOverrides();unsubUserOverrides=null;} }
+        if(!sameUser){ if(unsubRoleMatrix){unsubRoleMatrix();unsubRoleMatrix=null;} if(unsubUserOverrides){unsubUserOverrides();unsubUserOverrides=null;} if(unsubAccessProfiles){unsubAccessProfiles();unsubAccessProfiles=null;} }
         if(!user){
-          setState({ user:null, userProfile:null, userOverrides:{} });
+          setState({ user:null, userProfile:null, userOverrides:{}, accessProfiles:[] });
           renderHeader();
           renderSidebar();
           if(authEvent==='PASSWORD_RECOVERY' || isRecoveryHash()) navigate('/reset-password');
@@ -148,6 +150,7 @@ const guardWrite=(perm,fn)=> async (...args)=>{
         setState({ user, userProfile: profile });
         if(!sameUser || !unsubRoleMatrix) unsubRoleMatrix=fb.streamRoleMatrix((map)=> setState({ roleMatrix: map }));
         if(!sameUser || !unsubUserOverrides) unsubUserOverrides=fb.streamUserOverrides(user.uid,(ov)=> setState({ userOverrides: ov||{} }));
+        if(!sameUser || !unsubAccessProfiles) unsubAccessProfiles=fb.streamAccessProfiles((rows)=> setState({ accessProfiles: rows||[] }));
         if(!sameUser || !sidebarReadyWithDeps){ renderHeader(); renderSidebar(); sidebarReadyWithDeps = true; }
         if(authEvent==='PASSWORD_RECOVERY' || isRecoveryHash()) navigate('/reset-password');
         else if(location.hash==='' || location.hash==="#/login") navigate('/');
@@ -185,6 +188,7 @@ const guardWrite=(perm,fn)=> async (...args)=>{
   // Gobierno
   addRoute('/gobierno-dashboard', ()=> requireAuth(()=> guardAny([PERMS.VIEW_USERS, PERMS.VIEW_PERMISSIONS, PERMS.VIEW_AUDIT], async ()=> { const { GobiernoDashboard } = await import('./components/dashboards/GobiernoDashboard.js'); return GobiernoDashboard(root, deps); }, { allowSuperAdmin: true })));
   addRoute('/permissions', ()=> requireAuth(async ()=> { if(!isSuperAdmin() && !can(PERMS.VIEW_PERMISSIONS)) return block('No tienes permiso para acceder a esta sección.'); const { PermissionsCenter } = await import('./components/PermissionsCenter.js'); return PermissionsCenter(root, deps); }));
+  addRoute('/profiles', ()=> requireAuth(async ()=> { if(!isSuperAdmin() && !can(PERMS.VIEW_PERMISSIONS)) return block('No tienes permiso para consultar perfiles.'); const { AccessProfilesAdmin } = await import('./components/AccessProfilesAdmin.js'); return AccessProfilesAdmin(root, deps); }));
   addRoute('/permissions-audit', ()=> requireAuth(async ()=> { if(!isSuperAdmin() && !can(PERMS.VIEW_AUDIT)) return block('No tienes permiso para consultar auditoria.'); const { PermissionsAudit } = await import('./components/PermissionsAudit.js'); return PermissionsAudit(root, deps); }));
 
   // Administración

@@ -1,5 +1,5 @@
 import { el, qs, infoIcon, moreIcon } from '../utils/dom.js';
-import { PERMS, can } from '../permissions.js';
+import { PERMS, can, isSuperAdmin } from '../permissions.js';
 import { getState } from '../state.js';
 import { ALL_ROLES, ROLE_LABELS } from '../roles.js';
 import { showActionModal } from '../utils/actionModal.js';
@@ -40,7 +40,13 @@ export const UsersAdmin = (mount, deps = {}) => {
   ]);
 
   const roleFilter = qs('#roleFilter', ui);
-  roleFilter.append(el('option', { value: '' }, ['Todos']), ...ALL_ROLES.map((r) => el('option', { value: r }, [roleLabel(r)])));
+  let accessProfiles = [];
+  const roleFilterOptions = () => [
+    el('option', { value: '' }, ['Todos']),
+    ...ALL_ROLES.map((r) => el('option', { value: r }, [roleLabel(r)])),
+    ...accessProfiles.map((profile) => el('option', { value: `profile:${profile.id}` }, [`Perfil: ${profile.nombre}`]))
+  ];
+  roleFilter.append(...roleFilterOptions());
   const statusFilter = qs('#statusFilter', ui);
   statusFilter.append(el('option', { value: '' }, ['Todos']), ...STATUS.map((s) => el('option', { value: s }, [s])));
 
@@ -145,61 +151,104 @@ export const UsersAdmin = (mount, deps = {}) => {
     return `${labels.length} contratos: ${labels.slice(0, 2).join(', ')}...`;
   }
 
-  function contractOptions() {
-    return activeContractRows().map((contract) => {
+  // Active contracts plus inactive ones already assigned, so saving does not silently drop them.
+  // contractList only holds the contracts the current admin can see.
+  function contractOptions(assignedCodes = []) {
+    const assigned = new Set(assignedCodes.map(normalizeCode));
+    const inactiveAssigned = (contractList || [])
+      .filter((contract) => String(contract?.estado || 'activo').trim().toLowerCase() !== 'activo')
+      .filter((contract) => assigned.has(normalizeCode(contract.codigo)));
+    return [...activeContractRows(), ...inactiveAssigned].map((contract) => {
       const code = normalizeCode(contract.codigo);
       const name = String(contract.nombre || '').trim();
-      return { value: code, label: name && code ? `${name} (${code})` : name || code };
+      const label = name && code ? `${name} (${code})` : name || code;
+      const inactive = String(contract?.estado || 'activo').trim().toLowerCase() !== 'activo';
+      return { value: code, label: inactive ? `${label} - inactivo` : label };
     }).filter((opt) => opt.value);
   }
 
+  // A user's access is a system role or a custom profile ("profile:<id>", built on a base role).
+  function accessValue(user) {
+    return user.accessProfileId ? `profile:${user.accessProfileId}` : (user.role || 'empleado');
+  }
+
+  function accessProfileById(id) {
+    return accessProfiles.find((profile) => String(profile.id) === String(id)) || null;
+  }
+
+  function accessLabel(value) {
+    if (String(value || '').startsWith('profile:')) {
+      const profile = accessProfileById(value.slice('profile:'.length));
+      return profile ? `Perfil: ${profile.nombre}` : 'Perfil personalizado';
+    }
+    return roleLabel(value);
+  }
+
+  // Only a superadmin grants SuperAdmin; inactive profiles stay listed only for whoever holds them.
+  function accessOptions(currentValue = '') {
+    const roles = ALL_ROLES
+      .filter((role) => role !== 'superadmin' || isSuperAdmin() || currentValue === 'superadmin')
+      .map((role) => ({ value: role, label: roleLabel(role) }));
+    const profiles = [...accessProfiles]
+      .filter((profile) => profile.estado === 'activo' || `profile:${profile.id}` === currentValue)
+      .sort((a, b) => a.nombre.localeCompare(b.nombre))
+      .map((profile) => ({ value: `profile:${profile.id}`, label: `Perfil: ${profile.nombre} (${roleLabel(profile.baseRole)})` }));
+    return [...roles, ...profiles];
+  }
+
   async function handleRoleChange(user, sel) {
-    const prev = user.role || 'empleado';
+    const prev = accessValue(user);
     const next = String(sel.value || '').trim();
     if (!next || next === prev) return;
     try {
-      await updateUserRole(user, prev, next);
+      await updateUserAccess(user, prev, next);
     } catch {
       sel.value = prev;
     }
   }
 
   async function changeRole(user) {
-    const prev = user.role || 'empleado';
+    const prev = accessValue(user);
     const modal = await showActionModal({
-      title: 'Cambiar rol',
+      title: 'Cambiar rol o perfil',
       message: `Usuario: ${user.email || user.uid}`,
-      confirmText: 'Guardar rol',
+      confirmText: 'Guardar',
       fields: [{
         id: 'role',
-        label: 'Rol',
+        label: 'Rol o perfil',
         type: 'select',
         required: true,
         value: prev,
-        options: ALL_ROLES.map((role) => ({ value: role, label: roleLabel(role) }))
+        options: accessOptions(prev)
       }]
     });
     if (!modal?.confirmed) return;
     const next = String(modal.values.role || '').trim();
     if (!next || next === prev) return;
     try {
-      await updateUserRole(user, prev, next);
+      await updateUserAccess(user, prev, next);
     } catch {}
   }
 
-  async function updateUserRole(user, prev, next) {
+  async function updateUserAccess(user, prev, next) {
     try {
-      await deps.setUserRole?.(user.uid, next);
+      if (next.startsWith('profile:')) {
+        const profile = accessProfileById(next.slice('profile:'.length));
+        if (!profile) throw new Error('El perfil seleccionado ya no existe.');
+        await deps.setUserAccessProfile?.(user.uid, profile);
+      } else {
+        await deps.setUserRole?.(user.uid, next);
+      }
       await deps.addAuditLog?.({
         targetType: 'user',
         targetId: user.uid,
         action: 'update_user_role',
-        before: { role: prev },
-        after: { role: next }
+        before: { role: user.role || 'empleado', accessProfileId: user.accessProfileId || null },
+        after: next.startsWith('profile:') ? { accessProfileId: next.slice('profile:'.length) } : { role: next, accessProfileId: null }
       });
-      setMsg(`Rol actualizado para ${user.email || user.uid}: ${next}`);
+      setMsg(`Acceso actualizado para ${user.email || user.uid}: ${accessLabel(next)}`);
     } catch (e) {
-      setMsg(`Error al actualizar rol: ${e?.message || e}`);
+      setMsg(`Error al actualizar rol o perfil: ${e?.message || e}`);
       throw e;
     }
   }
@@ -246,12 +295,13 @@ export const UsersAdmin = (mount, deps = {}) => {
     const isSupervisor = String(u.role || '').trim().toLowerCase() === 'supervisor';
     const options = [{ value: '', label: 'Seleccione...' }];
     if (canEditUsers) {
-      options.push({ value: 'change_role', label: 'Cambiar rol' });
+      options.push({ value: 'change_role', label: 'Cambiar rol o perfil' });
     }
     if (st !== 'eliminado' && canEditUsers && isSupervisor) {
       options.push({ value: 'sync_supervisor', label: 'Sincronizar acceso supervisor' });
     }
-    if (st !== 'eliminado' && canEditUsers) {
+    // Superadmin always works on every contract: there is nothing to assign.
+    if (st !== 'eliminado' && canEditUsers && String(u.role || '').trim().toLowerCase() !== 'superadmin') {
       options.push({ value: 'assign_contracts', label: 'Asignar contratos' });
     }
     if (st !== 'eliminado' && canEditUsers && !isSelf) {
@@ -284,12 +334,14 @@ export const UsersAdmin = (mount, deps = {}) => {
   }
 
   async function assignContracts(u) {
-    const options = contractOptions();
+    const options = contractOptions(contractCodesForUser(u.uid));
     if (!options.length) {
       showInfoModal('Asignar contratos', ['No hay contratos activos disponibles para asignar.']);
       return;
     }
-    const currentCodes = contractCodesForUser(u.uid);
+    // Contracts outside the current admin's scope are neither shown nor touched when saving.
+    const visibleCodes = new Set(options.map((opt) => opt.value));
+    const currentCodes = contractCodesForUser(u.uid).filter((code) => visibleCodes.has(code));
     const modal = await showActionModal({
       title: 'Asignar contratos',
       message: `Usuario: ${u.email || u.uid || '-'}`,
@@ -347,11 +399,11 @@ export const UsersAdmin = (mount, deps = {}) => {
   }
 
   function roleSelect(u) {
-    const currentRole = u.role || 'empleado';
+    const current = accessValue(u);
     const sel = el(
       'select',
       { className: 'select', disabled: !canEditUsers },
-      ALL_ROLES.map((r) => el('option', { value: r, selected: currentRole === r }, [roleLabel(r)]))
+      accessOptions(current).map((opt) => el('option', { value: opt.value, selected: current === opt.value }, [opt.label]))
     );
     if (canEditUsers) sel.addEventListener('change', () => handleRoleChange(u, sel));
     return sel;
@@ -373,7 +425,6 @@ export const UsersAdmin = (mount, deps = {}) => {
 
   function renderUserCard(u) {
     const st = statusOf(u);
-    const role = u.role || 'empleado';
     const lastChange = formatDate(u.lastModifiedAt || u.createdAt);
     return el('article', { className: 'user-card' }, [
       el('div', { className: 'user-card__header' }, [
@@ -384,7 +435,7 @@ export const UsersAdmin = (mount, deps = {}) => {
         statusBadge(st)
       ]),
       el('dl', { className: 'user-card__meta' }, [
-        metaItem('Rol', roleLabel(role)),
+        metaItem('Rol', accessLabel(accessValue(u))),
         metaItem('Documento', u.documento || '-'),
         metaItem('Contratos', contractSummaryForUser(u.uid)),
         metaItem('Ultimo cambio', lastChange)
@@ -407,7 +458,7 @@ export const UsersAdmin = (mount, deps = {}) => {
     const rows = (data || [])
       .filter((u) => {
         const text = `${u.email || ''} ${u.displayName || ''} ${u.documento || ''} ${contractSummaryForUser(u.uid)}`.toLowerCase();
-        return (!term || text.includes(term)) && (!rf || (u.role || 'empleado') === rf) && (!sf || statusOf(u) === sf);
+        return (!term || text.includes(term)) && (!rf || (u.role || 'empleado') === rf || accessValue(u) === rf) && (!sf || statusOf(u) === sf);
       })
       .sort((a, b) => String(a.email || '').localeCompare(String(b.email || '')));
     const pageRows = paginator.slice(rows);
@@ -434,11 +485,19 @@ export const UsersAdmin = (mount, deps = {}) => {
     contractAccessRows = rows || [];
     renderRows();
   });
+  const unAccessProfiles = deps.streamAccessProfiles?.((rows) => {
+    accessProfiles = rows || [];
+    const keep = roleFilter.value;
+    roleFilter.replaceChildren(...roleFilterOptions());
+    roleFilter.value = keep;
+    renderRows();
+  });
 
   mount.replaceChildren(ui);
   return () => {
     unUsers?.();
     unContracts?.();
     unContractAccess?.();
+    unAccessProfiles?.();
   };
 };

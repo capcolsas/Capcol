@@ -316,6 +316,7 @@ function mapUserProfileRow(row = {}) {
     zonasPermitidas: Array.isArray(row.zonas_permitidas) ? row.zonas_permitidas : [],
     contratoCodigo: row.contrato_codigo || null,
     contratosPermitidos: Array.isArray(row.contratos_permitidos) ? row.contratos_permitidos : [],
+    accessProfileId: row.access_profile_id || null,
     supervisorEligible: row.supervisor_eligible === true,
     createdAt: row.created_at || null,
     lastModifiedAt: row.updated_at || null,
@@ -347,7 +348,8 @@ function mapAuditLogRow(row = {}) {
     action: row.action || null,
     before: row.before_data || null,
     after: row.after_data || null,
-    note: row.note || null
+    note: row.note || null,
+    contratoCodigo: row.contrato_codigo || null
   };
 }
 
@@ -502,6 +504,15 @@ function mapEmployeeRow(row = {}) {
     dotacionCamisa: row.dotacion_camisa || null,
     dotacionPantalon: row.dotacion_pantalon || null,
     dotacionZapatos: row.dotacion_zapatos || null,
+    direccionResidencia: row.direccion_residencia || null,
+    barrioResidencia: row.barrio_residencia || null,
+    municipioResidencia: row.municipio_residencia || null,
+    residenciaLatitud: row.residencia_latitud ?? null,
+    residenciaLongitud: row.residencia_longitud ?? null,
+    restriccionesMedicas: row.restricciones_medicas || null,
+    contactoEmergenciaNombre: row.contacto_emergencia_nombre || null,
+    contactoEmergenciaParentesco: row.contacto_emergencia_parentesco || null,
+    contactoEmergenciaTelefono: row.contacto_emergencia_telefono || null,
     cargoCodigo: row.cargo_codigo || null,
     cargoNombre: row.cargo_nombre || null,
     sedeCodigo: row.sede_codigo || null,
@@ -2816,6 +2827,7 @@ async function insertEmployeeRecord({
   sedeCodigo,
   sedeNombre,
   fechaIngreso,
+  details = {},
   audit,
   zone,
   notifyEmployeesReload = true,
@@ -2852,7 +2864,9 @@ async function insertEmployeeRecord({
     arlRiesgo,
     dotacionCamisa,
     dotacionPantalon,
-    dotacionZapatos
+    dotacionZapatos,
+    // Residence, medical restrictions and emergency contact (phase 74).
+    ...Object.fromEntries(EMPLOYEE_DETAIL_KEYS.map((key) => [key, details?.[key]]))
   });
   const { data, error } = await supabase
     .from('employees')
@@ -3056,6 +3070,9 @@ export async function loadUserProfile(uid) {
     role: data.role || null,
     zonaCodigo: data.zona_codigo || null,
     zonasPermitidas: Array.isArray(data.zonas_permitidas) ? data.zonas_permitidas : [],
+    contratoCodigo: data.contrato_codigo || null,
+    contratosPermitidos: Array.isArray(data.contratos_permitidos) ? data.contratos_permitidos : [],
+    accessProfileId: data.access_profile_id || null,
     supervisorEligible: data.supervisor_eligible === true
   };
 }
@@ -3111,6 +3128,100 @@ export async function setRolePermissions(role, permissions = {}) {
     }, { onConflict: 'role' });
   if (error) throw error;
   await notifyTableReload('roles_matrix');
+}
+
+function mapAccessProfileRow(row = {}) {
+  return {
+    id: row.id,
+    nombre: row.nombre || '',
+    descripcion: row.descripcion || '',
+    baseRole: row.base_role || null,
+    permissions: row.permissions && typeof row.permissions === 'object' && !Array.isArray(row.permissions) ? row.permissions : {},
+    estado: row.estado || 'activo',
+    createdByEmail: row.created_by_email || null,
+    createdAt: row.created_at || null,
+    updatedAt: row.updated_at || null
+  };
+}
+
+export function streamAccessProfiles(onData, onError = null, onStatus = null) {
+  return streamTable('access_profiles', mapAccessProfileRow, onData, { onError, onStatus });
+}
+
+export async function createAccessProfile({ nombre, descripcion = '', baseRole, permissions = {} } = {}) {
+  const name = String(nombre || '').trim();
+  const role = String(baseRole || '').trim().toLowerCase();
+  if (!name) throw new Error('Falta el nombre del perfil.');
+  if (!role) throw new Error('Falta el rol base del perfil.');
+  const audit = await getCurrentAuditFields();
+  const { data, error } = await supabase
+    .from('access_profiles')
+    .insert({
+      nombre: name,
+      descripcion: String(descripcion || '').trim() || null,
+      base_role: role,
+      permissions: sanitizePermissionsRecord(permissions),
+      estado: 'activo',
+      ...audit
+    })
+    .select('*')
+    .single();
+  if (error) throw error;
+  await notifyTableReload('access_profiles');
+  return mapAccessProfileRow(data);
+}
+
+export async function updateAccessProfile(id, { nombre, descripcion, baseRole, permissions } = {}) {
+  const profileId = String(id || '').trim();
+  if (!profileId) throw new Error('Falta el perfil a actualizar.');
+  const patch = {};
+  if (nombre !== undefined) {
+    const name = String(nombre || '').trim();
+    if (!name) throw new Error('Falta el nombre del perfil.');
+    patch.nombre = name;
+  }
+  if (descripcion !== undefined) patch.descripcion = String(descripcion || '').trim() || null;
+  if (baseRole !== undefined) patch.base_role = String(baseRole || '').trim().toLowerCase();
+  if (permissions !== undefined) patch.permissions = sanitizePermissionsRecord(permissions);
+  const { error } = await supabase.from('access_profiles').update(patch).eq('id', profileId);
+  if (error) throw error;
+  await notifyTableReload('access_profiles');
+}
+
+export async function setAccessProfileStatus(id, estado) {
+  const profileId = String(id || '').trim();
+  const next = String(estado || '').trim().toLowerCase();
+  if (!profileId) throw new Error('Falta el perfil a actualizar.');
+  if (next !== 'activo' && next !== 'inactivo') throw new Error('Estado de perfil invalido.');
+  const { error } = await supabase.from('access_profiles').update({ estado: next }).eq('id', profileId);
+  if (error) throw error;
+  await notifyTableReload('access_profiles');
+}
+
+// The database sets the user's role to the profile's base role; supervisors also need their zone.
+export async function setUserAccessProfile(uid, accessProfile = null) {
+  const targetUid = String(uid || '').trim();
+  const profileId = String(accessProfile?.id || '').trim();
+  if (!targetUid) throw new Error('Falta el usuario a actualizar.');
+  if (!profileId) throw new Error('Falta el perfil a asignar.');
+  const audit = await getCurrentAuditFields();
+  const patch = {
+    access_profile_id: profileId,
+    updated_at: new Date().toISOString(),
+    last_modified_by_uid: audit.created_by_uid,
+    last_modified_by_email: audit.created_by_email
+  };
+  if (accessProfile?.baseRole === 'supervisor') {
+    Object.assign(patch, await supervisorAccessPatchForUser(targetUid));
+  } else {
+    patch.supervisor_eligible = false;
+  }
+  const { error } = await supabase
+    .from(SUPABASE_PROFILES_TABLE)
+    .update(patch)
+    .eq('id', targetUid);
+  if (error) throw error;
+  await notifyTableReload(SUPABASE_PROFILES_TABLE);
 }
 
 export function streamRoleMatrix(onData, onError = null, onStatus = null) {
@@ -3320,6 +3431,8 @@ export async function setUserRole(uid, role) {
   const audit = await getCurrentAuditFields();
   const patch = {
     role: nextRole,
+    // Choosing a system role leaves any custom profile, even one built on that same role.
+    access_profile_id: null,
     updated_at: new Date().toISOString(),
     last_modified_by_uid: audit.created_by_uid,
     last_modified_by_email: audit.created_by_email
@@ -3391,12 +3504,14 @@ export async function addAuditLog({
   action = null,
   before = null,
   after = null,
-  note = null
+  note = null,
+  contratoCodigo = null
 } = {}) {
   const audit = await getCurrentAuditFields();
   const { error } = await supabase
     .from('audit_logs')
     .insert({
+      contrato_codigo: String(contratoCodigo || '').trim() || null,
       actor_uid: audit.created_by_uid,
       actor_email: audit.created_by_email,
       target_type: targetType,
@@ -3442,15 +3557,22 @@ export function streamAuditLogs(onData, max = 200) {
   };
 }
 
-export function streamAuditLogsByKind(kind = 'activity', onData, max = 100) {
+// contratoCodigo narrows the entries to one contract; AUDIT_COMPANY_WIDE keeps only the entries
+// without contract (users, roles, profiles, catalogs, day closures). RLS already limits the rest.
+export const AUDIT_COMPANY_WIDE = '__company__';
+
+export function streamAuditLogsByKind(kind = 'activity', onData, max = 100, { contratoCodigo = '' } = {}) {
   let active = true;
   const closureTargets = '(daily_closure,shift_closure)';
+  const contract = String(contratoCodigo || '').trim();
   const emit = async () => {
     let query = supabase
       .from('audit_logs')
       .select('*')
       .order('created_at', { ascending: false })
       .limit(max);
+    if (contract === AUDIT_COMPANY_WIDE) query = query.is('contrato_codigo', null);
+    else if (contract) query = query.eq('contrato_codigo', contract);
     if (kind === 'closure') {
       query = query.filter('target_type', 'in', closureTargets);
     } else {
@@ -3701,11 +3823,11 @@ export async function setUserContractAccess(uid, contratoCodigos = []) {
       .upsert(rows, { onConflict: 'user_id,contrato_codigo' });
     if (upsertError) throw upsertError;
   }
+  // contrato_codigo / contratos_permitidos are synced from profile_contract_access by trigger: an
+  // admin only sees its own contracts here, so writing `codes` would drop the user's other ones.
   const { error: profileError } = await supabase
     .from(SUPABASE_PROFILES_TABLE)
     .update({
-      contrato_codigo: codes[0] || null,
-      contratos_permitidos: codes,
       updated_at: new Date().toISOString(),
       last_modified_by_uid: audit.created_by_uid,
       last_modified_by_email: audit.created_by_email
@@ -5857,7 +5979,7 @@ export async function getNextEmployeeCode(prefix = 'EMP', width = 4) {
   return getNextPrefixedCode('employees', prefix, width);
 }
 
-export async function createEmployee({ codigo, documento, nombre, telefono, fechaNacimiento, eps, afp, arlRiesgo, dotacionCamisa, dotacionPantalon, dotacionZapatos, cargoCodigo, cargoNombre, sedeCodigo, sedeNombre, fechaIngreso }) {
+export async function createEmployee({ codigo, documento, nombre, telefono, fechaNacimiento, eps, afp, arlRiesgo, dotacionCamisa, dotacionPantalon, dotacionZapatos, cargoCodigo, cargoNombre, sedeCodigo, sedeNombre, fechaIngreso, ...details }) {
   const audit = await getCurrentAuditFields();
   const zone = await resolveZoneBySedeCode(sedeCodigo);
   const data = await insertEmployeeRecord({
@@ -5877,6 +5999,7 @@ export async function createEmployee({ codigo, documento, nombre, telefono, fech
     sedeCodigo,
     sedeNombre,
     fechaIngreso,
+    details,
     audit,
     zone,
     notifyEmployeesReload: true,
@@ -5885,7 +6008,9 @@ export async function createEmployee({ codigo, documento, nombre, telefono, fech
   return data.id;
 }
 
-export async function rehireEmployee(id, { nombre, telefono, cargoCodigo, cargoNombre, sedeCodigo, sedeNombre, fechaIngreso } = {}) {
+// `details` takes the optional data (birth date, social security, residence, emergency contact,
+// uniform); keys left undefined keep their current value.
+export async function rehireEmployee(id, { nombre, telefono, cargoCodigo, cargoNombre, sedeCodigo, sedeNombre, fechaIngreso, ...details } = {}) {
   const employeeId = String(id || '').trim();
   if (!employeeId) throw new Error('No se encontro el empleado a reingresar.');
   const ingresoIso = toISODate(fechaIngreso);
@@ -5937,6 +6062,7 @@ export async function rehireEmployee(id, { nombre, telefono, cargoCodigo, cargoN
     last_modified_by_email: audit.created_by_email,
     last_modified_at: new Date().toISOString()
   };
+  applyEmployeeExtendedFields(patch, details);
   validateEmployeeDateRange(patch.fecha_ingreso, patch.fecha_retiro);
 
   const { data: updated, error } = await supabase
@@ -6002,8 +6128,25 @@ function applyEmployeeExtendedFields(payload, source = {}) {
   if (source.dotacionCamisa !== undefined) payload.dotacion_camisa = String(source.dotacionCamisa || '').trim() || null;
   if (source.dotacionPantalon !== undefined) payload.dotacion_pantalon = String(source.dotacionPantalon || '').trim() || null;
   if (source.dotacionZapatos !== undefined) payload.dotacion_zapatos = String(source.dotacionZapatos || '').trim() || null;
+  EMPLOYEE_TEXT_DETAIL_COLUMNS.forEach(([key, column]) => {
+    if (source[key] !== undefined) payload[column] = String(source[key] || '').trim() || null;
+  });
+  if (source.residenciaLatitud !== undefined) payload.residencia_latitud = parseCoordinate(source.residenciaLatitud);
+  if (source.residenciaLongitud !== undefined) payload.residencia_longitud = parseCoordinate(source.residenciaLongitud);
   return payload;
 }
+
+// Phase 74 detail fields stored as trimmed text (null when empty).
+const EMPLOYEE_TEXT_DETAIL_COLUMNS = [
+  ['direccionResidencia', 'direccion_residencia'],
+  ['barrioResidencia', 'barrio_residencia'],
+  ['municipioResidencia', 'municipio_residencia'],
+  ['restriccionesMedicas', 'restricciones_medicas'],
+  ['contactoEmergenciaNombre', 'contacto_emergencia_nombre'],
+  ['contactoEmergenciaParentesco', 'contacto_emergencia_parentesco'],
+  ['contactoEmergenciaTelefono', 'contacto_emergencia_telefono']
+];
+const EMPLOYEE_DETAIL_KEYS = [...EMPLOYEE_TEXT_DETAIL_COLUMNS.map(([key]) => key), 'residenciaLatitud', 'residenciaLongitud'];
 
 export async function createEmployeesBulk(rows = [], options = {}) {
   const items = Array.isArray(rows) ? rows.filter(Boolean) : [];
@@ -6138,7 +6281,8 @@ function employeeBulkUpdatePatch(row = {}, audit = {}) {
     arlRiesgo: row.arlRiesgo === undefined ? undefined : cleanOptional(row.arlRiesgo),
     dotacionCamisa: row.dotacionCamisa === undefined ? undefined : cleanOptional(row.dotacionCamisa),
     dotacionPantalon: row.dotacionPantalon === undefined ? undefined : cleanOptional(row.dotacionPantalon),
-    dotacionZapatos: row.dotacionZapatos === undefined ? undefined : cleanOptional(row.dotacionZapatos)
+    dotacionZapatos: row.dotacionZapatos === undefined ? undefined : cleanOptional(row.dotacionZapatos),
+    ...Object.fromEntries(EMPLOYEE_DETAIL_KEYS.map((key) => [key, row[key] === undefined ? undefined : cleanOptional(row[key])]))
   });
   return Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined));
 }
@@ -6215,6 +6359,7 @@ export async function updateEmployee(id, data = {}) {
   if (data.dotacionCamisa !== undefined) patch.dotacion_camisa = String(data.dotacionCamisa || '').trim() || null;
   if (data.dotacionPantalon !== undefined) patch.dotacion_pantalon = String(data.dotacionPantalon || '').trim() || null;
   if (data.dotacionZapatos !== undefined) patch.dotacion_zapatos = String(data.dotacionZapatos || '').trim() || null;
+  applyEmployeeExtendedFields(patch, Object.fromEntries(EMPLOYEE_DETAIL_KEYS.map((key) => [key, data[key]])));
   if (typeof data.cargoCodigo === 'string') patch.cargo_codigo = data.cargoCodigo;
   if (typeof data.cargoNombre === 'string') patch.cargo_nombre = data.cargoNombre;
   if (typeof data.sedeCodigo === 'string') {
@@ -7082,7 +7227,7 @@ export function streamDailyClosures(onData, max = 200) {
   let active = true;
   const emit = async () => {
     const { data, error } = await supabase
-      .from('daily_closures')
+      .from('daily_closures_scoped')
       .select('*')
       .order('fecha', { ascending: false })
       .limit(max);
@@ -7114,7 +7259,7 @@ export function streamDailyClosuresRange(dateFrom, dateTo, onData) {
   let active = true;
   const emit = async () => {
     const { data, error } = await supabase
-      .from('daily_closures')
+      .from('daily_closures_scoped')
       .select('*')
       .gte('fecha', from)
       .lte('fecha', to)
@@ -7727,7 +7872,7 @@ export async function listDailyMetricsRange(dateFrom, dateTo) {
 export async function isOperationDayClosed(fecha) {
   const day = String(fecha || '').trim();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return false;
-  const { data, error } = await supabase.from('daily_closures').select('*').eq('fecha', day).maybeSingle();
+  const { data, error } = await supabase.from('daily_closures_scoped').select('*').eq('fecha', day).maybeSingle();
   if (error) throw error;
   if (!data) return false;
   return data.locked === true || String(data.status || '').trim() === 'closed';
@@ -7745,7 +7890,7 @@ export async function listClosedOperationDaysRange(dateFrom, dateTo) {
 export async function listDailyClosuresRange(dateFrom, dateTo) {
   if (!dateFrom || !dateTo) return [];
   const rows = await selectPagedRows(() => supabase
-    .from('daily_closures')
+    .from('daily_closures_scoped')
     .select('*')
     .gte('fecha', dateFrom)
     .lte('fecha', dateTo)

@@ -2,7 +2,7 @@ import { el, qs } from '../utils/dom.js';
 import { isReviewableShiftStatus } from '../utils/shiftReview.js';
 import { navigate } from '../router.js';
 import { getState, setState, subscribe } from '../state.js';
-import { can, isSuperAdmin, PERMS } from '../permissions.js';
+import { can, getEffectivePermissions, isSuperAdmin, PERMS } from '../permissions.js';
 import { contractFilterCode, contractMatches, contractOption, contractRowsForProfile, latestCurrentContractCode, sortContractsLatestFirst } from '../utils/contractScope.js';
 
 const MOBILE_BREAKPOINT = '(max-width: 900px)';
@@ -13,6 +13,7 @@ const SETTINGS_ROUTES = new Set([
   '/permissions',
   '/permissions-audit',
   '/users',
+  '/profiles',
   '/tablets-qr',
   '/lector-qr',
   '/about',
@@ -38,7 +39,8 @@ export const Sidebar = (deps = {}) => {
   let renderingContent = false;
   let disposed = false;
   const contentKey = () => JSON.stringify([
-    getState().selectedContractCode, getState().sidebarContext, isSettingsMode(), contractsStatus, contracts
+    getState().selectedContractCode, getState().sidebarContext, isSettingsMode(), contractsStatus, contracts,
+    getState().userProfile, getEffectivePermissions()
   ]);
 
   applySidebarKind(Boolean(user && userProfile));
@@ -119,6 +121,13 @@ export const Sidebar = (deps = {}) => {
       rerenderContent();
     })
     : (() => {});
+  // Role matrix, overrides and custom profiles arrive after the first render: modules follow them.
+  const unPermissions = user && userProfile
+    ? ['roleMatrix', 'userOverrides', 'accessProfiles', 'userProfile'].map((key) => subscribe(key, () => {
+      if (renderingContent) return;
+      rerenderContent();
+    }))
+    : [];
   const syncActiveRoute = () => {
     rerenderContent();
     const route = getCurrentRoute();
@@ -139,6 +148,7 @@ export const Sidebar = (deps = {}) => {
     unContracts?.();
     unSelectedContract?.();
     unSidebarContext?.();
+    unPermissions.forEach((off) => off?.());
   };
 
   return container;
@@ -352,6 +362,7 @@ function buildSettingsSections() {
   const options = { sidebarContext: 'settings' };
   const govLinks = [];
   if (isSuperAdmin() || can(PERMS.VIEW_PERMISSIONS)) govLinks.push(navLink('Centro de Permisos', '/permissions', options));
+  if (isSuperAdmin() || can(PERMS.VIEW_PERMISSIONS)) govLinks.push(navLink('Perfiles', '/profiles', options));
   if (isSuperAdmin() || can(PERMS.VIEW_AUDIT)) govLinks.push(navLink('Auditoria', '/permissions-audit', options));
   if (can(PERMS.VIEW_USERS)) govLinks.push(navLink('Usuarios', '/users', options));
   if (govLinks.length) sections.push(section('Gobierno', govLinks, 'settings_gobierno', '/gobierno-dashboard', { icon: 'shield-check', fallback: 'GO', sidebarContext: 'settings' }));
@@ -369,6 +380,7 @@ function buildStandardSections({ includeConsolidatedReports = true, linkOptions 
   const sections = [];
   const govLinks = [];
   if (isSuperAdmin() || can(PERMS.VIEW_PERMISSIONS)) govLinks.push(navLink('Centro de Permisos', '/permissions', linkOptions));
+  if (isSuperAdmin() || can(PERMS.VIEW_PERMISSIONS)) govLinks.push(navLink('Perfiles', '/profiles', linkOptions));
   if (isSuperAdmin() || can(PERMS.VIEW_AUDIT)) govLinks.push(navLink('Auditoria', '/permissions-audit', linkOptions));
   if (can(PERMS.VIEW_USERS)) govLinks.push(navLink('Usuarios', '/users', linkOptions));
   if (govLinks.length) sections.push(section('Gobierno', govLinks, 'gobierno', '/gobierno-dashboard'));
@@ -506,6 +518,8 @@ function buildContractProjectLinks(contractCode) {
   if (can(PERMS.VIEW_REPORTS_CLIENT)) reportLinks.push(navLink('Historico Registro Diario', '/reports-daily-history', options));
   if (can(PERMS.VIEW_REPORTS_QR_HISTORY)) reportLinks.push(navLink('Historico de asistencia', '/reports-qr-history', options));
   if (can(PERMS.VIEW_REPORTS_ABSENTEEISM)) reportLinks.push(navLink('Ausentismo', '/absenteeism', options));
+  if (can(PERMS.VIEW_REPORTS_NOVELTIES_CONSOLIDATED)) reportLinks.push(navLink('Consolidado Novedades', '/reports-novelties-consolidated', options));
+  if (can(PERMS.VIEW_REPORTS_SERVICES_CONSOLIDATED)) reportLinks.push(navLink('Consolidado Servicios', '/reports-services-consolidated', options));
   const reportDashboard = [PERMS.VIEW_REPORTS_CLIENT, PERMS.VIEW_REPORTS_QR_HISTORY, PERMS.VIEW_REPORTS_ABSENTEEISM, PERMS.VIEW_REPORTS_EMPLOYEES, PERMS.VIEW_REPORTS_HIRING, PERMS.VIEW_REPORTS_NOVELTIES_CONSOLIDATED, PERMS.VIEW_REPORTS_SERVICES_CONSOLIDATED].some(can);
   if (reportLinks.length || reportDashboard) groups.push(subSection('Reportes', reportLinks, `contract_reportes_${contractCode}`, reportDashboard ? '/reportes-dashboard' : '', options));
 

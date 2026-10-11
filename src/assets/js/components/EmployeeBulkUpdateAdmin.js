@@ -3,6 +3,7 @@ import { can, PERMS } from '../permissions.js';
 import { createTablePagination } from '../utils/pagination.js';
 import { contractMatches } from '../utils/contractScope.js';
 import { downloadCsv, parseDelimitedRows } from '../utils/csv.js';
+import { hasValidSedeLocation, parseCoordinate } from '../utils/sedeLocation.js';
 
 const CLEAR_VALUE = '__CLEAR__';
 const UPDATE_FIELDS = [
@@ -14,7 +15,16 @@ const UPDATE_FIELDS = [
   ['arlRiesgo', 'Riesgo ARL'],
   ['dotacionCamisa', 'Camisa'],
   ['dotacionPantalon', 'Pantalon'],
-  ['dotacionZapatos', 'Zapatos']
+  ['dotacionZapatos', 'Zapatos'],
+  ['restriccionesMedicas', 'Restricciones medicas'],
+  ['direccionResidencia', 'Direccion residencia'],
+  ['barrioResidencia', 'Barrio'],
+  ['municipioResidencia', 'Municipio'],
+  ['residenciaLatitud', 'Latitud residencia'],
+  ['residenciaLongitud', 'Longitud residencia'],
+  ['contactoEmergenciaNombre', 'Contacto emergencia'],
+  ['contactoEmergenciaParentesco', 'Parentesco emergencia'],
+  ['contactoEmergenciaTelefono', 'Telefono emergencia']
 ];
 
 export const EmployeeBulkUpdateAdmin = (mount, deps = {}) => {
@@ -153,9 +163,13 @@ export const EmployeeBulkUpdateAdmin = (mount, deps = {}) => {
   });
 
   btnTemplate.addEventListener('click', () => {
-    const headers = ['documento', 'nombre', 'telefono', 'fecha nacimiento', 'eps', 'afp', 'riesgo arl', 'camisa', 'pantalon', 'zapatos'];
-    const sampleA = ['10000001', 'Empleado ejemplo', '573000000000', '1990-05-10', 'Sura', 'Proteccion', '1', 'M', '32', '40'];
-    const sampleB = ['10000002', '', '', '', CLEAR_VALUE, '', '', '', '', ''];
+    const headers = ['documento', 'nombre', 'telefono', 'fecha nacimiento', 'eps', 'afp', 'riesgo arl', 'camisa', 'pantalon', 'zapatos',
+      'restricciones medicas', 'direccion residencia', 'barrio', 'municipio', 'latitud residencia', 'longitud residencia',
+      'contacto emergencia', 'parentesco emergencia', 'telefono emergencia'];
+    const sampleA = ['10000001', 'Empleado ejemplo', '573000000000', '1990-05-10', 'Sura', 'Proteccion', '1', 'M', '32', '40',
+      'No levantar mas de 10 kg', 'Calle 10 # 20-30', 'Centro', 'Medellin', '6.244203', '-75.581212',
+      'Maria Perez', 'Madre', '573001112233'];
+    const sampleB = ['10000002', '', '', '', CLEAR_VALUE, '', '', '', '', '', CLEAR_VALUE, '', '', '', '', '', '', '', ''];
     downloadCsv('plantilla_actualizacion_empleados.csv', [headers, sampleA, sampleB]);
   });
 
@@ -187,8 +201,23 @@ export const EmployeeBulkUpdateAdmin = (mount, deps = {}) => {
           else patch[key] = normalized;
           return;
         }
+        if (key === 'residenciaLatitud' || key === 'residenciaLongitud') {
+          if (value !== CLEAR_VALUE && parseCoordinate(value) === null) issues.push('Coordenada de residencia invalida.');
+          else patch[key] = value;
+          return;
+        }
         patch[key] = value;
       });
+      // The location is both coordinates or none (enforced in the database too).
+      const lat = patch.residenciaLatitud, lng = patch.residenciaLongitud;
+      if (lat !== undefined || lng !== undefined) {
+        const clearing = lat === CLEAR_VALUE && lng === CLEAR_VALUE;
+        if (!clearing && (lat === undefined || lng === undefined || lat === CLEAR_VALUE || lng === CLEAR_VALUE)) {
+          issues.push('Registra latitud y longitud de residencia juntas (o limpia ambas).');
+        } else if (!clearing && !hasValidSedeLocation(parseCoordinate(lat), parseCoordinate(lng))) {
+          issues.push('Ubicacion de residencia fuera de rango.');
+        }
+      }
       if (!Object.keys(patch).length) issues.push('No hay campos con valor para actualizar.');
       const fieldSummary = formatFieldSummary(patch);
       if (issues.length) {
@@ -333,7 +362,16 @@ export const EmployeeBulkUpdateAdmin = (mount, deps = {}) => {
       ['arlRiesgo', ['riesgo arl', 'arl riesgo', 'arl']],
       ['dotacionCamisa', ['camisa', 'dotacion camisa', 'talla camisa']],
       ['dotacionPantalon', ['pantalon', 'dotacion pantalon', 'talla pantalon']],
-      ['dotacionZapatos', ['zapatos', 'dotacion zapatos', 'talla zapatos', 'calzado']]
+      ['dotacionZapatos', ['zapatos', 'dotacion zapatos', 'talla zapatos', 'calzado']],
+      ['restriccionesMedicas', ['restricciones medicas', 'restriccion medica', 'restricciones']],
+      ['direccionResidencia', ['direccion residencia', 'direccion', 'direccion de residencia']],
+      ['barrioResidencia', ['barrio', 'barrio residencia']],
+      ['municipioResidencia', ['municipio', 'ciudad', 'municipio residencia']],
+      ['residenciaLatitud', ['latitud residencia', 'latitud']],
+      ['residenciaLongitud', ['longitud residencia', 'longitud']],
+      ['contactoEmergenciaNombre', ['contacto emergencia', 'contacto de emergencia', 'nombre contacto emergencia']],
+      ['contactoEmergenciaParentesco', ['parentesco emergencia', 'parentesco']],
+      ['contactoEmergenciaTelefono', ['telefono emergencia', 'telefono contacto emergencia', 'celular emergencia']]
     ];
   }
 

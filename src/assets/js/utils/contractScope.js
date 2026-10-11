@@ -1,7 +1,8 @@
 import { getState, setState } from '../state.js';
 
 export const ALL_CONTRACTS_VALUE = '__all__';
-const INTERNAL_ROLES = new Set(['superadmin', 'admin', 'editor']);
+// Only superadmin sees every contract; every other profile works inside its assigned contracts.
+const INTERNAL_ROLES = new Set(['superadmin']);
 
 export function isInternalProfile(profile = getState().userProfile) {
   return INTERNAL_ROLES.has(String(profile?.role || '').trim().toLowerCase());

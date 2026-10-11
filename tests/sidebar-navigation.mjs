@@ -31,7 +31,7 @@ const setState = patch => {
   for (const key of Object.keys(patch)) for (const fn of listeners.get(key) || []) fn(state[key]);
 };
 const context = vm.createContext({
-  el, getState: () => ({ ...state }), setState,
+  el, getState: () => ({ ...state }), setState, getEffectivePermissions: () => ({}),
   subscribe(key, fn) { if (!listeners.has(key)) listeners.set(key, new Set()); listeners.get(key).add(fn); return () => listeners.get(key).delete(fn); },
   isSettingsMode: () => state.sidebarContext === 'settings', contractFilterCode: () => state.selectedContractCode,
   getCurrentRoute: () => route, navigate: to => { route = to; }, closeMobileSidebar() {},

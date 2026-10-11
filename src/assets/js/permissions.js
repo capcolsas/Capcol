@@ -85,10 +85,14 @@ export function isSuperAdmin() {
 
 const has = (obj, key) => Object.prototype.hasOwnProperty.call(obj || {}, key);
 
-// Effective permissions of a role (plus optional user overrides). A value stored explicitly always wins:
-// legacy keys only fill in permissions that neither the overrides nor the role matrix define.
-export function resolvePermissions(role, matrix = null, overrides = {}) {
-  const roleMatrix = matrix && typeof matrix === 'object' ? matrix : {};
+// Effective permissions of a role (plus optional custom profile and user overrides). A value stored
+// explicitly always wins: legacy keys only fill in permissions that neither the overrides, the
+// profile nor the role matrix define. Same order as current_profile_has_permission in SQL.
+export function resolvePermissions(role, matrix = null, overrides = {}, accessProfilePerms = null) {
+  const roleMatrix = {
+    ...(matrix && typeof matrix === 'object' ? matrix : {}),
+    ...(accessProfilePerms && typeof accessProfilePerms === 'object' ? accessProfilePerms : {})
+  };
   const userOverrides = overrides && typeof overrides === 'object' ? overrides : {};
   const merged = { ...permsForRole(role), ...roleMatrix, ...userOverrides };
   Object.entries(LEGACY_FALLBACK_BY_NEW).forEach(([newKey, legacyKey]) => {
@@ -110,7 +114,15 @@ export function getEffectivePermissions() {
   if (isSuperAdmin()) return Object.fromEntries(Object.values(PERMS).map((k) => [k, true]));
   const role = s.userProfile.role;
   if (role === ROLES.SUPERVISOR && s.userProfile?.supervisorEligible !== true) return {};
-  return resolvePermissions(role, s.roleMatrix?.[role], s.userOverrides);
+  return resolvePermissions(role, s.roleMatrix?.[role], s.userOverrides, accessProfilePermissions(s));
+}
+
+// Permissions of the user's custom profile, only while it is active (as in SQL).
+function accessProfilePermissions(s = getState()) {
+  const id = String(s.userProfile?.accessProfileId || '').trim();
+  if (!id) return null;
+  const profile = (s.accessProfiles || []).find((row) => String(row?.id || '') === id);
+  return profile && profile.estado === 'activo' ? profile.permissions : null;
 }
 
 export function can(key) {

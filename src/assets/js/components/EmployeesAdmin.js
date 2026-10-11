@@ -1,4 +1,5 @@
-import { el, qs, infoIcon, moreIcon, viewIcon } from '../utils/dom.js';
+import { el, qs, infoIcon, lucideInlineIcon, moreIcon, viewIcon } from '../utils/dom.js';
+import { googleMapsDirectionsUrl, hasValidSedeLocation, parseCoordinate, wazeDirectionsUrl } from '../utils/sedeLocation.js';
 import { showInfoModal } from '../utils/infoModal.js';
 import { showCatalogDetail } from '../utils/catalogDetail.js';
 import { showActionModal } from '../utils/actionModal.js';
@@ -7,6 +8,9 @@ import { can, PERMS } from '../permissions.js';
 import { subscribe } from '../state.js';
 import { contractFilterCode } from '../utils/contractScope.js';
 import { EMPLOYEE_RETIREMENT_REASONS, retirementReasonLabel } from '../utils/employeeRetirement.js';
+// Residence, medical restrictions and emergency contact (phase 74); coordinates are handled apart.
+const EMPLOYEE_DETAIL_TEXT_FIELDS=['direccionResidencia','barrioResidencia','municipioResidencia','restriccionesMedicas','contactoEmergenciaNombre','contactoEmergenciaParentesco','contactoEmergenciaTelefono'];
+
 export const EmployeesAdmin=(mount,deps={})=>{
   const canEdit=can(PERMS.EDIT_EMPLOYEES);
   const ui=el('section',{className:'main-card'},[
@@ -109,18 +113,68 @@ export const EmployeesAdmin=(mount,deps={})=>{
       }))
     ];
   }
+  // Optional employee data, shared by create and edit so both forms stay in sync.
+  function optionalEmployeeFields(e={}){
+    return [
+      { id:'fechaNacimiento', label:'Fecha nacimiento', type:'date', value:toInputDate(e.fechaNacimiento) },
+      { id:'eps', label:'EPS', type:'text', value:e.eps||'' },
+      { id:'afp', label:'AFP', type:'text', value:e.afp||'' },
+      { id:'arlRiesgo', label:'Riesgo ARL', type:'text', value:e.arlRiesgo||'' },
+      { id:'restriccionesMedicas', label:'Restricciones medicas', type:'textarea', rows:3, value:e.restriccionesMedicas||'', placeholder:'Ej: no levantar mas de 10 kg, no trabajo en alturas' },
+      { id:'direccionResidencia', label:'Direccion de residencia', type:'text', value:e.direccionResidencia||'', placeholder:'Ej: Calle 10 # 20-30 apto 401' },
+      { id:'barrioResidencia', label:'Barrio', type:'text', value:e.barrioResidencia||'' },
+      { id:'municipioResidencia', label:'Municipio', type:'text', value:e.municipioResidencia||'' },
+      { id:'residenciaLatitud', label:'Latitud residencia', type:'number', step:'0.000001', value:e.residenciaLatitud ?? '', placeholder:'Ej: 6.244203' },
+      { id:'residenciaLongitud', label:'Longitud residencia', type:'number', step:'0.000001', value:e.residenciaLongitud ?? '', placeholder:'Ej: -75.581212' },
+      { id:'contactoEmergenciaNombre', label:'Contacto de emergencia', type:'text', value:e.contactoEmergenciaNombre||'', placeholder:'Nombre completo' },
+      { id:'contactoEmergenciaParentesco', label:'Parentesco', type:'text', value:e.contactoEmergenciaParentesco||'', placeholder:'Ej: Madre, esposo, hermana' },
+      { id:'contactoEmergenciaTelefono', label:'Telefono de emergencia', type:'text', value:e.contactoEmergenciaTelefono||'' },
+      { id:'dotacionCamisa', label:'Camisa', type:'text', value:e.dotacionCamisa||'' },
+      { id:'dotacionPantalon', label:'Pantalon', type:'text', value:e.dotacionPantalon||'' },
+      { id:'dotacionZapatos', label:'Zapatos', type:'text', value:e.dotacionZapatos||'' }
+    ];
+  }
+  function employeeOptionalSnapshot(e={}){
+    return {
+      fechaNacimiento:toInputDate(e.fechaNacimiento)||null,
+      eps:e.eps||null, afp:e.afp||null, arlRiesgo:e.arlRiesgo||null,
+      dotacionCamisa:e.dotacionCamisa||null, dotacionPantalon:e.dotacionPantalon||null, dotacionZapatos:e.dotacionZapatos||null,
+      ...employeeDetailSnapshot(e)
+    };
+  }
+  // Empty optional fields are saved as null; returns { data } or { error }.
+  function readOptionalEmployeeValues(values={}){
+    const text=(key)=>String(values[key]||'').trim()||null;
+    const data={
+      fechaNacimiento:text('fechaNacimiento'),
+      eps:text('eps'),
+      afp:text('afp'),
+      arlRiesgo:text('arlRiesgo'),
+      dotacionCamisa:text('dotacionCamisa'),
+      dotacionPantalon:text('dotacionPantalon'),
+      dotacionZapatos:text('dotacionZapatos'),
+      ...Object.fromEntries(EMPLOYEE_DETAIL_TEXT_FIELDS.map((key)=>[key,text(key)])),
+      residenciaLatitud:parseCoordinate(values.residenciaLatitud),
+      residenciaLongitud:parseCoordinate(values.residenciaLongitud)
+    };
+    if(data.fechaNacimiento && !validInputDate(data.fechaNacimiento)) return { error:'Selecciona una fecha de nacimiento valida.' };
+    if(data.fechaNacimiento && data.fechaNacimiento>todayInputDate()) return { error:'La fecha de nacimiento no puede ser futura.' };
+    if((data.residenciaLatitud!==null || data.residenciaLongitud!==null) && !hasValidSedeLocation(data.residenciaLatitud,data.residenciaLongitud)) return { error:'Registra latitud y longitud validas de la residencia, o deja ambas vacias.' };
+    return { data };
+  }
   async function openCreateModal(){
     const modal=await showActionModal({
       title:'Crear empleado',
-      message:'Completa la informacion para crear un empleado.',
+      message:'Completa la informacion para crear un empleado. Los campos con * son obligatorios.',
       confirmText:'Crear empleado',
       fields:[
-        { id:'doc', label:'Documento', type:'text', required:true, placeholder:'Documento del empleado' },
-        { id:'name', label:'Nombre completo', type:'text', required:true, placeholder:'Nombre completo' },
-        { id:'phone', label:'Telefono', type:'text', required:true, placeholder:'Telefono' },
-        { id:'cargo', label:'Cargo', type:'select', required:true, options:cargoOptions() },
-        { id:'sede', label:'Sede', type:'datalist', required:true, placeholder:'Selecciona o escribe sede', options:sedeOptions() },
-        { id:'ingreso', label:'Fecha ingreso', type:'date', required:true }
+        { id:'doc', label:'Documento *', type:'text', required:true, placeholder:'Documento del empleado' },
+        { id:'name', label:'Nombre completo *', type:'text', required:true, placeholder:'Nombre completo' },
+        { id:'phone', label:'Telefono *', type:'text', required:true, placeholder:'Telefono' },
+        { id:'cargo', label:'Cargo *', type:'select', required:true, options:cargoOptions() },
+        { id:'sede', label:'Sede *', type:'datalist', required:true, placeholder:'Selecciona o escribe sede', options:sedeOptions() },
+        { id:'ingreso', label:'Fecha ingreso *', type:'date', required:true },
+        ...optionalEmployeeFields()
       ]
     });
     if(!modal.confirmed) return;
@@ -136,12 +190,14 @@ export const EmployeesAdmin=(mount,deps={})=>{
     if(!cargoCode){ alert('Selecciona un cargo.'); return; }
     if(!sedeCode){ alert('Selecciona una sede valida.'); return; }
     if(!/^\d{4}-\d{2}-\d{2}$/.test(ingreso)){ alert('Selecciona la fecha de ingreso.'); return; }
+    const optional=readOptionalEmployeeValues(modal.values);
+    if(optional.error){ alert(optional.error); return; }
     try{
       const dupDoc=await deps.findEmployeeByDocument?.(doc);
       if(dupDoc) {
         if(String(dupDoc.estado||'').trim().toLowerCase()==='inactivo') {
           alert('Ya existe un empleado inactivo con ese documento. Se abrira el reingreso.');
-          return openRehireEmployeeModal(dupDoc,{ nombre:name, telefono:phone, cargoCodigo:cargoCode, sedeCodigo:sedeCode, fechaIngreso:ingreso });
+          return openRehireEmployeeModal(dupDoc,{ nombre:name, telefono:phone, cargoCodigo:cargoCode, sedeCodigo:sedeCode, fechaIngreso:ingreso, optional:optional.data });
         }
         alert('Ya existe un empleado activo con ese documento.');
         return;
@@ -158,9 +214,10 @@ export const EmployeesAdmin=(mount,deps={})=>{
         cargoNombre:cargo?.nombre||null,
         sedeCodigo:sedeCode,
         sedeNombre:sede?.nombre||null,
-        fechaIngreso: new Date(`${ingreso}T00:00:00`)
+        fechaIngreso: new Date(`${ingreso}T00:00:00`),
+        ...optional.data
       });
-      await deps.addAuditLog?.({ targetType:'employee', targetId:id, action:'create_employee', after:{ codigo:code, documento:doc, nombre:name, sedeCodigo:sedeCode, estado:'activo' } });
+      await deps.addAuditLog?.({ targetType:'employee', targetId:id, action:'create_employee', after:{ codigo:code, documento:doc, nombre:name, telefono:phone, cargoCodigo:cargoCode, sedeCodigo:sedeCode, fechaIngreso:ingreso, estado:'activo', ...optional.data } });
       alert('Empleado creado OK');
     }catch(e){ alert('Error: '+(e?.message||e)); }
   }
@@ -596,22 +653,16 @@ export const EmployeesAdmin=(mount,deps={})=>{
   async function openEditEmployeeModal(e){
     const modal=await showActionModal({
       title:'Editar empleado',
-      message:`Empleado: ${e.nombre||'-'}`,
+      message:`Empleado: ${e.nombre||'-'}\nLos campos con * son obligatorios.`,
       confirmText:'Guardar cambios',
       fields:[
-        { id:'codigo', label:'Codigo', type:'text', required:true, value:e.codigo||'' },
-        { id:'documento', label:'Documento', type:'text', required:true, value:e.documento||'' },
-        { id:'nombre', label:'Nombre completo', type:'text', required:true, value:e.nombre||'' },
-        { id:'telefono', label:'Telefono', type:'text', required:true, value:e.telefono||'' },
-        { id:'fechaNacimiento', label:'Fecha nacimiento', type:'date', value:toInputDate(e.fechaNacimiento) },
-        { id:'eps', label:'EPS', type:'text', value:e.eps||'' },
-        { id:'afp', label:'AFP', type:'text', value:e.afp||'' },
-        { id:'arlRiesgo', label:'Riesgo ARL', type:'text', value:e.arlRiesgo||'' },
-        { id:'dotacionCamisa', label:'Camisa', type:'text', value:e.dotacionCamisa||'' },
-        { id:'dotacionPantalon', label:'Pantalon', type:'text', value:e.dotacionPantalon||'' },
-        { id:'dotacionZapatos', label:'Zapatos', type:'text', value:e.dotacionZapatos||'' },
-        { id:'fechaIngreso', label:'Fecha ingreso', type:'date', required:true, value:toInputDate(e.fechaIngreso) },
-        { id:'detail', label:'Detalle de la modificacion', type:'textarea', required:true, placeholder:'Describe brevemente el cambio realizado' }
+        { id:'codigo', label:'Codigo *', type:'text', required:true, value:e.codigo||'' },
+        { id:'documento', label:'Documento *', type:'text', required:true, value:e.documento||'' },
+        { id:'nombre', label:'Nombre completo *', type:'text', required:true, value:e.nombre||'' },
+        { id:'telefono', label:'Telefono *', type:'text', required:true, value:e.telefono||'' },
+        { id:'fechaIngreso', label:'Fecha ingreso *', type:'date', required:true, value:toInputDate(e.fechaIngreso) },
+        ...optionalEmployeeFields(e),
+        { id:'detail', label:'Detalle de la modificacion *', type:'textarea', required:true, placeholder:'Describe brevemente el cambio realizado' }
       ]
     });
     if(!modal.confirmed) return;
@@ -627,6 +678,10 @@ export const EmployeesAdmin=(mount,deps={})=>{
     const newDotacionPantalon=String(modal.values.dotacionPantalon||'').trim();
     const newDotacionZapatos=String(modal.values.dotacionZapatos||'').trim();
     const newIngreso=String(modal.values.fechaIngreso||'').trim();
+    const newDetails=Object.fromEntries(EMPLOYEE_DETAIL_TEXT_FIELDS.map((key)=>[key,String(modal.values[key]||'').trim()||null]));
+    newDetails.residenciaLatitud=parseCoordinate(modal.values.residenciaLatitud);
+    newDetails.residenciaLongitud=parseCoordinate(modal.values.residenciaLongitud);
+    if((newDetails.residenciaLatitud!==null || newDetails.residenciaLongitud!==null) && !hasValidSedeLocation(newDetails.residenciaLatitud,newDetails.residenciaLongitud)) return alert('Registra latitud y longitud validas de la residencia, o deja ambas vacias.');
     if(newFechaNacimiento && !validInputDate(newFechaNacimiento)) return alert('Selecciona una fecha de nacimiento valida.');
     if(newFechaNacimiento && newFechaNacimiento>todayInputDate()) return alert('La fecha de nacimiento no puede ser futura.');
     if(!/^\d{4}-\d{2}-\d{2}$/.test(newIngreso)) return alert('Selecciona la fecha de ingreso.');
@@ -647,9 +702,10 @@ export const EmployeesAdmin=(mount,deps={})=>{
         dotacionCamisa:newDotacionCamisa||null,
         dotacionPantalon:newDotacionPantalon||null,
         dotacionZapatos:newDotacionZapatos||null,
+        ...newDetails,
         fechaIngreso:new Date(`${newIngreso}T00:00:00`)
       });
-      await deps.addAuditLog?.({ targetType:'employee', targetId:e.id, action:'update_employee', before:{ codigo:e.codigo, documento:e.documento, nombre:e.nombre, telefono:e.telefono, fechaNacimiento:e.fechaNacimiento||null, eps:e.eps||null, afp:e.afp||null, arlRiesgo:e.arlRiesgo||null, dotacionCamisa:e.dotacionCamisa||null, dotacionPantalon:e.dotacionPantalon||null, dotacionZapatos:e.dotacionZapatos||null, fechaIngreso:e.fechaIngreso||null }, after:{ codigo:newCode, documento:newDoc, nombre:newName, telefono:newPhone, fechaNacimiento:newFechaNacimiento||null, eps:newEps||null, afp:newAfp||null, arlRiesgo:newArlRiesgo||null, dotacionCamisa:newDotacionCamisa||null, dotacionPantalon:newDotacionPantalon||null, dotacionZapatos:newDotacionZapatos||null, fechaIngreso:newIngreso }, note:modal.values.detail||null });
+      await deps.addAuditLog?.({ targetType:'employee', targetId:e.id, action:'update_employee', before:{ codigo:e.codigo, documento:e.documento, nombre:e.nombre, telefono:e.telefono, fechaNacimiento:e.fechaNacimiento||null, eps:e.eps||null, afp:e.afp||null, arlRiesgo:e.arlRiesgo||null, dotacionCamisa:e.dotacionCamisa||null, dotacionPantalon:e.dotacionPantalon||null, dotacionZapatos:e.dotacionZapatos||null, ...employeeDetailSnapshot(e), fechaIngreso:e.fechaIngreso||null }, after:{ codigo:newCode, documento:newDoc, nombre:newName, telefono:newPhone, fechaNacimiento:newFechaNacimiento||null, eps:newEps||null, afp:newAfp||null, arlRiesgo:newArlRiesgo||null, dotacionCamisa:newDotacionCamisa||null, dotacionPantalon:newDotacionPantalon||null, dotacionZapatos:newDotacionZapatos||null, ...newDetails, fechaIngreso:newIngreso }, note:modal.values.detail||null });
     }catch(err){ alert('Error: '+(err?.message||err)); }
   }
   async function openTransferEmployeeModal(e){
@@ -800,18 +856,21 @@ export const EmployeesAdmin=(mount,deps={})=>{
     if(String(e?.estado||'').trim().toLowerCase()!=='inactivo') return alert('Solo puedes reingresar empleados inactivos.');
     const lastRetiro=lastRetiroDateForEmployee(e);
     const minIngreso=lastRetiro||'';
+    // Prefill the optional data with what the employee had; values typed in "Crear empleado" win.
+    const typed=Object.fromEntries(Object.entries(defaults.optional||{}).filter(([,value])=>value!==null && value!==''));
     const modal=await showActionModal({
       title:'Reingresar empleado',
-      message:`Empleado: ${e.nombre||'-'}${lastRetiro ? `\nUltimo retiro: ${formatInputDate(lastRetiro)}` : ''}`,
+      message:`Empleado: ${e.nombre||'-'}${lastRetiro ? `\nUltimo retiro: ${formatInputDate(lastRetiro)}` : ''}\nLos campos con * son obligatorios.`,
       confirmText:'Reingresar',
       fields:[
         { id:'documento', label:'Documento', type:'text', value:e.documento||'', readonly:true },
-        { id:'nombre', label:'Nombre completo', type:'text', required:true, value:defaults.nombre||e.nombre||'' },
-        { id:'telefono', label:'Telefono', type:'text', required:true, value:defaults.telefono||e.telefono||'' },
-        { id:'cargo', label:'Cargo', type:'select', required:true, value:defaults.cargoCodigo||e.cargoCodigo||'', options:cargoOptions() },
-        { id:'sede', label:'Sede', type:'datalist', required:true, placeholder:'Selecciona o escribe sede', value:sedeLabelByCode(defaults.sedeCodigo||e.sedeCodigo)||'', options:sedeOptions() },
-        { id:'fechaIngreso', label:'Nueva fecha ingreso', type:'date', required:true, value:defaults.fechaIngreso||minIngreso, min:minIngreso },
-        { id:'detail', label:'Detalle', type:'textarea', required:true, placeholder:'Describe brevemente el reingreso' }
+        { id:'nombre', label:'Nombre completo *', type:'text', required:true, value:defaults.nombre||e.nombre||'' },
+        { id:'telefono', label:'Telefono *', type:'text', required:true, value:defaults.telefono||e.telefono||'' },
+        { id:'cargo', label:'Cargo *', type:'select', required:true, value:defaults.cargoCodigo||e.cargoCodigo||'', options:cargoOptions() },
+        { id:'sede', label:'Sede *', type:'datalist', required:true, placeholder:'Selecciona o escribe sede', value:sedeLabelByCode(defaults.sedeCodigo||e.sedeCodigo)||'', options:sedeOptions() },
+        { id:'fechaIngreso', label:'Nueva fecha ingreso *', type:'date', required:true, value:defaults.fechaIngreso||minIngreso, min:minIngreso },
+        ...optionalEmployeeFields({ ...e, ...typed }),
+        { id:'detail', label:'Detalle del reingreso *', type:'textarea', required:true, placeholder:'Describe brevemente el reingreso' }
       ]
     });
     if(!modal.confirmed) return;
@@ -826,6 +885,8 @@ export const EmployeesAdmin=(mount,deps={})=>{
     if(!newSedeCode) return alert('Selecciona una sede valida.');
     if(!validInputDate(newIngreso)) return alert('Selecciona una fecha de ingreso valida.');
     if(lastRetiro && newIngreso<lastRetiro) return alert(`La nueva fecha de ingreso no puede ser anterior al ultimo retiro (${lastRetiro}).`);
+    const optional=readOptionalEmployeeValues(modal.values);
+    if(optional.error) return alert(optional.error);
     try{
       const cargo=cargoList.find(c=>c.codigo===newCargoCode);
       const sede=sedeList.find(s=>s.codigo===newSedeCode);
@@ -836,9 +897,10 @@ export const EmployeesAdmin=(mount,deps={})=>{
         cargoNombre:cargo?.nombre||null,
         sedeCodigo:newSedeCode,
         sedeNombre:sede?.nombre||null,
-        fechaIngreso:new Date(`${newIngreso}T00:00:00`)
+        fechaIngreso:new Date(`${newIngreso}T00:00:00`),
+        ...optional.data
       });
-      await deps.addAuditLog?.({ targetType:'employee', targetId:e.id, action:'rehire_employee', before:{ estado:e.estado, fechaRetiro:e.fechaRetiro||null }, after:{ estado:'activo', fechaIngreso:newIngreso, cargoCodigo:newCargoCode, sedeCodigo:newSedeCode }, note:modal.values.detail||null });
+      await deps.addAuditLog?.({ targetType:'employee', targetId:e.id, action:'rehire_employee', before:{ estado:e.estado, fechaRetiro:e.fechaRetiro||null, ...employeeOptionalSnapshot(e) }, after:{ estado:'activo', fechaIngreso:newIngreso, cargoCodigo:newCargoCode, sedeCodigo:newSedeCode, ...optional.data }, note:modal.values.detail||null });
       alert(`Empleado reingresado OK: ${updated?.nombre||newName}`);
     }catch(err){ alert('Error: '+(err?.message||err)); }
   }
@@ -930,10 +992,22 @@ export const EmployeesAdmin=(mount,deps={})=>{
         ['Telefono',e.telefono],
         ['Fecha nacimiento',formatInputDate(e.fechaNacimiento)]
       ]),
+      detailSection('Residencia',[
+        ['Direccion',e.direccionResidencia],
+        ['Barrio',e.barrioResidencia],
+        ['Municipio',e.municipioResidencia],
+        ['Ubicacion',residenceLocationNode(e)]
+      ]),
       detailSection('Seguridad social',[
         ['EPS',e.eps],
         ['AFP',e.afp],
-        ['Riesgo ARL',e.arlRiesgo]
+        ['Riesgo ARL',e.arlRiesgo],
+        ['Restricciones medicas',e.restriccionesMedicas ? el('span',{style:'white-space:pre-wrap'},[e.restriccionesMedicas]) : 'Sin restricciones registradas']
+      ]),
+      detailSection('Contacto de emergencia',[
+        ['Nombre',e.contactoEmergenciaNombre],
+        ['Parentesco',e.contactoEmergenciaParentesco],
+        ['Telefono',e.contactoEmergenciaTelefono]
       ]),
       detailSection('Dotacion',[
         ['Camisa',e.dotacionCamisa],
@@ -951,7 +1025,27 @@ export const EmployeesAdmin=(mount,deps={})=>{
       ])))
     ]);
   }
+  // Coordinates plus the same Google Maps / Waze buttons used for sedes.
+  function residenceLocationNode(e={}){
+    const lat=parseCoordinate(e.residenciaLatitud);
+    const lng=parseCoordinate(e.residenciaLongitud);
+    if(!hasValidSedeLocation(lat,lng)) return 'Sin ubicacion registrada';
+    const link=(href,icon,fallback,label)=>el('a',{ className:'btn btn--icon', href, target:'_blank', rel:'noopener noreferrer', title:label, 'aria-label':label },[lucideInlineIcon(icon,fallback)]);
+    return el('span',{ style:'display:inline-flex;align-items:center;gap:.4rem;flex-wrap:wrap' },[
+      `${lat.toFixed(6)}, ${lng.toFixed(6)}`,
+      link(googleMapsDirectionsUrl(lat,lng),'map','G','Abrir en Google Maps'),
+      link(wazeDirectionsUrl(lat,lng),'navigation','W','Abrir en Waze')
+    ]);
+  }
+  function employeeDetailSnapshot(e={}){
+    return {
+      ...Object.fromEntries(EMPLOYEE_DETAIL_TEXT_FIELDS.map((key)=>[key,e[key]||null])),
+      residenciaLatitud:parseCoordinate(e.residenciaLatitud),
+      residenciaLongitud:parseCoordinate(e.residenciaLongitud)
+    };
+  }
   function detailValue(value){
+    if(value?.nodeType) return value;
     const text=String(value ?? '').trim();
     return text || '-';
   }

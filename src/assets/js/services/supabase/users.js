@@ -1,4 +1,9 @@
 export {
+  createAccessProfile,
+  setAccessProfileStatus,
+  setUserAccessProfile,
+  streamAccessProfiles,
+  updateAccessProfile,
   clearUserOverrides,
   findUserByEmail,
   getUserOverrides,

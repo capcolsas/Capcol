@@ -3856,7 +3856,8 @@ export async function closeOperationDay(date) {
         contratados: Number(closureSummary?.contratados ?? metrics?.expected ?? 0),
         asistencias: Number(closureSummary?.asistencias ?? 0),
         ausentismos: Number(closureSummary?.ausentismos ?? metrics?.absenteeism ?? 0),
-        pagados: Number(closureSummary?.pagados ?? metrics?.paid_services ?? metrics?.paidServices ?? 0),
+        // daily_closures has no pagados column (dropped in phase 6): paid services live in
+        // daily_metrics.paid_services and daily_contract_metrics.pagados.
         faltan: Number(closureSummary?.faltan ?? 0),
         sobran: Number(closureSummary?.sobran ?? 0),
         no_contratados: Number(closureSummary?.noContratados ?? metrics?.no_contracted ?? metrics?.noContracted ?? 0),

@@ -139,6 +139,12 @@ begin
 end
 $radius$;
 alter table public.sedes alter column qr_radius_meters set default 200;`, label)],
+  // Asigna todos los contratos solo la primera vez: re-ejecutarlo devolveria accesos retirados a proposito.
+  'schema_operations_phase71_contract_scope_all_profiles.sql': [runOnce('p71_profile_contract_backfill', null,
+    /insert into public\.profile_contract_access \(user_id, contrato_codigo, estado, created_by_email\)[^;]*?on conflict \(user_id, contrato_codigo\) do nothing;/)],
+  // Recorre toda la auditoria historica: basta con hacerlo una vez.
+  'schema_operations_phase73_audit_contract_scope.sql': [runOnce('p73_audit_contract_backfill', null,
+    /update public\.audit_logs al\s+set contrato_codigo = public\.audit_target_contract[^;]*;/)],
   // La politica se crea dentro de un bloque DO (dinamico): makeReRunnable no la alcanza.
   'schema_operations_phase58_inventory.sql': [
     (sql, label) => once(sql, /( execute format\('create policy inventory_read on public\.%I)/,
