@@ -5,6 +5,7 @@ import { supabaseAdmin } from './supabase.js';
 const MAIN_PORTAL_ONLY_ROLES = ['superadmin', 'admin', 'editor', 'consultor', 'tablet_qr'];
 const INCAPACITY_SUPPORT_BUCKET = 'incapacidades-soportes';
 const MAX_SUPPORT_BYTES = 8 * 1024 * 1024;
+export const SUPPORT_MIME_TYPES = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'];
 
 function mapErrorMessage(error) {
   const code = String(error?.message || '').trim();
@@ -250,7 +251,7 @@ function parseSupportDataUrl(dataUrl) {
     throw error;
   }
   const mimeType = String(match[1] || '').trim().toLowerCase();
-  if (!['application/pdf', 'image/jpeg', 'image/png', 'image/webp'].includes(mimeType)) {
+  if (!SUPPORT_MIME_TYPES.includes(mimeType)) {
     const error = new Error('invalid_support');
     error.statusCode = 400;
     throw error;
@@ -271,10 +272,25 @@ function parseSupportDataUrl(dataUrl) {
 
 async function uploadIncapacitySupportFile({ documento, fileName, dataUrl }) {
   const { mimeType, buffer } = parseSupportDataUrl(dataUrl);
+  return uploadIncapacitySupportBuffer({ documento, fileName, mimeType, buffer });
+}
+
+// Shared by the portal and WhatsApp Flows: same bucket, file types and size limit.
+export async function uploadIncapacitySupportBuffer({ documento, fileName, mimeType, buffer, folder = 'portal-web' }) {
+  if (!SUPPORT_MIME_TYPES.includes(mimeType) || !buffer?.length) {
+    const error = new Error('invalid_support');
+    error.statusCode = 400;
+    throw error;
+  }
+  if (buffer.length > MAX_SUPPORT_BYTES) {
+    const error = new Error('support_too_large');
+    error.statusCode = 400;
+    throw error;
+  }
   const baseName = safeStoragePart(String(fileName || '').replace(/\.[a-zA-Z0-9]+$/, ''), 'soporte');
   const extension = String(fileName || '').match(/\.[a-zA-Z0-9]+$/)?.[0]?.toLowerCase() || extensionFromMimeType(mimeType);
   const owner = safeStoragePart(documento || 'sin-documento');
-  const storagePath = `portal-web/${owner}/${Date.now()}_${crypto.randomUUID()}_${baseName}${extension}`;
+  const storagePath = `${folder}/${owner}/${Date.now()}_${crypto.randomUUID()}_${baseName}${extension}`;
   const { error } = await supabaseAdmin
     .storage
     .from(INCAPACITY_SUPPORT_BUCKET)

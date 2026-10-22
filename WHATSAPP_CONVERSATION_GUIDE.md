@@ -2,6 +2,40 @@
 
 Documento base para revisar, proyectar y modificar el flujo conversacional de WhatsApp del proyecto.
 
+## Modo ubicacion (`WHATSAPP_CONVERSATION_MODE=location`)
+
+Desde octubre de 2026 Meta cobra cada mensaje de servicio. En este modo cada interaccion cuesta un solo mensaje y el bot solo responde a tres cosas. El modo `legacy` (por defecto) conserva la conversacion descrita en el resto de esta guia.
+
+| El empleado envia | El bot responde |
+| --- | --- |
+| Ubicacion actual | Registra ingreso o salida segun su turno: confirmacion de texto, o imagen QR si la sede usa QR. |
+| `R`, `Rocky`, `N` o `Novedad` (sin importar mayusculas ni tildes) | Flow **menu Rocky**: Incapacidad, Novedad, Compensatorio, No soy yo. |
+| Respuesta a un boton de confirmacion de marcacion | Completa la marcacion elegida. |
+| Cualquier otra cosa ("Hola", "gracias", stickers, audios, reacciones) | Nada: solo se marca como leido (no se cobra). |
+
+Reglas de la marcacion por ubicacion:
+
+- Sin ingreso abierto: ingreso. Con ingreso abierto: salida.
+- Ingreso abierto hace menos de `WHATSAPP_EXIT_GUARD_MINUTES` (30): botones "Registrar salida / Fue un error".
+- Ingreso abierto y otro turno por iniciar: botones "Registrar salida / Registrar ingreso / Fue un error".
+- Empleado con sede fija: solo se valida el radio de la sede de su turno, aunque haya otras sedes cerca.
+- Supernumerarios y cargos con marcacion movil (los supervisores siempre son moviles): si hay varias sedes en rango se envia el Flow **marcacion** para elegir.
+- Numero no registrado: Flow **marcacion** para escribir la cedula; la ubicacion vale 10 minutos.
+- Llegada tarde o salida temprano: un solo texto "Ingreso recibido ... Para completar tu registro: escribe el motivo". La respuesta se confirma solo con el visto azul.
+- Se mantiene el rechazo de ubicaciones reenviadas, buscadas por nombre o fuera de radio.
+
+Flow menu Rocky: Incapacidad (Enfermedad General, Accidente Laboral), Novedad (Calamidad, Licencia No Remunerada, Licencia Remunerada, Vacaciones; sin Licencia Remunerada para supernumerarios) y Compensatorio (no para supernumerarios). Las fechas se validan dentro del Flow. Enfermedad General, Accidente Laboral y Calamidad muestran la carga opcional del soporte y, si son mas de 3 dias, de la historia clinica o epicrisis. Los archivos se guardan en `incapacidades-soportes/whatsapp-flow/`, en la tabla `incapacidad_soportes` y el principal en `incapacitados.soporte_*`. Solo si un archivo falla se envia un texto con el enlace al portal.
+
+Cambio de telefono y traslado de sede no estan disponibles en este modo: los hace el supervisor en la plataforma.
+
+### Activacion
+
+1. Ejecutar `supabase/releases/05_asistencia_movil_y_revision.sql` (incluye la fase 75).
+2. Generar llaves: `node scripts/whatsapp-flow-keys.mjs generate <carpeta-fuera-del-repo> <frase>` y registrar la publica: `node scripts/whatsapp-flow-keys.mjs upload <carpeta>/flow-public.pem`.
+3. En WhatsApp Manager crear dos Flows con `whatsapp-backend/flows/rocky-menu.json` y `whatsapp-backend/flows/rocky-marcacion.json`, endpoint `https://<backend>/api/flows/endpoint`, y publicarlos.
+4. Configurar en Vercel `WHATSAPP_FLOW_MENU_ID`, `WHATSAPP_FLOW_MARKING_ID`, `WHATSAPP_FLOW_PRIVATE_KEY`, `WHATSAPP_FLOW_PRIVATE_KEY_PASSPHRASE` y, al final, `WHATSAPP_CONVERSATION_MODE=location`. Para volver atras basta `WHATSAPP_CONVERSATION_MODE=legacy`.
+5. Para probar Flows sin publicar: `WHATSAPP_FLOW_DRAFT=true` con un numero de prueba.
+
 ## Alcance
 
 Esta guia describe el flujo actual implementado en `whatsapp-backend/src/app.js` para:

@@ -9,7 +9,9 @@ import express from 'express';
 import QRCode from 'qrcode';
 import { config, isAllowedCorsOrigin } from './config.js';
 import { buildEmployeeCertificatePdf, certificateFileName, normalizeCertificateType, validateCertificateData } from './certificates/certificate-service.js';
-import { getEmployeePortalContext, registerEmployeePortalRoutes } from './employee-portal.js';
+import { getEmployeePortalContext, registerEmployeePortalRoutes, uploadIncapacitySupportBuffer } from './employee-portal.js';
+import { decryptFlowMedia, decryptFlowRequest, encryptFlowResponse } from './whatsapp-flow-crypto.js';
+import { decideMarkingAction, isMenuKeyword } from './whatsapp-intents.js';
 import { classifyShiftEventTime, closeDueScheduledShifts, getScheduledShiftById, openScheduledShiftForEmployeeEvent, resolveScheduledShiftForEmployeeEvent } from './shifts.js';
 import { supabaseAdmin } from './supabase.js';
 
@@ -38,6 +40,7 @@ const SESSION = {
   AWAITING_NOVELTY: 'awaiting_novelty',
   AWAITING_DATE_START: 'awaiting_date_start',
   AWAITING_DATE_END: 'awaiting_date_end',
+  AWAITING_MARKING_CONFIRM: 'awaiting_marking_confirm',
   COMPLETED: 'completed'
 };
 
@@ -81,6 +84,7 @@ app.get('/health', (_req, res) => {
 registerEmployeePortalRoutes(app);
 registerAttendanceQrRoutes(app);
 registerCertificateRoutes(app);
+registerWhatsAppFlowRoutes(app);
 
 app.get(['/cron/close-daily-operation', '/api/cron/close-daily-operation'], async (req, res) => {
   try {
@@ -136,6 +140,8 @@ app.post('/webhooks/whatsapp', async (req, res) => {
     }
 
     for (const message of messages) {
+      // Meta re-delivers a message when the webhook is slow; answering it twice would bill twice.
+      if (await isDuplicateIncomingMessage(message)) continue;
       const incomingId = await storeIncomingEvent({ eventType: 'message', payload: message });
       try {
         await processIncomingMessage(message);
@@ -1192,12 +1198,12 @@ async function registerAttendanceEvent({ tokenRow, device = null, employee = nul
 async function registerQrEntry(args) { return registerAttendanceEvent(args); }
 async function registerQrExit(args) { return registerAttendanceEvent(args); }
 
-async function notifyAttendanceReason(request) {
+async function notifyAttendanceReason(request, prefix = '') {
   try {
     const { data, error } = await supabaseAdmin.from('attendance_reason_requests').select('*')
       .eq('recipient', request.recipient).is('answered_at', null).order('event_at', { ascending: true }).limit(1);
     if (error) throw error;
-    if (data?.[0]) await sendText(request.recipient, attendanceReasonPrompt(data[0]));
+    if (data?.[0]) await sendText(request.recipient, prefix ? `${prefix}\n${attendanceReasonPrompt(data[0])}` : attendanceReasonPrompt(data[0]));
   } catch (error) {
     // The marking and pending explanation are durable; the next incoming message resumes it.
     console.error('Marcación guardada; solicitud de motivo pendiente de entrega:', error);
@@ -1221,7 +1227,13 @@ async function handlePendingAttendanceReason(phone, message) {
   const predatesMarking = Number.isFinite(messageAt) && messageAt > 0
     && messageAt < Math.floor(new Date(request.event_at).getTime() / 1000) * 1000;
   const result = predatesMarking ? { error: 'El registro tiene una explicación pendiente.' } : validateAttendanceReason(message);
+  const locationMode = config.whatsappConversationMode === 'location';
   if (result.error) {
+    // Stickers, reactions or audio are not an attempt to answer: re-asking would bill for nothing.
+    if (locationMode && !['text', 'location'].includes(message?.type)) {
+      await markMessageRead(message);
+      return true;
+    }
     await sendText(phone, `${result.error}\n${attendanceReasonPrompt(request)}`);
     return true;
   }
@@ -1229,6 +1241,12 @@ async function handlePendingAttendanceReason(phone, message) {
     p_request_id: request.id, p_recipient: phone, p_reason: result.reason, p_message_id: message.id || null
   });
   if (saveError) throw saveError;
+  if (locationMode) {
+    // The marking was already reported together with the request; the read receipt acknowledges it.
+    await markMessageRead(message);
+    await notifyAttendanceReason(request);
+    return true;
+  }
   // The registration is only announced as successful now that its explanation is on record.
   const shift = await getScheduledShiftById(request.scheduled_shift_id).catch(() => null);
   const actionLabel = request.action === 'exit' ? 'Salida' : 'Ingreso';
@@ -1908,6 +1926,21 @@ async function storeIncomingEvent({ eventType, payload }) {
   return row.id;
 }
 
+// A message already handled, or still being handled by a delivery that started moments ago, is skipped.
+// A pending row older than the in-flight window means that delivery crashed, so the retry is processed.
+const INCOMING_IN_FLIGHT_MS = 2 * 60000;
+
+async function isDuplicateIncomingMessage(message) {
+  const id = String(message?.id || '').trim();
+  if (!id) return false;
+  const { data, error } = await supabaseAdmin.from('whatsapp_incoming')
+    .select('process_status,received_at').eq('id', id).maybeSingle();
+  if (error) throw error;
+  if (!data) return false;
+  if (data.process_status !== 'pending') return true;
+  return Date.now() - new Date(data.received_at).getTime() < INCOMING_IN_FLIGHT_MS;
+}
+
 async function markIncomingProcessed(id, status, reason) {
   if (!id) return;
   await supabaseAdmin.from('whatsapp_incoming').update({
@@ -1953,6 +1986,7 @@ function userMessageForProcessingError(error) {
 }
 
 async function processIncomingMessage(message) {
+  if (config.whatsappConversationMode === 'location') return processLocationFirstMessage(message);
   const phone = getWhatsAppRecipient(message);
   if (!phone) throw new Error('missing_whatsapp_recipient');
 
@@ -2030,6 +2064,194 @@ async function processIncomingMessage(message) {
       await startIdentificationFlow(phone);
   }
 }
+
+// Location-first conversation: every billed reply answers a location, the menu keyword or a pending
+// marking confirmation. Anything else only gets a read receipt, which WhatsApp does not bill.
+const MARKING_LOCATION_MAX_AGE_MS = 5 * 60000;
+const FLOW_LOCATION_MAX_AGE_MS = 10 * 60000;
+
+async function processLocationFirstMessage(message) {
+  const phone = getWhatsAppRecipient(message);
+  if (!phone) throw new Error('missing_whatsapp_recipient');
+
+  const flowReply = extractFlowReply(message);
+  if (flowReply) {
+    await handleFlowCompletion(phone, message, flowReply);
+    return;
+  }
+  if (await handlePendingAttendanceReason(phone, message)) return;
+
+  const parsed = parseInboundAction(message);
+  if (parsed.location) {
+    await handleLocationMarking(phone, parsed);
+    return;
+  }
+  if (message?.type === 'text' && isMenuKeyword(parsed.value)) {
+    await sendMenuFlow(phone);
+    return;
+  }
+  if (String(parsed.id || '').startsWith('marking:')) {
+    const session = await getSession(phone);
+    if (session.session_state === SESSION.AWAITING_MARKING_CONFIRM) {
+      await handleMarkingConfirmation(phone, session, parsed);
+      return;
+    }
+  }
+  await markMessageRead(message);
+}
+
+async function handleLocationMarking(phone, parsed) {
+  if (parsed.forwarded) {
+    await sendText(phone, 'Recibimos una ubicacion reenviada. Para registrar tu asistencia debes compartir tu ubicacion actual directamente desde WhatsApp.');
+    return;
+  }
+  if (isNamedLocation(parsed.location)) {
+    await sendText(phone, 'Recibimos una ubicacion con nombre o direccion, que puede corresponder a una busqueda. Para registrar tu asistencia comparte tu ubicacion actual desde WhatsApp, sin seleccionar una direccion del mapa.');
+    return;
+  }
+  const location = { latitude: parsed.location.latitude, longitude: parsed.location.longitude };
+  const receivedAt = new Date().toISOString();
+  const employee = normalizeBusinessScopedUserId(phone) ? null : await findEmployeeByPhone(phone);
+  if (!employee) {
+    await sendMarkingFlow(phone, { start: 'cedula', location, receivedAt });
+    return;
+  }
+  await answerMarkingPlan(phone, await planLocationMarking(employee), location, receivedAt);
+}
+
+async function planLocationMarking(employee) {
+  const fresh = await reloadEmployeeForAttendance(employee);
+  const documento = normalizeDocument(fresh.documento);
+  const openEntry = await findOpenShiftEntry(fresh, documento);
+  const entry = await findEntryCandidate(fresh, documento);
+  return { employee: fresh, entry, decision: decideMarkingAction({ openEntry, entry, guardMinutes: config.whatsappExitGuardMinutes }) };
+}
+
+async function findOpenShiftEntry(employee, documento) {
+  const day = currentDate();
+  const { data, error } = await supabaseAdmin.from('employee_shift_status')
+    .select('scheduled_shift_id,entrada_at').eq('employee_id', employee.id)
+    .not('entrada_at', 'is', null).is('salida_at', null)
+    // Closure leaves shifts without exit as salida_pendiente: those no longer wait for an exit.
+    .not('estado_turno', 'in', '(cancelado,salida_pendiente)')
+    .gte('fecha_operativa', addIsoDays(day, -2)).lte('fecha_operativa', addIsoDays(day, 1))
+    .order('entrada_at', { ascending: false }).limit(1);
+  if (error) throw error;
+  const row = data?.[0];
+  if (!row) return null;
+  const shift = await getScheduledShiftById(row.scheduled_shift_id);
+  if (!shift || shift.estado === 'cancelado') return null;
+  try {
+    await validateQrActionAvailability({ action: 'exit', documento, turnoId: shift.id });
+  } catch (error) {
+    if (['exit_requires_entry', 'exit_exists'].includes(String(error?.message || ''))) return null;
+    throw error;
+  }
+  return { shift, entradaAt: row.entrada_at };
+}
+
+async function findEntryCandidate(employee, documento) {
+  // A covering supernumerario's site, and so shift, is only known once the location identifies it.
+  if (employee.isSupernumerario && !employee.marcacionMovil) return { available: true, shift: null };
+  try {
+    const shift = await resolveAttendanceShift(employee, null, 'entry');
+    await validateQrActionAvailability({ action: 'entry', documento, turnoId: shift.id });
+    return { available: true, shift };
+  } catch (error) {
+    if (['attendance_shift_missing', 'attendance_shift_ambiguous', 'entry_exists'].includes(String(error?.message || ''))) {
+      return { available: false, error };
+    }
+    throw error;
+  }
+}
+
+function markingUnavailableMessage(plan) {
+  const code = String(plan?.entry?.error?.message || '');
+  if (code === 'entry_exists') return 'Ya registraste el ingreso de tu turno actual. Si necesitas corregir la marcacion comunicate con el supervisor.';
+  return qrMessageFromError({ message: code === 'attendance_shift_ambiguous' ? code : 'attendance_shift_missing' });
+}
+
+function markingShiftLabel(shift) {
+  return `${shift.nombre || 'Turno'} (${shift.fechaOperativa}) en ${shift.sedeNombre || shift.sedeCodigo}`;
+}
+
+function markingConfirmationPrompt(decision) {
+  if (decision.action === 'choose') {
+    return {
+      body: `Tienes un ingreso abierto en el turno ${markingShiftLabel(decision.exitShift)} y un turno por iniciar: ${markingShiftLabel(decision.entryShift)}.\n\nQue deseas registrar?`,
+      buttons: [
+        { id: `marking:exit:${decision.exitShift.id}`, title: 'Registrar salida' },
+        { id: `marking:entry:${decision.entryShift.id}`, title: 'Registrar ingreso' },
+        { id: 'marking:cancel', title: 'Fue un error' }
+      ]
+    };
+  }
+  return {
+    body: `Acabas de registrar el ingreso al turno ${markingShiftLabel(decision.shift)}.\n\nDeseas registrar la salida?`,
+    buttons: [
+      { id: `marking:exit:${decision.shift.id}`, title: 'Registrar salida' },
+      { id: 'marking:cancel', title: 'Fue un error' }
+    ]
+  };
+}
+
+async function answerMarkingPlan(phone, plan, location, receivedAt) {
+  const { employee, decision } = plan;
+  if (decision.action === 'none') {
+    await sendText(phone, markingUnavailableMessage(plan));
+    return;
+  }
+  if (decision.action === 'entry' || decision.action === 'exit') {
+    await markWithLocation(phone, employee, decision.action, decision.shift?.id || null, location);
+    return;
+  }
+  await storeSession(phone, {
+    employee_id: employee.id,
+    documento: employee.documento,
+    session_state: SESSION.AWAITING_MARKING_CONFIRM,
+    session_data: { employee: sessionEmployee(employee), pendingLocation: location, pendingLocationAt: receivedAt }
+  });
+  const prompt = markingConfirmationPrompt(decision);
+  await sendButtons(phone, prompt.body, prompt.buttons);
+}
+
+async function handleMarkingConfirmation(phone, session, parsed) {
+  const [, action, shiftId] = String(parsed.id || '').split(':');
+  const saved = session.session_data || {};
+  if (!['entry', 'exit'].includes(action) || !shiftId) {
+    await resetSession(phone, session, {});
+    return;
+  }
+  const age = Date.now() - new Date(saved.pendingLocationAt).getTime();
+  if (!saved.pendingLocation || !Number.isFinite(age) || age < 0 || age > MARKING_LOCATION_MAX_AGE_MS) {
+    await resetSession(phone, session, {});
+    await sendText(phone, 'La ubicación venció. Envía nuevamente tu ubicación actual.');
+    return;
+  }
+  const employee = await loadEmployeeFromSession(session);
+  if (!employee) throw qrError('employee_inactive', 409);
+  await markWithLocation(phone, employee, action, shiftId, saved.pendingLocation);
+}
+
+function locationMarkingSession(phone, employee, action, shiftId) {
+  return {
+    id: phone,
+    phone_number: employee.telefono || normalizePhone(phone) || null,
+    employee_id: employee.id,
+    documento: employee.documento,
+    session_state: SESSION.AWAITING_QR_LOCATION,
+    session_data: { employee: sessionEmployee(employee), pendingQrAction: action, pendingShiftId: shiftId || null }
+  };
+}
+
+// The action is already decided, so the location runs through the same validation and registration as
+// the legacy "share your location" step (radius, mobile sites, QR, late/early reasons).
+async function markWithLocation(phone, employee, action, shiftId, location) {
+  const session = locationMarkingSession(phone, employee, action, shiftId);
+  await storeSession(phone, session);
+  await handleQrLocationInput(phone, session, { location });
+}
+
 async function startIdentificationFlow(phone) {
   const isBsuidRecipient = Boolean(normalizeBusinessScopedUserId(phone));
   const employeeByPhone = isBsuidRecipient ? null : await findEmployeeByPhone(getSessionPhone({ id: phone, phone_number: phone }));
@@ -2706,14 +2928,8 @@ async function handleQrLocationInput(phone, session, parsed) {
     return;
   }
 
-  const { shift, options } = await locatedMarkingContext(employee, session.session_data || {});
-  const candidates = options.sites.filter(site => validateAttendanceLocation(location, site).ok);
+  const { shift, candidates, message } = await locatedMarkingCandidates(employee, session.session_data || {}, location);
   if (!candidates.length) {
-    const message = options.supernumerario
-      ? 'Tu ubicación no corresponde a una sede activa de tus contratos habilitados. Acércate a la sede donde vas a trabajar y comparte nuevamente tu ubicación actual.'
-      : options.mobile
-      ? 'Tu ubicación no corresponde a una sede habilitada de tu zona y contrato. Acércate a una sede autorizada y comparte nuevamente tu ubicación actual.'
-      : validateAttendanceLocation(location, options.sites[0]).message;
     await sendText(phone, message);
     return;
   }
@@ -2726,6 +2942,20 @@ async function handleQrLocationInput(phone, session, parsed) {
     return;
   }
   await completeLocatedMarking(phone, session, employee, shift, candidates[0], location, verifiedAt);
+}
+
+// A fixed-site employee only gets the shift's site; mobile cargos (supervisors included) and covering
+// supernumerarios get every authorized site, so several may contain the location.
+async function locatedMarkingCandidates(employee, saved, location) {
+  const { shift, options } = await locatedMarkingContext(employee, saved);
+  const candidates = options.sites.filter(site => validateAttendanceLocation(location, site).ok);
+  if (candidates.length) return { shift, candidates, message: null };
+  const message = options.supernumerario
+    ? 'Tu ubicación no corresponde a una sede activa de tus contratos habilitados. Acércate a la sede donde vas a trabajar y comparte nuevamente tu ubicación actual.'
+    : options.mobile
+    ? 'Tu ubicación no corresponde a una sede habilitada de tu zona y contrato. Acércate a una sede autorizada y comparte nuevamente tu ubicación actual.'
+    : validateAttendanceLocation(location, options.sites[0]).message;
+  return { shift, candidates, message };
 }
 
 // A covering supernumerario chooses the working shift AFTER geolocation identifies the site.
@@ -2782,6 +3012,8 @@ async function assertNoOpenMobileShift(employeeId) {
 }
 
 async function sendMarkingSiteList(phone, sites, page) {
+  // One Flow message replaces the list and the confirmation that would follow it.
+  if (config.whatsappConversationMode === 'location') return sendMarkingFlow(phone, { start: 'sede' });
   const rows = sites.slice(page * 9, page * 9 + 9).map(site => ({ id: `marking_site:${site.codigo}`, title: String(site.nombre || site.codigo).slice(0, 24), description: String(site.codigo).slice(0, 72) }));
   if (sites.length > 9) rows.push({ id: 'marking_site:more', title: 'Ver más sedes' });
   await sendList(phone, 'Hay varias sedes cercanas. Selecciona dónde estás realizando la marcación:', 'Seleccionar sede', [{ title: 'Sedes cercanas', rows }]);
@@ -2811,7 +3043,8 @@ async function handleMarkingSiteSelection(phone, session, parsed) {
   await completeLocatedMarking(phone, session, employee, shift, site, saved.markingLocation, saved.markingVerifiedAt);
 }
 
-async function completeLocatedMarking(phone, session, employee, shift, sede, location, verifiedAt) {
+// reply=false is used by WhatsApp Flows: nothing is sent and the outcome is shown on the Flow screen.
+async function completeLocatedMarking(phone, session, employee, shift, sede, location, verifiedAt, { reply = true } = {}) {
   const action = session.session_data.pendingQrAction;
   if (!['entry', 'exit'].includes(action)) throw qrError('invalid_marking', 400);
   if (!shift) {
@@ -2823,11 +3056,14 @@ async function completeLocatedMarking(phone, session, employee, shift, sede, loc
   if (action === 'entry') selectAttendanceShift([shift]);
   await validateQrActionAvailability({ action, documento: employee.documento, turnoId: shift.id });
   const validation = validateAttendanceLocation(location, sede);
-  if (!validation.ok) { await sendText(phone, validation.message); return; }
+  if (!validation.ok) {
+    if (reply) await sendText(phone, validation.message);
+    return { type: 'invalid', message: validation.message };
+  }
   const proof = { latitude: Number(location.latitude), longitude: Number(location.longitude), distanceMeters: validation.distanceMeters, verifiedAt };
   if (sede.qr_enabled === true) {
-    await sendAttendanceQr(phone, employee, action, sede, proof, shift);
-    return;
+    const qr = await sendAttendanceQr(phone, employee, action, sede, proof, shift, { send: reply });
+    return { type: 'qr', ...qr };
   }
   const result = await registerAttendanceEvent({ employee, method: 'location', tokenRow: {
     action, turno_id: shift.id, fecha: shift.fechaOperativa, fecha_operativa: shift.fechaOperativa,
@@ -2839,21 +3075,26 @@ async function completeLocatedMarking(phone, session, employee, shift, sede, loc
   }});
   await storeSession(phone, { employee_id: employee.id, documento: employee.documento,
     session_state: SESSION.COMPLETED, session_data: { employee: sessionEmployee(employee) } });
-  // A late/early marking must not claim success before the employee explains it: only the
-  // reason prompt goes out now, and handlePendingAttendanceReason sends this same confirmation
-  // once the explanation is saved.
+  const actionLabel = action === 'exit' ? 'Salida' : 'Ingreso';
+  const timeLabel = new Date(result.eventAt).toLocaleTimeString('es-CO', { timeZone: 'America/Bogota', hour12: false });
+  // A late/early marking must not claim success before the employee explains it. Legacy sends only
+  // the reason prompt (handlePendingAttendanceReason confirms later); location mode sends one message
+  // that says the marking was received and asks for the reason, and acknowledges the reason silently.
   if (result.reasonRequest) {
-    await notifyAttendanceReason(result.reasonRequest);
-    return;
+    const received = `${actionLabel} recibido a las ${timeLabel}.\nSede: ${sede.nombre || sede.codigo}\nTurno: ${shift.nombre || ''} (${shift.fechaOperativa})`;
+    if (reply) await notifyAttendanceReason(result.reasonRequest, config.whatsappConversationMode === 'location' ? `${received}\n\nPara completar tu registro:` : '');
+    return { type: 'reason', reasonRequest: result.reasonRequest, message: received };
   }
-  await sendText(phone, `${action === 'exit' ? 'Salida' : 'Ingreso'} registrado correctamente.\nSede de marcación: ${sede.nombre || sede.codigo}\nTurno: ${shift.nombre || ''} (${shift.fechaOperativa})\nSede del turno: ${shift.sedeNombre || shift.sedeCodigo}\nHora: ${new Date(result.eventAt).toLocaleTimeString('es-CO', { timeZone: 'America/Bogota', hour12: false })}\nUbicación validada: ${proof.distanceMeters} m.`);
+  const confirmation = `${actionLabel} registrado correctamente.\nSede de marcación: ${sede.nombre || sede.codigo}\nTurno: ${shift.nombre || ''} (${shift.fechaOperativa})\nSede del turno: ${shift.sedeNombre || shift.sedeCodigo}\nHora: ${timeLabel}\nUbicación validada: ${proof.distanceMeters} m.`;
+  if (reply) await sendText(phone, confirmation);
+  return { type: 'registered', message: confirmation };
 }
 
 function isNamedLocation(location = {}) {
   return Boolean(String(location?.name || '').trim() || String(location?.address || '').trim());
 }
 
-async function sendAttendanceQr(phone, employee, action, selectedSede = null, locationProof = null, shift = null) {
+async function sendAttendanceQr(phone, employee, action, selectedSede = null, locationProof = null, shift = null, { send = true } = {}) {
   const freshEmployee = await reloadEmployeeForAttendance(employee);
   const session = await getSession(phone);
   const contactPhone = getSessionPhone(session) || normalizePhone(phone) || null;
@@ -2913,7 +3154,8 @@ async function sendAttendanceQr(phone, employee, action, selectedSede = null, lo
   const actionLabel = action === 'exit' ? 'salida' : 'ingreso';
   const distanceText = Number.isFinite(Number(locationProof?.distanceMeters)) ? `\nUbicacion validada: ${Number(locationProof.distanceMeters)} m de la sede.` : '';
   const caption = `QR temporal para registrar ${actionLabel}.\nEmpleado: ${freshEmployee.nombre || documento}\nSede: ${sedeNombre || sedeCodigo}${distanceText}\nVence en ${Number(config.qrTokenMinutes || 10)} minutos.`;
-  await sendQrImage(phone, token, caption);
+  if (send) await sendQrImage(phone, token, caption);
+  return { token, caption };
 }
 
 async function handleNoveltySelection(phone, session, parsed) {
@@ -2993,7 +3235,8 @@ async function handleDateEnd(phone, session, value) {
   await registerNovelty(phone, employee, novelty, null, { startDate, endDate });
 }
 
-async function registerNovelty(phone, employee, novelty, selectedSede = null, incapacity = null) {
+// notify=false is used by WhatsApp Flows, which show the outcome on screen instead of a message.
+async function registerNovelty(phone, employee, novelty, selectedSede = null, incapacity = null, { notify = true } = {}) {
   const date = currentDate();
   const time = currentTime();
   const eventAt = new Date();
@@ -3014,14 +3257,17 @@ async function registerNovelty(phone, employee, novelty, selectedSede = null, in
   if (novelty.tracksIncapacity && incapacity?.startDate && incapacity?.endDate) {
     const overlapping = await findOverlappingIncapacity(documento, incapacity.startDate, incapacity.endDate);
     if (overlapping) {
-      await storeSession(phone, {
-        employee_id: freshEmployee.id,
-        documento: freshEmployee.documento,
-        session_state: SESSION.COMPLETED,
-        session_data: { employee: sessionEmployee(freshEmployee) }
-      });
-      await sendText(phone, buildOverlapMessage(novelty));
-      return;
+      const message = buildOverlapMessage(novelty);
+      if (notify) {
+        await storeSession(phone, {
+          employee_id: freshEmployee.id,
+          documento: freshEmployee.documento,
+          session_state: SESSION.COMPLETED,
+          session_data: { employee: sessionEmployee(freshEmployee) }
+        });
+        await sendText(phone, message);
+      }
+      return { status: 'overlap', message };
     }
   }
 
@@ -3095,8 +3341,9 @@ async function registerNovelty(phone, employee, novelty, selectedSede = null, in
     await clearDailyOperationalAbsenceArtifacts(attendanceId);
   }
 
+  let incapacityRow = null;
   if (novelty.tracksIncapacity && incapacity?.startDate && incapacity?.endDate) {
-    const { data: incapacityRow, error: incapacityError } = await supabaseAdmin.from('incapacitados').insert({
+    const { data: insertedIncapacity, error: incapacityError } = await supabaseAdmin.from('incapacitados').insert({
       employee_id: freshEmployee.id,
       documento,
       nombre: freshEmployee.nombre,
@@ -3112,6 +3359,7 @@ async function registerNovelty(phone, employee, novelty, selectedSede = null, in
       requires_review: Boolean(shiftResult?.shift?.id)
     }).select('*').single();
     if (incapacityError) throw incapacityError;
+    incapacityRow = insertedIncapacity;
     await releaseSupernumerarioReplacementsForIncapacity(incapacityRow);
     if (incapacityRow?.id && shiftResult?.shift?.id) {
       await supabaseAdmin
@@ -3129,13 +3377,16 @@ async function registerNovelty(phone, employee, novelty, selectedSede = null, in
     session_data: { employee: sessionEmployee(freshEmployee) }
   });
 
+  const outcome = { status: 'registered', date, time, novelty, incapacityRow };
+  if (!notify) return outcome;
   const supportMessage = buildSupportMessage(novelty, incapacity);
   if (supportMessage) {
     await sendText(phone, supportMessage);
-    return;
+    return outcome;
   }
 
   await sendText(phone, `Registro confirmado. Fecha: ${formatDateForHumans(date)}, Hora: ${time}, Novedad: ${novelty.label}, Muchas Gracias.`);
+  return outcome;
 }
 
 async function isAttendanceScheduledForOperationalService({ date, employeeId, documento }) {
@@ -4433,7 +4684,8 @@ async function loadEmployeeAttendanceSettings(employee) {
 
   const alignment = String(data?.alineacion_crud || '').trim().toLowerCase();
   const haystack = `${cargoCodigo} ${cargoNombre} ${data?.nombre || ''}`.toLowerCase();
-  return { isSupernumerario: alignment === 'supernumerario' || haystack.includes('supernumerar'), marcacionMovil: data?.marcacion_movil === true };
+  // Supervisors always mark as mobile, matching attendance_site_options (phase 75).
+  return { isSupernumerario: alignment === 'supernumerario' || haystack.includes('supernumerar'), marcacionMovil: data?.marcacion_movil === true || alignment === 'supervisor' };
 }
 
 async function findActiveIncapacity(documento, date) {
@@ -4643,7 +4895,19 @@ function extractMessageText(payload) {
   const interactive = payload?.interactive || {};
   if (interactive?.button_reply?.title) return String(interactive.button_reply.title).trim();
   if (interactive?.list_reply?.title) return String(interactive.list_reply.title).trim();
+  if (interactive?.type === 'nfm_reply') return String(interactive.nfm_reply?.body || 'Formulario enviado').trim();
   return null;
+}
+
+function extractFlowReply(message) {
+  const reply = message?.type === 'interactive' && message?.interactive?.type === 'nfm_reply' ? message.interactive.nfm_reply : null;
+  if (!reply) return null;
+  try {
+    const data = JSON.parse(reply.response_json || '{}');
+    return data && typeof data === 'object' ? data : {};
+  } catch {
+    return {};
+  }
 }
 
 function mapActionChoice(parsed, isSupernumerario, hasMainMenu) {
@@ -4727,10 +4991,11 @@ function getNoveltyDatePrompts(novelty) {
 }
 
 function buildOverlapMessage(novelty) {
+  const restart = config.whatsappConversationMode === 'location' ? 'R' : 'Hola';
   if (novelty?.requiresSupport) {
-    return 'Usted ya registró una incapacidad para estas fechas, por favor corrija el registro escribiendo "Hola" o comunícate con el Supervisor.';
+    return `Usted ya registró una incapacidad para estas fechas, por favor corrija el registro escribiendo "${restart}" o comunícate con el Supervisor.`;
   }
-  return 'Usted ya registró una novedad para estas fechas, por favor corrija el registro escribiendo "Hola" o comunícate con el Supervisor.';
+  return `Usted ya registró una novedad para estas fechas, por favor corrija el registro escribiendo "${restart}" o comunícate con el Supervisor.`;
 }
 
 function buildSupportMessage(novelty, incapacity) {
@@ -4751,6 +5016,498 @@ function resolveSedeSelection(session, parsed, prefix) {
   const options = Array.isArray(session?.session_data?.sedeOptions) ? session.session_data.sedeOptions : [];
   return options.find((item) => String(item.id) === selectedId) || null;
 }
+// ---------------------------------------------------------------------------------------------
+// WhatsApp Flows (definitions in whatsapp-backend/flows/). "menu" answers R / Rocky / N / Novedad and
+// registers incapacities, novelties and compensatory days, with the optional support upload;
+// "marcacion" identifies an unregistered number and lets mobile cargos pick the site. Each Flow is a
+// single billed message: its screens talk to /flows/endpoint, not to the chat.
+// ---------------------------------------------------------------------------------------------
+const FLOW_SESSION_HOURS = 12;
+const FLOW_INCAPACITY_CODES = [NOVELTIES.SICKNESS.code, NOVELTIES.ACCIDENT.code];
+const FLOW_NOVELTY_CODES = [NOVELTIES.CALAMITY.code, NOVELTIES.UNPAID_LEAVE.code, NOVELTIES.PAID_LEAVE.code, NOVELTIES.VACATIONS.code];
+const FLOW_MARKING_CEDULA_TEXT = 'No encontramos tu número registrado. Escribe tu cédula sin puntos para completar tu marcación.';
+// 1x1 transparent PNG: the Image schema needs a valid source even when the QR is not shown.
+const FLOW_EMPTY_IMAGE = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+
+function registerWhatsAppFlowRoutes(appInstance) {
+  appInstance.post(['/flows/endpoint', '/api/flows/endpoint'], async (req, res) => {
+    // Meta status codes: 432 bad signature, 421 cannot decrypt (the client refreshes our public key),
+    // 427 flow token no longer valid (the Flow closes with an explanation).
+    let validSignature = false;
+    try { validSignature = isValidWhatsAppSignature(req); } catch { validSignature = false; }
+    if (!validSignature) return res.status(432).end();
+    if (!config.whatsappFlowPrivateKey) return res.status(500).end();
+
+    let request;
+    try {
+      request = decryptFlowRequest(req.body, config.whatsappFlowPrivateKey, config.whatsappFlowPrivateKeyPassphrase);
+    } catch (error) {
+      return res.status(error.statusCode || 500).end();
+    }
+    try {
+      const response = await handleFlowRequest(request.body);
+      res.type('text/plain').send(encryptFlowResponse(response, request.aesKey, request.iv));
+    } catch (error) {
+      if (error?.statusCode === 427) return res.status(427).end();
+      console.error('Error en endpoint de WhatsApp Flows:', error);
+      res.status(500).end();
+    }
+  });
+}
+
+async function handleFlowRequest(body = {}) {
+  if (body.action === 'ping') return { data: { status: 'active' } };
+  if (body.data?.error) {
+    console.error('WhatsApp Flows reporto un error en el cliente:', body.data);
+    return { data: { acknowledged: true } };
+  }
+  const flowSession = await loadFlowSession(body.flow_token);
+  if (!flowSession) throw qrError('flow_token_invalid', 427);
+  try {
+    return flowSession.flow === 'menu'
+      ? await handleMenuFlowRequest(flowSession, body)
+      : await handleMarkingFlowRequest(flowSession, body);
+  } catch (error) {
+    // Business rules (no shift, site not allowed...) end the Flow with the same text the chat would send.
+    console.error('Error procesando pantalla de WhatsApp Flow:', error);
+    const message = userMessageForProcessingError(error);
+    return flowSession.flow === 'menu' ? menuConfirmation(message) : markingConfirmation(message);
+  }
+}
+
+async function createFlowSession({ flow, recipient, employee = null, data = {} }) {
+  const token = createQrToken();
+  const { error } = await supabaseAdmin.from('whatsapp_flow_sessions').insert({
+    token_hash: hashToken(token),
+    flow,
+    recipient,
+    employee_id: employee?.id || null,
+    documento: employee?.documento || null,
+    data,
+    expires_at: new Date(Date.now() + FLOW_SESSION_HOURS * 3600000).toISOString()
+  });
+  if (error) throw error;
+  return token;
+}
+
+async function loadFlowSession(flowToken, { allowClosed = false } = {}) {
+  if (!flowToken) return null;
+  const { data, error } = await supabaseAdmin.from('whatsapp_flow_sessions').select('*')
+    .eq('token_hash', hashToken(flowToken)).maybeSingle();
+  if (error) throw error;
+  if (!data) return null;
+  if (!allowClosed && (data.estado !== 'abierto' || new Date(data.expires_at).getTime() <= Date.now())) return null;
+  return data;
+}
+
+async function updateFlowSession(flowSession, patch) {
+  const next = { ...patch, updated_at: new Date().toISOString() };
+  const { error } = await supabaseAdmin.from('whatsapp_flow_sessions').update(next).eq('id', flowSession.id);
+  if (error) throw error;
+  Object.assign(flowSession, next);
+}
+
+async function flowEmployee(flowSession) {
+  if (!flowSession.employee_id && !flowSession.documento) return null;
+  return loadEmployeeFromSession({ employee_id: flowSession.employee_id, documento: flowSession.documento });
+}
+
+function flowLocationFresh(value) {
+  const age = Date.now() - new Date(value).getTime();
+  return Number.isFinite(age) && age >= 0 && age <= FLOW_LOCATION_MAX_AGE_MS;
+}
+
+function flowNotice(aviso = '') {
+  return { aviso: aviso ? `⚠️ ${aviso}` : '', mostrar_aviso: Boolean(aviso) };
+}
+
+function cedulaScreen(mensaje, aviso = '') {
+  return { screen: 'CEDULA', data: { mensaje, ...flowNotice(aviso) } };
+}
+
+function menuConfirmation(resumen) {
+  return { screen: 'CONFIRMACION', data: { resumen } };
+}
+
+function markingConfirmation(resumen) {
+  return { screen: 'CONFIRMACION', data: { resumen, tiene_qr: false, qr_imagen: FLOW_EMPTY_IMAGE } };
+}
+
+// Closing from the endpoint makes WhatsApp deliver the Flow reply at once (handled by handleFlowCompletion).
+function closeFlow(body) {
+  return { screen: 'SUCCESS', data: { extension_message_response: { params: { flow_token: body.flow_token } } } };
+}
+
+function parseFlowDate(value) {
+  const raw = String(value || '').trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return parseInputDate(raw.split('-').reverse().join('/'));
+  // Older WhatsApp clients send the DatePicker value as an epoch timestamp.
+  if (/^\d{10,13}$/.test(raw)) {
+    const ms = raw.length === 13 ? Number(raw) : Number(raw) * 1000;
+    return new Intl.DateTimeFormat('sv-SE', { timeZone: 'America/Bogota', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ms));
+  }
+  return null;
+}
+
+function noveltyByCode(code) {
+  return Object.values(NOVELTIES).find(novelty => novelty.code === String(code || '')) || null;
+}
+
+async function sendMenuFlow(phone) {
+  const employee = normalizeBusinessScopedUserId(phone) ? null : await findEmployeeByPhone(phone);
+  const flowToken = await createFlowSession({ flow: 'menu', recipient: phone, employee });
+  await sendFlowMessage(phone, {
+    flowId: config.whatsappFlowMenuId,
+    flowToken,
+    cta: 'Abrir menú',
+    body: `${employee ? `Hola ${employee.nombre}, soy Rocky.` : 'Hola, soy Rocky.'}\n\nToca el botón para registrar una incapacidad, una novedad o un compensatorio.`
+  });
+}
+
+async function sendMarkingFlow(phone, { start, location = null, receivedAt = null }) {
+  const session = start === 'sede' ? await getSession(phone) : null;
+  const employee = session?.employee_id ? { id: session.employee_id, documento: session.documento } : null;
+  const flowToken = await createFlowSession({ flow: 'marcacion', recipient: phone, employee, data: { start, location, receivedAt } });
+  await sendFlowMessage(phone, start === 'sede'
+    ? { flowId: config.whatsappFlowMarkingId, flowToken, cta: 'Elegir sede', body: 'Hay varias sedes cerca de tu ubicación. Toca el botón para elegir dónde estás realizando la marcación.' }
+    : { flowId: config.whatsappFlowMarkingId, flowToken, cta: 'Identificarme', body: 'No encontramos tu número registrado. Toca el botón para identificarte con tu cédula y completar la marcación.' });
+}
+
+// ----- Flow "menu" -----
+
+async function handleMenuFlowRequest(flowSession, body) {
+  const input = body.data || {};
+  if (body.action !== 'data_exchange') return menuStartScreen(flowSession);
+  switch (String(body.screen || '')) {
+    case 'CEDULA': return menuIdentify(flowSession, input.documento);
+    case 'INICIO':
+    case 'OPCIONES': return menuChoose(flowSession, input.opcion);
+    case 'INCAPACIDAD':
+    case 'NOVEDAD': return menuRegisterDates(flowSession, String(body.screen), input);
+    case 'COMPENSATORIO': return menuRegisterCompensatory(flowSession);
+    case 'SOPORTE': return menuAttachSupport(flowSession, body, 'incapacidad', input.soporte);
+    case 'EPICRISIS': return menuAttachSupport(flowSession, body, 'epicrisis', input.epicrisis);
+    default: return menuStartScreen(flowSession);
+  }
+}
+
+async function menuStartScreen(flowSession) {
+  const employee = await flowEmployee(flowSession);
+  if (!employee) return cedulaScreen('No encontramos tu número registrado. Escribe tu cédula sin puntos.');
+  return menuHomeScreen(employee, 'INICIO');
+}
+
+// INICIO (identified by phone) offers "No soy yo"; OPCIONES is the same menu after typing the cédula.
+async function menuHomeScreen(employee, screen) {
+  if (!employee.isSupernumerario) {
+    const activeIncapacity = await findActiveIncapacity(employee.documento, currentDate());
+    if (activeIncapacity) {
+      return menuConfirmation(`Te encuentras incapacitado hasta el ${formatDateForHumans(activeIncapacity.fecha_fin)}. Si necesitas registrar una prórroga comunícate con tu supervisor.`);
+    }
+  }
+  const opciones = [
+    { id: 'incapacidad', title: 'Incapacidad' },
+    { id: 'novedad', title: 'Novedad' },
+    ...(employee.isSupernumerario ? [] : [{ id: 'compensatorio', title: 'Compensatorio' }]),
+    ...(screen === 'INICIO' ? [{ id: 'no_soy_yo', title: 'No soy yo' }] : [])
+  ];
+  const ubicacion = employee.isSupernumerario ? 'SUPERNUMERARIO' : `Sede: ${employee.sede_nombre || 'Sin sede'}`;
+  return { screen, data: { saludo: `Hola ${employee.nombre}\nCédula: ${employee.documento}\n${ubicacion}`, opciones } };
+}
+
+async function menuIdentify(flowSession, documento) {
+  const document = normalizeDocument(documento);
+  const employee = document ? await findEmployeeByDocument(document) : null;
+  if (!employee) return cedulaScreen('Escribe tu cédula sin puntos.', NO_REGISTERED_MESSAGE);
+  await updateFlowSession(flowSession, { employee_id: employee.id, documento: employee.documento });
+  return menuHomeScreen(employee, 'OPCIONES');
+}
+
+async function menuChoose(flowSession, opcion) {
+  const employee = await flowEmployee(flowSession);
+  if (!employee) return menuStartScreen(flowSession);
+  if (opcion === 'no_soy_yo') {
+    await updateFlowSession(flowSession, { employee_id: null, documento: null });
+    return cedulaScreen('Escribe tu cédula sin puntos.');
+  }
+  if (opcion === 'incapacidad') return datesScreen('INCAPACIDAD', employee);
+  if (opcion === 'novedad') return datesScreen('NOVEDAD', employee);
+  if (opcion === 'compensatorio' && !employee.isSupernumerario) {
+    return { screen: 'COMPENSATORIO', data: { resumen: `Se registrará compensatorio para hoy ${formatDateForHumans(currentDate())}.` } };
+  }
+  return menuHomeScreen(employee, 'OPCIONES');
+}
+
+function flowNoveltyOptions(screen, employee) {
+  const codes = screen === 'INCAPACIDAD'
+    ? FLOW_INCAPACITY_CODES
+    : FLOW_NOVELTY_CODES.filter(code => !(employee.isSupernumerario && code === NOVELTIES.PAID_LEAVE.code));
+  return codes.map(code => ({ id: code, title: noveltyByCode(code).label }));
+}
+
+function datesScreen(screen, employee, aviso = '') {
+  return { screen, data: { tipos: flowNoveltyOptions(screen, employee), ...flowNotice(aviso) } };
+}
+
+async function menuRegisterDates(flowSession, screen, input) {
+  const employee = await flowEmployee(flowSession);
+  if (!employee) return menuStartScreen(flowSession);
+  const allowed = flowNoveltyOptions(screen, employee).map(option => option.id);
+  const novelty = allowed.includes(String(input.tipo || '')) ? noveltyByCode(input.tipo) : null;
+  const startDate = parseFlowDate(input.fecha_inicio);
+  const endDate = parseFlowDate(input.fecha_fin);
+  if (!novelty) return datesScreen(screen, employee, 'Selecciona el tipo de registro.');
+  if (!startDate || !endDate) return datesScreen(screen, employee, 'Selecciona la fecha de inicio y la fecha de terminación.');
+  if (endDate < startDate) {
+    return datesScreen(screen, employee, `La fecha de terminación no puede ser menor a la fecha de inicio (${formatDateForHumans(startDate)}).`);
+  }
+
+  // A resubmitted screen (WhatsApp retries when the endpoint answers late) must not register twice.
+  const previous = flowSession.data?.registro;
+  const alreadyRegistered = previous?.code === novelty.code && previous?.startDate === startDate && previous?.endDate === endDate;
+  if (!alreadyRegistered) {
+    const result = await registerNovelty(flowSession.recipient, employee, novelty, null, { startDate, endDate }, { notify: false });
+    if (result?.status === 'overlap') {
+      return datesScreen(screen, employee, `Ya registraste ${novelty.requiresSupport ? 'una incapacidad' : 'una novedad'} para estas fechas. Si necesitas corregirla comunícate con tu supervisor.`);
+    }
+    await updateFlowSession(flowSession, {
+      documento: employee.documento,
+      data: { ...flowSession.data, registro: { code: novelty.code, startDate, endDate, incapacidadId: result?.incapacityRow?.id || null }, media: [] }
+    });
+  }
+
+  const resumen = `✅ Registro confirmado: ${novelty.label}, del ${formatDateForHumans(startDate)} al ${formatDateForHumans(endDate)}.`;
+  if (novelty.requiresSupport) {
+    return { screen: 'SOPORTE', data: { resumen: `${resumen}\n\nAdjunta el soporte si ya lo tienes. Es opcional: también puedes cargarlo después en el portal de empleados.` } };
+  }
+  return menuConfirmation(resumen);
+}
+
+async function menuRegisterCompensatory(flowSession) {
+  const employee = await flowEmployee(flowSession);
+  if (!employee || employee.isSupernumerario) return menuStartScreen(flowSession);
+  if (flowSession.data?.registro?.code !== NOVELTIES.COMPENSATORY.code) {
+    await registerNovelty(flowSession.recipient, employee, NOVELTIES.COMPENSATORY, null, null, { notify: false });
+    await updateFlowSession(flowSession, { documento: employee.documento, data: { ...flowSession.data, registro: { code: NOVELTIES.COMPENSATORY.code } } });
+  }
+  return menuConfirmation(`✅ Compensatorio registrado para hoy ${formatDateForHumans(currentDate())}.`);
+}
+
+function normalizeFlowMediaList(files) {
+  return (Array.isArray(files) ? files : [])
+    .filter(file => file?.cdn_url && file?.encryption_metadata)
+    .map(file => ({ cdn_url: file.cdn_url, file_name: file.file_name || null, media_id: file.media_id || null, encryption_metadata: file.encryption_metadata }));
+}
+
+// Only the file references are kept here (the endpoint must answer quickly); the files are downloaded
+// and stored when the Flow reply arrives.
+async function menuAttachSupport(flowSession, body, tipo, files) {
+  const registro = flowSession.data?.registro;
+  if (!registro?.incapacidadId) return menuConfirmation('Recuerda cargar el soporte en el portal de empleados.');
+  const media = [
+    ...(Array.isArray(flowSession.data?.media) ? flowSession.data.media : []).filter(item => item.tipo !== tipo),
+    ...normalizeFlowMediaList(files).map(file => ({ tipo, file }))
+  ];
+  await updateFlowSession(flowSession, { data: { ...flowSession.data, media } });
+  if (tipo === 'incapacidad' && countInclusiveDays(registro.startDate, registro.endDate) > 3) {
+    return { screen: 'EPICRISIS', data: { resumen: 'Tu incapacidad es mayor a tres días: adjunta la historia clínica o epicrisis. Es opcional: también puedes cargarla después en el portal de empleados.' } };
+  }
+  return closeFlow(body);
+}
+
+async function handleFlowCompletion(phone, message, reply) {
+  const flowSession = await loadFlowSession(reply.flow_token, { allowClosed: true });
+  if (flowSession && flowSession.recipient === phone && flowSession.estado === 'abierto') {
+    await updateFlowSession(flowSession, { estado: 'completado', completed_at: new Date().toISOString() });
+    if (flowSession.flow === 'menu') await storeFlowSupportFiles(phone, flowSession);
+  }
+  await markMessageRead(message);
+}
+
+async function storeFlowSupportFiles(phone, flowSession) {
+  const incapacidadId = flowSession.data?.registro?.incapacidadId;
+  const media = Array.isArray(flowSession.data?.media) ? flowSession.data.media : [];
+  if (!incapacidadId || !media.length) return;
+
+  const stored = [];
+  let failed = 0;
+  for (const item of media) {
+    try {
+      stored.push(await storeFlowSupportFile(flowSession, incapacidadId, item));
+    } catch (error) {
+      failed += 1;
+      console.error('No se pudo guardar un soporte recibido por WhatsApp Flow:', error);
+    }
+  }
+  // The portal and reports read the main support from incapacitados; every file is in incapacidad_soportes.
+  const primary = stored.find(row => row.tipo === 'incapacidad') || stored[0];
+  if (primary) {
+    const { error } = await supabaseAdmin.from('incapacitados').update({
+      soporte_url: primary.url,
+      soporte_nombre: primary.nombre,
+      soporte_tipo: primary.mime_type,
+      soporte_storage_path: primary.storage_path
+    }).eq('id', incapacidadId).is('soporte_url', null);
+    if (error) throw error;
+  }
+  // Only a failure costs a message.
+  if (failed) {
+    await sendText(phone, `No pudimos guardar ${failed === 1 ? 'uno de los soportes' : `${failed} soportes`} que adjuntaste. Por favor cárgalo en el portal de empleados:\n${EMPLOYEE_PORTAL_URL}`);
+  }
+}
+
+async function storeFlowSupportFile(flowSession, incapacidadId, { tipo, file }) {
+  const response = await fetch(file.cdn_url);
+  if (!response.ok) throw new Error(`flow_media_download_failed_${response.status}`);
+  const buffer = decryptFlowMedia(Buffer.from(await response.arrayBuffer()), file.encryption_metadata);
+  const uploaded = await uploadIncapacitySupportBuffer({
+    documento: flowSession.documento,
+    fileName: file.file_name || tipo,
+    mimeType: detectSupportMimeType(buffer),
+    buffer,
+    folder: 'whatsapp-flow'
+  });
+  const row = {
+    incapacidad_id: incapacidadId,
+    tipo,
+    canal: 'whatsapp_flow',
+    url: uploaded.url,
+    nombre: uploaded.name,
+    mime_type: uploaded.mimeType,
+    storage_path: uploaded.storagePath
+  };
+  const { error } = await supabaseAdmin.from('incapacidad_soportes').insert(row);
+  if (error) throw error;
+  return row;
+}
+
+// The Flow does not report the file type, so it is read from the file signature.
+function detectSupportMimeType(buffer) {
+  if (buffer.subarray(0, 4).toString('latin1') === '%PDF') return 'application/pdf';
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return 'image/jpeg';
+  if (buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
+  if (buffer.subarray(0, 4).toString('latin1') === 'RIFF' && buffer.subarray(8, 12).toString('latin1') === 'WEBP') return 'image/webp';
+  return 'application/octet-stream';
+}
+
+// ----- Flow "marcacion" -----
+
+async function handleMarkingFlowRequest(flowSession, body) {
+  const input = body.data || {};
+  if (body.action !== 'data_exchange') return markingStartScreen(flowSession);
+  // A resubmitted screen after the marking was registered shows the same result instead of failing.
+  if (flowSession.data?.resultado) return { screen: 'CONFIRMACION', data: flowSession.data.resultado };
+  switch (String(body.screen || '')) {
+    case 'CEDULA': return markingIdentify(flowSession, input.documento);
+    case 'ACCION': return markingChooseAction(flowSession, input.opcion);
+    case 'SEDE': return markingChooseSite(flowSession, input.sede);
+    default: return markingStartScreen(flowSession);
+  }
+}
+
+async function markingStartScreen(flowSession) {
+  if (flowSession.data?.start === 'sede') return markingSiteScreen(flowSession);
+  return cedulaScreen(FLOW_MARKING_CEDULA_TEXT);
+}
+
+async function markingIdentify(flowSession, documento) {
+  const document = normalizeDocument(documento);
+  const employee = document ? await findEmployeeByDocument(document) : null;
+  if (!employee) return cedulaScreen(FLOW_MARKING_CEDULA_TEXT, NO_REGISTERED_MESSAGE);
+  await updateFlowSession(flowSession, { employee_id: employee.id, documento: employee.documento });
+  if (!flowLocationFresh(flowSession.data?.receivedAt)) return markingConfirmation('La ubicación venció. Envía nuevamente tu ubicación actual.');
+
+  const plan = await planLocationMarking(employee);
+  const { decision } = plan;
+  if (decision.action === 'none') return markingConfirmation(markingUnavailableMessage(plan));
+  if (decision.action === 'entry' || decision.action === 'exit') {
+    return runFlowMarking(flowSession, plan.employee, decision.action, decision.shift?.id || null);
+  }
+  const prompt = markingConfirmationPrompt(decision);
+  await updateFlowSession(flowSession, { data: { ...flowSession.data, opciones: prompt.buttons.map(button => button.id) } });
+  return { screen: 'ACCION', data: { resumen: prompt.body, opciones: prompt.buttons.map(button => ({ id: button.id, title: button.title })) } };
+}
+
+async function markingChooseAction(flowSession, opcion) {
+  const choice = String(opcion || '');
+  if (!(flowSession.data?.opciones || []).includes(choice)) return markingConfirmation('Selecciona una opción válida. Envía nuevamente tu ubicación actual.');
+  const [, action, shiftId] = choice.split(':');
+  if (!['entry', 'exit'].includes(action)) return markingConfirmation('No se registró ninguna marcación.');
+  if (!flowLocationFresh(flowSession.data?.receivedAt)) return markingConfirmation('La ubicación venció. Envía nuevamente tu ubicación actual.');
+  const employee = await flowEmployee(flowSession);
+  if (!employee) throw qrError('employee_inactive', 409);
+  return runFlowMarking(flowSession, employee, action, shiftId);
+}
+
+async function runFlowMarking(flowSession, employee, action, shiftId) {
+  const phone = flowSession.recipient;
+  const location = flowSession.data.location;
+  const session = locationMarkingSession(phone, employee, action, shiftId);
+  await storeSession(phone, session);
+  const { shift, candidates, message } = await locatedMarkingCandidates(employee, session.session_data, location);
+  if (!candidates.length) return markingConfirmation(message);
+  const verifiedAt = new Date().toISOString();
+  if (candidates.length > 1) {
+    await storeSession(phone, {
+      employee_id: employee.id,
+      documento: employee.documento,
+      session_state: SESSION.AWAITING_MARKING_SITE,
+      session_data: { ...session.session_data, markingLocation: location, markingVerifiedAt: verifiedAt, markingSiteCodes: candidates.map(site => site.codigo) }
+    });
+    return markingSiteScreen(flowSession);
+  }
+  return markingOutcomeScreen(flowSession, await completeLocatedMarking(phone, session, employee, shift, candidates[0], location, verifiedAt, { reply: false }));
+}
+
+// Sites still valid for the location saved by handleQrLocationInput or runFlowMarking.
+async function flowMarkingSites(session) {
+  const saved = session.session_data || {};
+  if (session.session_state !== SESSION.AWAITING_MARKING_SITE || !flowLocationFresh(saved.markingVerifiedAt)) return { sites: [] };
+  const employee = await loadEmployeeFromSession(session);
+  if (!employee) throw qrError('employee_inactive', 409);
+  const { shift, options } = await locatedMarkingContext(employee, saved);
+  const sites = options.sites.filter(site => saved.markingSiteCodes?.includes(site.codigo) && validateAttendanceLocation(saved.markingLocation, site).ok);
+  return { employee, shift, sites, saved };
+}
+
+async function markingSiteScreen(flowSession, aviso = '') {
+  const { sites } = await flowMarkingSites(await getSession(flowSession.recipient));
+  if (!sites.length) return markingConfirmation('La ubicación venció o ya no hay sedes habilitadas cerca. Envía nuevamente tu ubicación actual.');
+  return {
+    screen: 'SEDE',
+    data: {
+      resumen: 'Hay varias sedes cerca de tu ubicación. Selecciona dónde estás realizando la marcación:',
+      sedes: sites.slice(0, 20).map(site => ({ id: site.codigo, title: truncate(site.nombre || site.codigo, 30), description: String(site.codigo) })),
+      ...flowNotice(aviso)
+    }
+  };
+}
+
+async function markingChooseSite(flowSession, code) {
+  const session = await getSession(flowSession.recipient);
+  const { employee, shift, sites, saved } = await flowMarkingSites(session);
+  if (!sites.length) return markingConfirmation('La ubicación venció. Envía nuevamente tu ubicación actual.');
+  const site = sites.find(item => item.codigo === String(code || ''));
+  if (!site) return markingSiteScreen(flowSession, 'Selecciona una sede del listado.');
+  return markingOutcomeScreen(flowSession, await completeLocatedMarking(flowSession.recipient, session, employee, shift, site, saved.markingLocation, saved.markingVerifiedAt, { reply: false }));
+}
+
+async function markingOutcomeScreen(flowSession, outcome) {
+  let data;
+  if (outcome?.type === 'qr') {
+    const png = await QRCode.toBuffer(buildQrScanValue(outcome.token), { type: 'png', errorCorrectionLevel: 'M', margin: 2, width: 512 });
+    data = { resumen: `${outcome.caption}\n\nMuestra este QR en la tablet de la sede.`, tiene_qr: true, qr_imagen: png.toString('base64') };
+  } else if (outcome?.type === 'reason') {
+    // As for any late/early marking, the reason is asked by text.
+    await notifyAttendanceReason(outcome.reasonRequest);
+    data = { resumen: `${outcome.message}\n\nTe enviamos un mensaje para que escribas el motivo y completes tu registro.`, tiene_qr: false, qr_imagen: FLOW_EMPTY_IMAGE };
+  } else {
+    data = { resumen: outcome?.message || 'No se registró ninguna marcación.', tiene_qr: false, qr_imagen: FLOW_EMPTY_IMAGE };
+  }
+  if (outcome?.type !== 'invalid') await updateFlowSession(flowSession, { data: { ...flowSession.data, resultado: data } });
+  return { screen: 'CONFIRMACION', data };
+}
+
 async function sendText(to, body) {
   await sendWhatsAppMessage(to, { type: 'text', text: { body } });
 }
@@ -4834,24 +5591,61 @@ async function sendWhatsAppMessage(to, payload) {
     throw new Error('missing_whatsapp_recipient');
   }
 
+  await postWhatsAppMessages({
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    ...recipientPayload,
+    ...payload
+  });
+}
+
+async function postWhatsAppMessages(body) {
   const response = await fetch(`https://graph.facebook.com/${config.whatsappGraphVersion}/${config.whatsappPhoneNumberId}/messages`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${config.whatsappAccessToken}`
     },
-    body: JSON.stringify({
-      messaging_product: 'whatsapp',
-      recipient_type: 'individual',
-      ...recipientPayload,
-      ...payload
-    })
+    body: JSON.stringify(body)
   });
 
   if (!response.ok) {
     const detail = await safeJson(response);
     throw new Error(`send_failed_${response.status}:${JSON.stringify(detail)}`);
   }
+}
+
+// A read receipt is a status update, not a message: WhatsApp does not bill it.
+async function markMessageRead(message) {
+  const messageId = String(message?.id || '').trim();
+  if (!messageId || !config.whatsappAccessToken || !config.whatsappPhoneNumberId) return;
+  try {
+    await postWhatsAppMessages({ messaging_product: 'whatsapp', status: 'read', message_id: messageId });
+  } catch (error) {
+    console.error('No se pudo marcar como leido el mensaje WhatsApp:', error);
+  }
+}
+
+async function sendFlowMessage(to, { flowId, flowToken, body, cta }) {
+  if (!flowId) throw new Error('missing_whatsapp_flow_id');
+  await sendWhatsAppMessage(to, {
+    type: 'interactive',
+    interactive: {
+      type: 'flow',
+      body: { text: body },
+      action: {
+        name: 'flow',
+        parameters: {
+          flow_message_version: '3',
+          flow_token: flowToken,
+          flow_id: flowId,
+          flow_cta: truncate(cta, 20),
+          flow_action: 'data_exchange',
+          ...(config.whatsappFlowDraft ? { mode: 'draft' } : {})
+        }
+      }
+    }
+  });
 }
 
 async function safeJson(response) {

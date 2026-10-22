@@ -1,0 +1,199 @@
+{
+  "version": "6.3",
+  "data_api_version": "3.0",
+  "routing_model": {
+    "INICIO": ["CEDULA", "INCAPACIDAD", "NOVEDAD", "COMPENSATORIO", "CONFIRMACION"],
+    "CEDULA": ["OPCIONES", "CONFIRMACION"],
+    "OPCIONES": ["INCAPACIDAD", "NOVEDAD", "COMPENSATORIO", "CONFIRMACION"],
+    "INCAPACIDAD": ["SOPORTE", "CONFIRMACION"],
+    "NOVEDAD": ["SOPORTE", "CONFIRMACION"],
+    "SOPORTE": ["EPICRISIS", "CONFIRMACION"],
+    "EPICRISIS": ["CONFIRMACION"],
+    "COMPENSATORIO": ["CONFIRMACION"],
+    "CONFIRMACION": []
+  },
+  "screens": [
+    {
+      "id": "INICIO",
+      "title": "Rocky",
+      "data": {
+        "saludo": { "type": "string", "__example__": "Hola Ana Perez\nCédula: 1000000\nSede: Principal" },
+        "opciones": {
+          "type": "array",
+          "items": { "type": "object", "properties": { "id": { "type": "string" }, "title": { "type": "string" } } },
+          "__example__": [{ "id": "incapacidad", "title": "Incapacidad" }, { "id": "no_soy_yo", "title": "No soy yo" }]
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          { "type": "TextBody", "text": "${data.saludo}" },
+          { "type": "RadioButtonsGroup", "name": "opcion", "label": "¿Qué deseas registrar?", "required": true, "data-source": "${data.opciones}" },
+          { "type": "Footer", "label": "Continuar", "on-click-action": { "name": "data_exchange", "payload": { "opcion": "${form.opcion}" } } }
+        ]
+      }
+    },
+    {
+      "id": "CEDULA",
+      "title": "Identificación",
+      "data": {
+        "mensaje": { "type": "string", "__example__": "Escribe tu cédula sin puntos." },
+        "aviso": { "type": "string", "__example__": "" },
+        "mostrar_aviso": { "type": "boolean", "__example__": false }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          { "type": "TextBody", "text": "${data.mensaje}" },
+          { "type": "TextBody", "text": "${data.aviso}", "visible": "${data.mostrar_aviso}" },
+          { "type": "TextInput", "name": "documento", "label": "Cédula", "input-type": "number", "required": true },
+          { "type": "Footer", "label": "Continuar", "on-click-action": { "name": "data_exchange", "payload": { "documento": "${form.documento}" } } }
+        ]
+      }
+    },
+    {
+      "id": "OPCIONES",
+      "title": "Rocky",
+      "data": {
+        "saludo": { "type": "string", "__example__": "Hola Ana Perez\nCédula: 1000000\nSede: Principal" },
+        "opciones": {
+          "type": "array",
+          "items": { "type": "object", "properties": { "id": { "type": "string" }, "title": { "type": "string" } } },
+          "__example__": [{ "id": "incapacidad", "title": "Incapacidad" }]
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          { "type": "TextBody", "text": "${data.saludo}" },
+          { "type": "RadioButtonsGroup", "name": "opcion", "label": "¿Qué deseas registrar?", "required": true, "data-source": "${data.opciones}" },
+          { "type": "Footer", "label": "Continuar", "on-click-action": { "name": "data_exchange", "payload": { "opcion": "${form.opcion}" } } }
+        ]
+      }
+    },
+    {
+      "id": "INCAPACIDAD",
+      "title": "Incapacidad",
+      "data": {
+        "tipos": {
+          "type": "array",
+          "items": { "type": "object", "properties": { "id": { "type": "string" }, "title": { "type": "string" } } },
+          "__example__": [{ "id": "3", "title": "Enfermedad General" }]
+        },
+        "aviso": { "type": "string", "__example__": "" },
+        "mostrar_aviso": { "type": "boolean", "__example__": false }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          { "type": "TextBody", "text": "${data.aviso}", "visible": "${data.mostrar_aviso}" },
+          { "type": "Dropdown", "name": "tipo", "label": "Tipo de incapacidad", "required": true, "data-source": "${data.tipos}" },
+          { "type": "DatePicker", "name": "fecha_inicio", "label": "Fecha de inicio", "required": true },
+          { "type": "DatePicker", "name": "fecha_fin", "label": "Fecha de terminación", "required": true },
+          { "type": "Footer", "label": "Registrar", "on-click-action": { "name": "data_exchange", "payload": { "tipo": "${form.tipo}", "fecha_inicio": "${form.fecha_inicio}", "fecha_fin": "${form.fecha_fin}" } } }
+        ]
+      }
+    },
+    {
+      "id": "NOVEDAD",
+      "title": "Novedad",
+      "data": {
+        "tipos": {
+          "type": "array",
+          "items": { "type": "object", "properties": { "id": { "type": "string" }, "title": { "type": "string" } } },
+          "__example__": [{ "id": "9", "title": "Vacaciones" }]
+        },
+        "aviso": { "type": "string", "__example__": "" },
+        "mostrar_aviso": { "type": "boolean", "__example__": false }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          { "type": "TextBody", "text": "${data.aviso}", "visible": "${data.mostrar_aviso}" },
+          { "type": "Dropdown", "name": "tipo", "label": "Tipo de novedad", "required": true, "data-source": "${data.tipos}" },
+          { "type": "DatePicker", "name": "fecha_inicio", "label": "Fecha de inicio", "required": true },
+          { "type": "DatePicker", "name": "fecha_fin", "label": "Fecha de terminación", "required": true },
+          { "type": "Footer", "label": "Registrar", "on-click-action": { "name": "data_exchange", "payload": { "tipo": "${form.tipo}", "fecha_inicio": "${form.fecha_inicio}", "fecha_fin": "${form.fecha_fin}" } } }
+        ]
+      }
+    },
+    {
+      "id": "SOPORTE",
+      "title": "Soporte",
+      "data": {
+        "resumen": { "type": "string", "__example__": "Registro confirmado: Enfermedad General, del 01/10/2026 al 03/10/2026." }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          { "type": "TextBody", "text": "${data.resumen}" },
+          {
+            "type": "DocumentPicker",
+            "name": "soporte",
+            "label": "Soporte de incapacidad",
+            "description": "PDF o imagen, máximo 8 MB por archivo.",
+            "min-uploaded-documents": 0,
+            "max-uploaded-documents": 3,
+            "max-file-size-kb": 8192,
+            "allowed-mime-types": ["application/pdf", "image/jpeg", "image/png", "image/webp"]
+          },
+          { "type": "Footer", "label": "Continuar", "on-click-action": { "name": "data_exchange", "payload": { "soporte": "${form.soporte}" } } }
+        ]
+      }
+    },
+    {
+      "id": "EPICRISIS",
+      "title": "Historia clínica",
+      "data": {
+        "resumen": { "type": "string", "__example__": "Tu incapacidad es mayor a tres días: adjunta la historia clínica o epicrisis." }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          { "type": "TextBody", "text": "${data.resumen}" },
+          {
+            "type": "DocumentPicker",
+            "name": "epicrisis",
+            "label": "Historia clínica o epicrisis",
+            "description": "PDF o imagen, máximo 8 MB por archivo.",
+            "min-uploaded-documents": 0,
+            "max-uploaded-documents": 3,
+            "max-file-size-kb": 8192,
+            "allowed-mime-types": ["application/pdf", "image/jpeg", "image/png", "image/webp"]
+          },
+          { "type": "Footer", "label": "Enviar y finalizar", "on-click-action": { "name": "data_exchange", "payload": { "epicrisis": "${form.epicrisis}" } } }
+        ]
+      }
+    },
+    {
+      "id": "COMPENSATORIO",
+      "title": "Compensatorio",
+      "data": {
+        "resumen": { "type": "string", "__example__": "Se registrará compensatorio para hoy 17/10/2026." }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          { "type": "TextBody", "text": "${data.resumen}" },
+          { "type": "Footer", "label": "Confirmar", "on-click-action": { "name": "data_exchange", "payload": { "confirmar": "si" } } }
+        ]
+      }
+    },
+    {
+      "id": "CONFIRMACION",
+      "title": "Registro",
+      "terminal": true,
+      "success": true,
+      "data": {
+        "resumen": { "type": "string", "__example__": "Registro confirmado: Vacaciones, del 01/10/2026 al 15/10/2026." }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          { "type": "TextBody", "text": "${data.resumen}" },
+          { "type": "Footer", "label": "Finalizar", "on-click-action": { "name": "complete", "payload": { "cerrar": "si" } } }
+        ]
+      }
+    }
+  ]
+}

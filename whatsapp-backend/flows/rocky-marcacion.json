@@ -1,0 +1,96 @@
+{
+  "version": "6.3",
+  "data_api_version": "3.0",
+  "routing_model": {
+    "CEDULA": ["ACCION", "SEDE", "CONFIRMACION"],
+    "ACCION": ["SEDE", "CONFIRMACION"],
+    "SEDE": ["CONFIRMACION"],
+    "CONFIRMACION": []
+  },
+  "screens": [
+    {
+      "id": "CEDULA",
+      "title": "Identificación",
+      "data": {
+        "mensaje": { "type": "string", "__example__": "No encontramos tu número registrado. Escribe tu cédula sin puntos para completar tu marcación." },
+        "aviso": { "type": "string", "__example__": "" },
+        "mostrar_aviso": { "type": "boolean", "__example__": false }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          { "type": "TextBody", "text": "${data.mensaje}" },
+          { "type": "TextBody", "text": "${data.aviso}", "visible": "${data.mostrar_aviso}" },
+          { "type": "TextInput", "name": "documento", "label": "Cédula", "input-type": "number", "required": true },
+          { "type": "Footer", "label": "Continuar", "on-click-action": { "name": "data_exchange", "payload": { "documento": "${form.documento}" } } }
+        ]
+      }
+    },
+    {
+      "id": "ACCION",
+      "title": "Marcación",
+      "data": {
+        "resumen": { "type": "string", "__example__": "Acabas de registrar el ingreso al turno Mañana. ¿Deseas registrar la salida?" },
+        "opciones": {
+          "type": "array",
+          "items": { "type": "object", "properties": { "id": { "type": "string" }, "title": { "type": "string" } } },
+          "__example__": [{ "id": "marking:cancel", "title": "Fue un error" }]
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          { "type": "TextBody", "text": "${data.resumen}" },
+          { "type": "RadioButtonsGroup", "name": "opcion", "label": "Selecciona una opción", "required": true, "data-source": "${data.opciones}" },
+          { "type": "Footer", "label": "Continuar", "on-click-action": { "name": "data_exchange", "payload": { "opcion": "${form.opcion}" } } }
+        ]
+      }
+    },
+    {
+      "id": "SEDE",
+      "title": "Sede de marcación",
+      "data": {
+        "resumen": { "type": "string", "__example__": "Hay varias sedes cerca de tu ubicación. Selecciona dónde estás realizando la marcación:" },
+        "sedes": {
+          "type": "array",
+          "items": { "type": "object", "properties": { "id": { "type": "string" }, "title": { "type": "string" }, "description": { "type": "string" } } },
+          "__example__": [{ "id": "SED-0001", "title": "Sede Principal", "description": "SED-0001" }]
+        },
+        "aviso": { "type": "string", "__example__": "" },
+        "mostrar_aviso": { "type": "boolean", "__example__": false }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          { "type": "TextBody", "text": "${data.resumen}" },
+          { "type": "TextBody", "text": "${data.aviso}", "visible": "${data.mostrar_aviso}" },
+          { "type": "RadioButtonsGroup", "name": "sede", "label": "Sede", "required": true, "data-source": "${data.sedes}" },
+          { "type": "Footer", "label": "Registrar", "on-click-action": { "name": "data_exchange", "payload": { "sede": "${form.sede}" } } }
+        ]
+      }
+    },
+    {
+      "id": "CONFIRMACION",
+      "title": "Marcación",
+      "terminal": true,
+      "success": true,
+      "data": {
+        "resumen": { "type": "string", "__example__": "Ingreso registrado correctamente." },
+        "tiene_qr": { "type": "boolean", "__example__": false },
+        "qr_imagen": { "type": "string", "__example__": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=" }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          { "type": "TextBody", "text": "${data.resumen}" },
+          {
+            "type": "If",
+            "condition": "${data.tiene_qr}",
+            "then": [{ "type": "Image", "src": "${data.qr_imagen}", "width": 280, "height": 280, "scale-type": "contain", "alt-text": "QR de marcación" }]
+          },
+          { "type": "Footer", "label": "Finalizar", "on-click-action": { "name": "complete", "payload": { "cerrar": "si" } } }
+        ]
+      }
+    }
+  ]
+}

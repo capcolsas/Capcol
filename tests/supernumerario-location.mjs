@@ -16,6 +16,7 @@ const shifts = sites.map(site => ({ id: `T${site.codigo}`, sedeCodigo: site.codi
 let contracts = ['C', 'D'], open = [], available = shifts, session = {}, mark, qr, lastList, resolvedSite;
 const messages = [];
 const ctx = vm.createContext({
+  config: { whatsappConversationMode: 'legacy' },
   SESSION: { AWAITING_QR_LOCATION: 'location', AWAITING_QR_ATTENDANCE_ACTION: 'action', AWAITING_MARKING_SITE: 'site', COMPLETED: 'completed' },
   MENU_IDS: { QR_ENTRY: 'qr_entry', QR_EXIT: 'qr_exit' },
   normalizeKey: value => value || '', normalizeDocument: value => value, normalizePhone: value => value,

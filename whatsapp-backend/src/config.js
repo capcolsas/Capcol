@@ -19,7 +19,17 @@ export const config = {
   whatsappAccessToken: String(process.env.WHATSAPP_ACCESS_TOKEN || '').trim(),
   whatsappPhoneNumberId: String(process.env.WHATSAPP_PHONE_NUMBER_ID || '').trim(),
   whatsappGraphVersion: String(process.env.WHATSAPP_GRAPH_VERSION || 'v25.0').trim(),
-  whatsappAppSecret: String(process.env.WHATSAPP_APP_SECRET || '').trim()
+  whatsappAppSecret: String(process.env.WHATSAPP_APP_SECRET || '').trim(),
+  // legacy: menu conversation started with "Hola". location: marking by sharing the location and
+  // everything else through WhatsApp Flows (one billed message per interaction).
+  whatsappConversationMode: String(process.env.WHATSAPP_CONVERSATION_MODE || 'legacy').trim().toLowerCase() === 'location' ? 'location' : 'legacy',
+  whatsappExitGuardMinutes: Number(process.env.WHATSAPP_EXIT_GUARD_MINUTES || 30),
+  whatsappFlowMenuId: String(process.env.WHATSAPP_FLOW_MENU_ID || '').trim(),
+  whatsappFlowMarkingId: String(process.env.WHATSAPP_FLOW_MARKING_ID || '').trim(),
+  whatsappFlowDraft: String(process.env.WHATSAPP_FLOW_DRAFT || '').trim().toLowerCase() === 'true',
+  // Vercel stores multi-line values with literal "\n"; restore them so the PEM parses.
+  whatsappFlowPrivateKey: String(process.env.WHATSAPP_FLOW_PRIVATE_KEY || '').replace(/\\n/g, '\n').trim(),
+  whatsappFlowPrivateKeyPassphrase: String(process.env.WHATSAPP_FLOW_PRIVATE_KEY_PASSPHRASE || '')
 };
 
 export function isAllowedCorsOrigin(origin) {

@@ -19,9 +19,11 @@ for (const [alert_type, label] of Object.entries({ entrada_tardia: 'llegada tard
 
 const source = await fs.readFile(new URL('../whatsapp-backend/src/app.js', import.meta.url), 'utf8');
 const requests = [{ id: 'R1', recipient: '123', alert_type: 'entrada_tardia', event_at: '2026-09-23T12:00:00Z', answered_at: null }];
-const sent = [], saved = [];
+const sent = [], saved = [], read = [];
 let failDelivery = false, failSave = false;
-const context = vm.createContext({ attendanceReasonPrompt, validateAttendanceReason, console: { error() {} },
+const config = { whatsappConversationMode: 'legacy' };
+const context = vm.createContext({ attendanceReasonPrompt, validateAttendanceReason, console: { error() {} }, config,
+  getScheduledShiftById: async () => null, markMessageRead: async message => read.push(message.id),
   sendText: async (phone, body) => { if (failDelivery) throw new Error('delivery failed'); sent.push({ phone, body }); },
   supabaseAdmin: {
     from(table) {
@@ -65,32 +67,70 @@ assert.equal(saved.length, 1, 'duplicate delivery cannot explain the next markin
 assert.equal(requests[1].answered_at, null);
 console.log('PASS: four prompts, required plain text, Unicode 200-character boundary, recipient ownership, durable retry and duplicate messages.');
 
+// Location mode: no billed reply for stickers/reactions, and a saved reason is acknowledged by a read receipt.
+config.whatsappConversationMode = 'location';
+const sentBefore = sent.length;
+for (const type of ['sticker', 'reaction', 'audio']) {
+  assert.equal(await context.handlePendingAttendanceReason('123', { type, id: `S-${type}`, timestamp: '1790166001' }), true);
+}
+assert.equal(sent.length, sentBefore, 'non-text messages are not answered while a reason is pending');
+assert.deepEqual(read, ['S-sticker', 'S-reaction', 'S-audio']);
+await context.handlePendingAttendanceReason('123', { type: 'location', id: 'L1', timestamp: '1790166001' });
+assert.equal(sent.length, sentBefore + 1, 'a location is re-asked for the reason, it is an attempt to mark');
+await context.handlePendingAttendanceReason('123', { ...text('Bus varado'), id: 'M2' });
+assert.equal(saved.length, 2);
+assert.equal(requests[1].answered_at, 'now');
+assert.equal(sent.length, sentBefore + 1, 'no "Motivo guardado" message');
+assert.equal(read.at(-1), 'M2');
+config.whatsappConversationMode = 'legacy';
+console.log('PASS: location mode answers reasons with a read receipt and ignores stickers, reactions and audio.');
+
 // Exercise the actual direct-marking and scanner branches: only committed alerts prompt.
 let markingResult = { eventAt: '2026-09-23T12:00:00Z', reasonRequest: requests[1] };
 const flow = [];
-const markingContext = vm.createContext({
+let reasonPrefix = null;
+const markingContext = vm.createContext({ config,
   selectAttendanceShift() {}, validateQrActionAvailability: async () => {},
   validateAttendanceLocation: () => ({ ok: true, distanceMeters: 10 }),
   normalizeDocument: value => value, normalizePhone: value => value, getSessionPhone: () => '123',
   sessionEmployee: value => value, SESSION: { COMPLETED: 'completed' },
   registerAttendanceEvent: async ({ tokenRow }) => { assert.equal(tokenRow.whatsapp_recipient,'123'); flow.push('commit'); return markingResult; },
   storeSession: async () => flow.push('session'), sendText: async () => flow.push('confirmation'),
-  notifyAttendanceReason: async request => { assert.equal(request.id,'R2'); flow.push('prompt'); },
-  sendAttendanceQr: async () => flow.push('qr-issued')
+  notifyAttendanceReason: async (request, prefix) => { assert.equal(request.id,'R2'); reasonPrefix = prefix; flow.push('prompt'); },
+  sendAttendanceQr: async (...args) => { flow.push(args.at(-1)?.send === false ? 'qr-token' : 'qr-issued'); return { token: 'TK', caption: 'QR' }; }
 });
 const markingStart = source.indexOf('async function completeLocatedMarking(');
 vm.runInContext(source.slice(markingStart,source.indexOf('\nfunction isNamedLocation',markingStart)), markingContext);
 const args = ['123', { session_data: { pendingQrAction: 'entry' } }, { id:'E',documento:'123' },
   { id:'T',nombre:'Turno',fechaOperativa:'2026-09-23' }, { codigo:'S',nombre:'Sede' }, { latitude:4.6,longitude:-74.1 },'2026-09-23T12:00:00Z'];
 await markingContext.completeLocatedMarking(...args);
-assert.deepEqual(flow,['commit','session','confirmation','prompt']);
+assert.deepEqual(flow,['commit','session','prompt'],'legacy: a late marking only sends the reason prompt');
+assert.equal(reasonPrefix, '');
+flow.length=0;
+config.whatsappConversationMode = 'location';
+await markingContext.completeLocatedMarking(...args);
+assert.deepEqual(flow,['commit','session','prompt'],'location: one message reports the marking and asks for the reason');
+assert.match(reasonPrefix, /^Ingreso recibido a las .*\nSede: Sede\nTurno: Turno \(2026-09-23\)\n\nPara completar tu registro:$/s);
+assert.doesNotMatch(reasonPrefix, /registrado correctamente/, 'a late marking is not reported as complete');
+flow.length=0;
+const flowOutcome = await markingContext.completeLocatedMarking(...args, { reply: false });
+assert.deepEqual(flow,['commit','session'],'a Flow marking sends nothing itself');
+assert.equal(flowOutcome.type, 'reason');
+config.whatsappConversationMode = 'legacy';
 flow.length=0;
 markingResult = { eventAt: '2026-09-23T12:00:00Z' };
 await markingContext.completeLocatedMarking(...args);
 assert.deepEqual(flow,['commit','session','confirmation']);
 flow.length=0;
+assert.equal((await markingContext.completeLocatedMarking(...args, { reply: false })).type, 'registered');
+assert.deepEqual(flow,['commit','session']);
+flow.length=0;
 await markingContext.completeLocatedMarking(...args.map((arg,index) => index === 4 ? { ...arg,qr_enabled:true } : arg));
 assert.deepEqual(flow,['qr-issued'],'issuing a QR does not ask for a reason before it is scanned');
+flow.length=0;
+const qrOutcome = await markingContext.completeLocatedMarking(...args.map((arg,index) => index === 4 ? { ...arg,qr_enabled:true } : arg), { reply: false });
+assert.deepEqual(flow,['qr-token']);
+assert.equal(qrOutcome.token, 'TK');
 const scanStart = source.indexOf("      const result = tokenRow.action === 'exit'");
 const scannerSource = source.slice(scanStart,source.indexOf('      await touchQrDevice',scanStart));
 for (const action of ['entry','exit']) {

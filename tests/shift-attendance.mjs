@@ -36,6 +36,7 @@ const employee = { id: 'E', documento: '123', sede_codigo: 'S', nombre: 'Ana' };
 const shift = { id: 'T', sedeCodigo: 'S', fechaOperativa: '2026-09-06', nombre: 'Noche' };
 const sede = { ...site, codigo: 'S', nombre: 'Sede', qr_enabled: false };
 const context = vm.createContext({
+  config: { whatsappConversationMode: 'legacy' },
   loadEmployeeFromSession: async () => employee, getSedeByCode: async () => sede,
   supabaseAdmin: { rpc: async () => ({ data: { mobile: false, sites: [sede] }, error: null }) },
   validateAttendanceLocation, getScheduledShiftById: async () => shift,
