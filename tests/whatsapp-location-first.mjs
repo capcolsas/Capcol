@@ -82,8 +82,10 @@ console.log('PASS: Flow request/response encryption, key refresh (421), tamperin
 // ---- Inbound routing in location mode: only location, keyword and pending confirmations are answered.
 const source = await fs.readFile(new URL('../whatsapp-backend/src/app.js', import.meta.url), 'utf8');
 const slice = (start, end) => source.slice(source.indexOf(start), source.indexOf(end, source.indexOf(start)));
-const SESSION = { AWAITING_QR_LOCATION: 'awaiting_qr_location', AWAITING_MARKING_SITE: 'awaiting_marking_site', AWAITING_MARKING_CONFIRM: 'awaiting_marking_confirm', COMPLETED: 'completed', IDLE: 'idle' };
+const SESSION = { AWAITING_QR_LOCATION: 'awaiting_qr_location', AWAITING_MARKING_SITE: 'awaiting_marking_site', AWAITING_MARKING_CONFIRM: 'awaiting_marking_confirm', AWAITING_OVERRIDE_LOCATION: 'awaiting_override_location', COMPLETED: 'completed', IDLE: 'idle' };
 const log = [];
+const someoneElse = { id: 'E9', documento: '900', nombre: 'Beto', telefono: '573000000999' };
+let lastMarking = null;
 let session = { session_state: 'idle', session_data: {} };
 let employeeByPhone = { id: 'E1', documento: '100', nombre: 'Ana', telefono: '573000000001' };
 let openRows = [], entryShift = { id: 'T2', nombre: 'Tarde', fechaOperativa: '2026-10-18', sedeNombre: 'Sede', sedeCodigo: 'S' }, entryError = null;
@@ -111,7 +113,7 @@ const router = vm.createContext({
   normalizeBusinessScopedUserId: value => /^[A-Z]{2}\.\d+$/.test(value) ? value : '',
   findEmployeeByPhone: async () => employeeByPhone,
   reloadEmployeeForAttendance: async employee => employee,
-  loadEmployeeFromSession: async () => employeeByPhone,
+  loadEmployeeFromSession: async source => source?.employee_id === 'E9' ? someoneElse : employeeByPhone,
   normalizeDocument: value => String(value || ''), normalizePhone: value => value,
   currentDate: () => '2026-10-18', addIsoDays: value => value,
   supabaseAdmin: { from: query },
@@ -122,7 +124,7 @@ const router = vm.createContext({
   qrError: message => new Error(message),
   sessionEmployee: employee => employee,
   isNamedLocation: location => Boolean(location?.name || location?.address),
-  handleQrLocationInput: async (_phone, markingSession, parsed) => log.push(`mark:${markingSession.session_data.pendingQrAction}:${markingSession.session_data.pendingShiftId}:${parsed.location.latitude}`)
+  handleQrLocationInput: async (_phone, markingSession, parsed) => (lastMarking = markingSession, log.push(`mark:${markingSession.session_data.pendingQrAction}:${markingSession.session_data.pendingShiftId}:${parsed.location.latitude}`))
 });
 vm.runInContext(slice('const MARKING_LOCATION_MAX_AGE_MS', 'async function startIdentificationFlow('), router);
 const run = async message => { log.length = 0; await router.processLocationFirstMessage({ from: '573000000001', id: 'W1', ...message }); return [...log]; };
@@ -159,6 +161,26 @@ entryError = 'attendance_shift_missing';
 assert.deepEqual(await run({ type: 'location', location }), ['text:qr:attendance_shift_missing']);
 assert.match((await run({ type: 'location', location: { ...location, name: 'Centro comercial' } }))[0], /nombre o direccion/);
 assert.match((await run({ type: 'location', location, context: { forwarded: true } }))[0], /reenviada/);
+// "No soy yo" + "Marcar ingreso o salida": the next location marks the identified person, from this phone.
+entryError = null;
+const override = minutesAgo => ({ session_state: SESSION.AWAITING_OVERRIDE_LOCATION,
+  session_data: { identityOverride: { employeeId: 'E9', documento: '900', nombre: 'Beto', createdAt: new Date(Date.now() - minutesAgo * 60000).toISOString() } } });
+session = override(2);
+assert.deepEqual(await run({ type: 'location', location }), ['mark:entry:T2:4.6']);
+assert.equal(lastMarking.employee_id, 'E9', 'marks the identified person, not the phone owner');
+assert.equal(lastMarking.phone_number, '573000000001', 'records the phone that sent the location, flagged as a different phone');
+assert.equal(session.session_state, SESSION.AWAITING_QR_LOCATION, 'the marking consumes the override');
+lastMarking = null;
+assert.deepEqual(await run({ type: 'location', location }), ['mark:entry:T2:4.6']);
+assert.equal(lastMarking.employee_id, 'E1', 'once consumed, the phone owner marks again');
+session = override(20);
+const lateOverride = await run({ type: 'location', location });
+assert.equal(lateOverride[0], 'reset');
+assert.match(lateOverride[1], /^text:El tiempo para marcar a nombre de Beto venció/, 'a recently expired override never marks the owner by mistake');
+assert.equal(lateOverride.length, 2);
+session = override(120);
+assert.deepEqual(await run({ type: 'location', location }), ['reset', 'mark:entry:T2:4.6']);
+assert.equal(lastMarking.employee_id, 'E1', 'a forgotten override does not block the owner hours later');
 employeeByPhone = null;
 assert.deepEqual(await run({ type: 'location', location }), ['marking-flow:cedula'], 'unregistered number gets the marking Flow');
 console.log('PASS: location mode answers only locations, keywords and confirmations; entry/exit/double shift/guard/expiry/cancel routing.');
@@ -168,6 +190,7 @@ const flowSessions = [];
 const writes = { incapacitados: [], soportes: [] };
 const registered = [];
 const sent = [];
+const storedSessions = [];
 let overlap = false, activeIncapacity = null;
 const employees = {
   E1: { id: 'E1', documento: '100', nombre: 'Ana', sede_nombre: 'Principal', isSupernumerario: false },
@@ -229,7 +252,7 @@ const flows = vm.createContext({
   QRCode: { toBuffer: async () => Buffer.from('png') }, buildQrScanValue: token => `scan:${token}`,
   notifyAttendanceReason: async () => sent.push('reason-prompt'),
   getSession: async () => ({ session_state: 'idle', session_data: {} }),
-  storeSession: async () => {},
+  storeSession: async (phone, patch) => storedSessions.push({ phone, ...patch }),
   locationMarkingSession: (phone, employee, action, shiftId) => ({ session_data: { pendingQrAction: action, pendingShiftId: shiftId } }),
   locatedMarkingCandidates: async () => ({ shift: { id: 'T1' }, candidates: [{ codigo: 'S' }], message: null }),
   completeLocatedMarking: async (...args) => { assert.equal(args.at(-1).reply, false); return markingOutcome; },
@@ -316,12 +339,24 @@ assert.equal(screen.screen, 'CEDULA');
 assert.equal(screen.data.mostrar_aviso, true);
 screen = await exchange('tok6', 'CEDULA', { documento: '2.0.0' });
 assert.equal(screen.screen, 'OPCIONES');
-assert.deepEqual(screen.data.opciones.map(option => option.id), ['incapacidad', 'novedad'], 'supernumerario: no compensatorio, no "No soy yo" after the cédula');
+assert.deepEqual(screen.data.opciones.map(option => option.id), ['incapacidad', 'novedad', 'marcar'], 'supernumerario: no compensatorio, no "No soy yo" after the cédula, and a way to mark from this phone');
 screen = await exchange('tok6', 'OPCIONES', { opcion: 'novedad' });
 assert.deepEqual(screen.data.tipos.map(option => option.id), ['4', '5', '9'], 'no Licencia Remunerada for supernumerarios');
+screen = await exchange('tok6', 'OPCIONES', { opcion: 'marcar' });
+assert.equal(screen.screen, 'CONFIRMACION');
+assert.match(screen.data.resumen, /^Listo, Luis\. Ahora envía tu ubicación actual .* próximos 10 minutos/);
+const overrideSession = storedSessions.at(-1);
+assert.equal(overrideSession.phone, '573000000001');
+assert.equal(overrideSession.session_state, 'awaiting_override_location');
+assert.equal(overrideSession.session_data.identityOverride.employeeId, 'E2', 'the next location marks the person identified by cédula');
+// The phone owner cannot reach the override from INICIO: the option only exists after typing a cédula.
+await flows.sendMenuFlow('573000000001');
+const storedBefore = storedSessions.length;
+assert.equal((await exchange(`tok${flowSessions.length}`, 'INICIO', { opcion: 'marcar' })).screen, 'OPCIONES');
+assert.equal(storedSessions.length, storedBefore, 'no override without identifying by cédula');
 activeIncapacity = { fecha_fin: '2026-10-20' };
 await flows.sendMenuFlow('573000000001');
-screen = await request({ action: 'INIT', flow_token: 'tok7' });
+screen = await request({ action: 'INIT', flow_token: 'tok8' });
 assert.equal(screen.screen, 'CONFIRMACION');
 assert.match(screen.data.resumen, /incapacitado hasta el 20\/10\/2026/);
 activeIncapacity = null;
@@ -329,17 +364,17 @@ console.log('PASS: menu Flow screens, date validation, retries, overlap, optiona
 
 // Marking Flow for an unregistered number.
 await flows.sendMarkingFlow('573000000009', { start: 'cedula', location, receivedAt: new Date().toISOString() });
-assert.equal(sent.at(-1), 'flow:MARK:tok8');
-assert.equal((await request({ action: 'INIT', flow_token: 'tok8' })).screen, 'CEDULA');
-screen = await exchange('tok8', 'CEDULA', { documento: '100' });
+assert.equal(sent.at(-1), 'flow:MARK:tok9');
+assert.equal((await request({ action: 'INIT', flow_token: 'tok9' })).screen, 'CEDULA');
+screen = await exchange('tok9', 'CEDULA', { documento: '100' });
 assert.deepEqual(screen, { screen: 'CONFIRMACION', data: { resumen: 'Ingreso registrado correctamente.', tiene_qr: false, qr_imagen: screen.data.qr_imagen } });
 markingOutcome = { type: 'invalid', message: 'otra' };
-assert.equal((await exchange('tok8', 'CEDULA', { documento: '100' })).data.resumen, 'Ingreso registrado correctamente.', 'a retried submit shows the registered result');
+assert.equal((await exchange('tok9', 'CEDULA', { documento: '100' })).data.resumen, 'Ingreso registrado correctamente.', 'a retried submit shows the registered result');
 await flows.sendMarkingFlow('573000000009', { start: 'cedula', location, receivedAt: new Date(Date.now() - 11 * 60000).toISOString() });
-assert.match((await exchange('tok9', 'CEDULA', { documento: '100' })).data.resumen, /ubicación venció/);
+assert.match((await exchange('tok10', 'CEDULA', { documento: '100' })).data.resumen, /ubicación venció/);
 markingOutcome = { type: 'qr', token: 'QRT', caption: 'QR temporal para registrar ingreso.' };
 await flows.sendMarkingFlow('573000000009', { start: 'cedula', location, receivedAt: new Date().toISOString() });
-screen = await exchange('tok10', 'CEDULA', { documento: '100' });
+screen = await exchange('tok11', 'CEDULA', { documento: '100' });
 assert.equal(screen.data.tiene_qr, true);
 assert.equal(screen.data.qr_imagen, Buffer.from('png').toString('base64'));
 console.log('PASS: marking Flow identifies by cédula, registers once, expires stale locations and shows the QR on screen.');

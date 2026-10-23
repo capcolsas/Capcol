@@ -41,6 +41,7 @@ const SESSION = {
   AWAITING_DATE_START: 'awaiting_date_start',
   AWAITING_DATE_END: 'awaiting_date_end',
   AWAITING_MARKING_CONFIRM: 'awaiting_marking_confirm',
+  AWAITING_OVERRIDE_LOCATION: 'awaiting_override_location',
   COMPLETED: 'completed'
 };
 
@@ -2069,6 +2070,10 @@ async function processIncomingMessage(message) {
 // marking confirmation. Anything else only gets a read receipt, which WhatsApp does not bill.
 const MARKING_LOCATION_MAX_AGE_MS = 5 * 60000;
 const FLOW_LOCATION_MAX_AGE_MS = 10 * 60000;
+// "No soy yo" + "Marcar ingreso o salida": the next location from that phone marks the identified person.
+const OVERRIDE_LOCATION_MAX_AGE_MS = 10 * 60000;
+// Past this, a forgotten override no longer blocks the phone owner's own marking.
+const OVERRIDE_WARNING_WINDOW_MS = 60 * 60000;
 
 async function processLocationFirstMessage(message) {
   const phone = getWhatsAppRecipient(message);
@@ -2111,7 +2116,13 @@ async function handleLocationMarking(phone, parsed) {
   }
   const location = { latitude: parsed.location.latitude, longitude: parsed.location.longitude };
   const receivedAt = new Date().toISOString();
-  const employee = normalizeBusinessScopedUserId(phone) ? null : await findEmployeeByPhone(phone);
+  const override = await takeIdentityOverride(phone);
+  if (override.expired) {
+    await sendText(phone, `El tiempo para marcar a nombre de ${override.nombre || 'la persona identificada'} venció. Escribe "R", elige "No soy yo" y luego "Marcar ingreso o salida" para intentarlo de nuevo.`);
+    return;
+  }
+  const employee = override.employee
+    || (normalizeBusinessScopedUserId(phone) ? null : await findEmployeeByPhone(phone));
   if (!employee) {
     await sendMarkingFlow(phone, { start: 'cedula', location, receivedAt });
     return;
@@ -2233,15 +2244,38 @@ async function handleMarkingConfirmation(phone, session, parsed) {
   await markWithLocation(phone, employee, action, shiftId, saved.pendingLocation);
 }
 
+// The phone that actually sent the location is recorded, so a marking made from someone else's phone
+// shows up as "different phone" in the daily registry.
 function locationMarkingSession(phone, employee, action, shiftId) {
   return {
     id: phone,
-    phone_number: employee.telefono || normalizePhone(phone) || null,
+    phone_number: normalizePhone(phone) || employee.telefono || null,
     employee_id: employee.id,
     documento: employee.documento,
     session_state: SESSION.AWAITING_QR_LOCATION,
     session_data: { employee: sessionEmployee(employee), pendingQrAction: action, pendingShiftId: shiftId || null }
   };
+}
+
+// The person identified with "No soy yo" for this phone, if the override is still fresh. A marking stores
+// a new session state, which consumes it. A recently expired override is reported instead of silently
+// marking the phone owner, whom that person did not mean to mark.
+async function takeIdentityOverride(phone) {
+  const session = await getSession(phone);
+  if (session.session_state !== SESSION.AWAITING_OVERRIDE_LOCATION) return {};
+  const saved = session.session_data?.identityOverride || {};
+  const age = Date.now() - new Date(saved.createdAt).getTime();
+  const known = Number.isFinite(age) && age >= 0;
+  if (!known || age > OVERRIDE_LOCATION_MAX_AGE_MS) {
+    await resetSession(phone, session, {});
+    return known && age <= OVERRIDE_WARNING_WINDOW_MS ? { expired: true, nombre: saved.nombre } : {};
+  }
+  const employee = await loadEmployeeFromSession({ employee_id: saved.employeeId, documento: saved.documento });
+  if (!employee) {
+    await resetSession(phone, session, {});
+    return { expired: true, nombre: saved.nombre };
+  }
+  return { employee };
 }
 
 // The action is already decided, so the location runs through the same validation and registration as
@@ -5209,7 +5243,9 @@ async function menuHomeScreen(employee, screen) {
     { id: 'incapacidad', title: 'Incapacidad' },
     { id: 'novedad', title: 'Novedad' },
     ...(employee.isSupernumerario ? [] : [{ id: 'compensatorio', title: 'Compensatorio' }]),
-    ...(screen === 'INICIO' ? [{ id: 'no_soy_yo', title: 'No soy yo' }] : [])
+    // Someone identified by cédula may be using another person's phone: the location alone would mark the
+    // phone owner, so they get an explicit way to mark for themselves.
+    ...(screen === 'INICIO' ? [{ id: 'no_soy_yo', title: 'No soy yo' }] : [{ id: 'marcar', title: 'Marcar ingreso o salida' }])
   ];
   const ubicacion = employee.isSupernumerario ? 'SUPERNUMERARIO' : `Sede: ${employee.sede_nombre || 'Sin sede'}`;
   return { screen, data: { saludo: `Hola ${employee.nombre}\nCédula: ${employee.documento}\n${ubicacion}`, opciones } };
@@ -5219,7 +5255,7 @@ async function menuIdentify(flowSession, documento) {
   const document = normalizeDocument(documento);
   const employee = document ? await findEmployeeByDocument(document) : null;
   if (!employee) return cedulaScreen('Escribe tu cédula sin puntos.', NO_REGISTERED_MESSAGE);
-  await updateFlowSession(flowSession, { employee_id: employee.id, documento: employee.documento });
+  await updateFlowSession(flowSession, { employee_id: employee.id, documento: employee.documento, data: { ...flowSession.data, identifiedByDocument: true } });
   return menuHomeScreen(employee, 'OPCIONES');
 }
 
@@ -5227,8 +5263,17 @@ async function menuChoose(flowSession, opcion) {
   const employee = await flowEmployee(flowSession);
   if (!employee) return menuStartScreen(flowSession);
   if (opcion === 'no_soy_yo') {
-    await updateFlowSession(flowSession, { employee_id: null, documento: null });
+    await updateFlowSession(flowSession, { employee_id: null, documento: null, data: { ...flowSession.data, identifiedByDocument: false } });
     return cedulaScreen('Escribe tu cédula sin puntos.');
+  }
+  if (opcion === 'marcar' && flowSession.data?.identifiedByDocument === true) {
+    await storeSession(flowSession.recipient, {
+      employee_id: employee.id,
+      documento: employee.documento,
+      session_state: SESSION.AWAITING_OVERRIDE_LOCATION,
+      session_data: { identityOverride: { employeeId: employee.id, documento: employee.documento, nombre: employee.nombre, createdAt: new Date().toISOString() } }
+    });
+    return menuConfirmation(`Listo, ${employee.nombre}. Ahora envía tu ubicación actual desde WhatsApp en los próximos 10 minutos para registrar tu ingreso o tu salida.`);
   }
   if (opcion === 'incapacidad') return datesScreen('INCAPACIDAD', employee);
   if (opcion === 'novedad') return datesScreen('NOVEDAD', employee);

@@ -21,6 +21,7 @@ Reglas de la marcacion por ubicacion:
 - Empleado con sede fija: solo se valida el radio de la sede de su turno, aunque haya otras sedes cerca.
 - Supernumerarios y cargos con marcacion movil (los supervisores siempre son moviles): si hay varias sedes en rango se envia el Flow **marcacion** para elegir.
 - Numero no registrado: Flow **marcacion** para escribir la cedula; la ubicacion vale 10 minutos.
+- Celular ajeno: en el Flow menu, "No soy yo" + cedula muestra "Marcar ingreso o salida". La siguiente ubicacion de ese celular en 10 minutos se marca a nombre de la persona identificada (no cambia el telefono guardado) y queda con el telefono real, por lo que el Registro Diario la muestra como "telefono distinto". Si la ubicacion llega cuando ya vencio (hasta 1 hora despues), se avisa en vez de marcar al dueño del celular.
 - Llegada tarde o salida temprano: un solo texto "Ingreso recibido ... Para completar tu registro: escribe el motivo". La respuesta se confirma solo con el visto azul.
 - Se mantiene el rechazo de ubicaciones reenviadas, buscadas por nombre o fuera de radio.
 
